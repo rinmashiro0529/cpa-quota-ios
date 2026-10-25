@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-25",
+  "machine": "NWD",
+  "container": "ios-builder",
+  "swift_version": "6.4.1",
+  "build_source_archive": "source-20261025-221119.tar",
+  "build_source_archive_sha256": "8a27db32bf8728cf1b1db12d63e7eef4bf58fcb5937f5e5e8816da91a9add094",
+  "native": {"swift_testing_tests": 106, "suites": 15, "passed": true, "warnings_as_errors": true, "log": "native-tests.log"},
+  "probe_build": {"passed": true, "log": "probe-build.log"},
+  "repeated_regressions": {"iterations": 20, "tests_per_iteration": 14, "suites_per_iteration": 2, "all_passed": true, "skip_build": true, "log": "review-repeat.log"},
+  "cross_compilation": [
+    {"variant": "ios-device", "target": "arm64-apple-ios", "passed": true, "configuration": "release", "object_count": 10, "sample_object": "Models.swift.o", "mach_o_magic": "0xfeedfacf", "cpu_type": "0x100000c", "lc_build_version_platform": 2, "minimum_os": "17.0.0", "sdk": "27.1.0", "module_present": true, "log": "ios-device-build.log"},
+    {"variant": "ios-simulator", "target": "arm64-apple-ios-simulator", "passed": true, "configuration": "release", "object_count": 10, "sample_object": "Models.swift.o", "mach_o_magic": "0xfeedfacf", "cpu_type": "0x100000c", "lc_build_version_platform": 7, "minimum_os": "17.0.0", "sdk": "27.1.0", "module_present": true, "log": "ios-simulator-build.log"}
+  ],
+  "commands": [
+    "swift test -j 2 --scratch-path .build/linux -Xswiftc -warnings-as-errors",
+    "swift build -j 2 --scratch-path .build/linux --product cpa-quota-probe -Xswiftc -warnings-as-errors",
+    "swift build --build-system native -j 2 --swift-sdk darwin --triple arm64-apple-ios --scratch-path .build/ios-device -c release --target CPAQuotaKit -Xswiftc -warnings-as-errors",
+    "swift build --build-system native -j 2 --swift-sdk darwin --triple arm64-apple-ios-simulator --scratch-path .build/ios-simulator -c release --target CPAQuotaKit -Xswiftc -warnings-as-errors"
+  ],
+  "known_tool_warning": "The installed SwiftPM marks --build-system native deprecated; it is selected only for Apple cross compilation because the default Swift Build engine did not discover iphoneos in the existing slim SDK. No compiler-warning suppression, SDK edits, or tool upgrades were used.",
+  "signing_used": false,
+  "device_runtime_or_keychain_runtime_tested": false
+}

@@ -1,0 +1,19 @@
+{
+  "date": "2026-10-25",
+  "machine": "NWD",
+  "container": "ios-builder",
+  "swift_version": "6.4.1",
+  "ios_sdk": "iPhoneOS27.1.sdk",
+  "attempts": [
+    {"stage": "initial-native-tests", "build": "passed", "swift_testing_tests": 79, "issues": 1, "root_cause": "The secondary reset signals were missing from the test fixture; assertions were retained and fixture corrected.", "evidence": "first-native-run.json"},
+    {"stage": "native-and-first-ios-sdk-build", "native_tests": "passed", "swift_testing_tests": 86, "ios_build": "failed", "failure": "unable to find platform for 'iphoneos'", "build_system": "SwiftPM default swiftbuild", "change": "Select the installed native build system for Linux-to-Apple cross compilation; no SDK/system configuration changes."},
+    {"stage": "native-and-explicit-sdk-build", "native_tests": "passed", "swift_testing_tests": 86, "ios_build": "failed", "failure": "CredentialStore.swift: CFBoolean? to Any implicit coercion promoted to error", "build_system": "native", "change": "Remove redundant synchronizable attributes and optional CFBoolean constants; retain explicit secure-storage errors.", "warning": "SwiftPM reports --build-system native deprecated; no compiler-warning suppression."},
+    {"stage": "pre-review-green-baseline", "native_tests": "passed", "swift_testing_tests": 88, "suites": 13, "ios_device_build": "passed", "ios_simulator_build": "passed", "live_enabled_accounts_succeeded": 3},
+    {"stage": "independent-review-regressions-red", "build": "passed", "swift_testing_tests": 99, "suites": 15, "issues": 4, "production_changed_for_red_run": false, "evidence": "review-regressions-red.json"},
+    {"stage": "post-fix-transport-test-compilation", "build": "failed", "tests_executed": false, "failure": "URLError.Code(rawValue:) is optional and cannot be passed to the selected URLError initializer", "change": "Use NSError(domain: NSURLErrorDomain, code: code, userInfo: nil) in the stub, preserving all production code and assertions."},
+    {"stage": "post-fix-warning-test-compilation", "build": "failed", "tests_executed": false, "build_source_archive": "source-20261025-215544.tar", "failure": "actor-isolated property 'capabilityWarning' cannot be accessed from outside of the actor", "locations": ["Tests/CPAQuotaKitTests/ReviewRegressionTests.swift:47", "Tests/CPAQuotaKitTests/ReviewRegressionTests.swift:60"], "change": "Await the actor property into a local value before each of the two unchanged kind assertions."},
+    {"stage": "final-full-matrix", "build": "passed", "swift_testing_tests": 106, "suites": 15, "ios_device_build": "passed", "ios_simulator_build": "passed", "warnings_as_errors": true, "build_source_archive": "source-20261025-221119.tar", "build_source_archive_sha256": "8a27db32bf8728cf1b1db12d63e7eef4bf58fcb5937f5e5e8816da91a9add094", "evidence": "build-verification.json"},
+    {"stage": "repeated-orchestration-regressions", "iterations": 20, "tests_per_iteration": 14, "suites_per_iteration": 2, "all_passed": true, "rebuilt": false, "command": "swift test -j 2 --scratch-path .build/linux --skip-build --filter Review", "evidence": "review-repeat.log"},
+    {"stage": "final-swift-live-probe-and-source-audit", "live_accounts": 4, "live_enabled_accounts_succeeded": 3, "live_enabled_accounts_failed": 0, "swift_files_matching_local_nwd_and_archive": 21, "mach_o_platforms_confirmed": [2, 7], "evidence": ["live-verification.json", "source-audit.json"]}
+  ]
+}

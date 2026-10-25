@@ -1,0 +1,18 @@
+{
+  "stage": "independent-review-regressions-red",
+  "date": "2026-10-25",
+  "machine": "NWD ios-builder",
+  "source_compilation": "passed with warnings-as-errors",
+  "swift_testing_tests": 99,
+  "suites": 15,
+  "issues": 4,
+  "failures": [
+    {"test": "successfulReloadRecoversFromCachedManagementError", "observed": "managementUnauthorized after successful reload because a cached record retained the old management failure"},
+    {"test": "providerDiscoveryServerErrorStillReturnsAccounts", "observed": "requestRejected, management status 500 prevented valid accounts from being returned"},
+    {"test": "providerDiscoveryMalformedBodyStillReturnsAccounts", "observed": "invalidResponse from optional capability discovery prevented valid accounts from being returned"},
+    {"test": "removingAnInFlightAccountDoesNotCancelTheWholeBatch", "observed": "CancellationError from one removed account aborted the batch"}
+  ],
+  "safety_guards_passed": ["Discovery 401/403/429 not downgraded", "Discovery task cancellation propagated", "Upstream failure evidence retained", "Future Retry-After retained", "Explicit whole-client and store cancellation retained"],
+  "production_changes_during_red_run": false,
+  "real_network_or_credentials_used": false
+}
