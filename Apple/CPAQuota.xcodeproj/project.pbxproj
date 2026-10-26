@@ -9,11 +9,43 @@
 		A10000000000000000000001 /* CPAQuotaiOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* CPAQuotaiOSApp.swift */; };
 		A10000000000000000000002 /* CPAQuotaKit in Frameworks */ = {isa = PBXBuildFile; productRef = A70000000000000000000001 /* CPAQuotaKit */; };
 		A10000000000000000000003 /* CPAQuotaUI in Frameworks */ = {isa = PBXBuildFile; productRef = A70000000000000000000002 /* CPAQuotaUI */; };
+		A10000000000000000000004 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* Assets.xcassets */; };
+		A10000000000000000000005 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* PrivacyInfo.xcprivacy */; };
+		A10000000000000000000006 /* CPAClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* CPAClientTests.swift */; };
+		A10000000000000000000007 /* CPAQuotaStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* CPAQuotaStoreTests.swift */; };
+		A10000000000000000000008 /* CPAQuotaUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* CPAQuotaUITests.swift */; };
+		A10000000000000000000009 /* CoreModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000009 /* CoreModelTests.swift */; };
+		A1000000000000000000000A /* CredentialStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000A /* CredentialStoreTests.swift */; };
+		A1000000000000000000000B /* HTTPTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000B /* HTTPTransportTests.swift */; };
+		A1000000000000000000000C /* IntegrationPresentationRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000C /* IntegrationPresentationRegressionTests.swift */; };
+		A1000000000000000000000D /* IntegrationSessionRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000D /* IntegrationSessionRegressionTests.swift */; };
+		A1000000000000000000000E /* PublicInterfaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* PublicInterfaceTests.swift */; };
+		A1000000000000000000000F /* QuotaParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000F /* QuotaParsingTests.swift */; };
+		A10000000000000000000010 /* ReviewRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000010 /* ReviewRegressionTests.swift */; };
+		A10000000000000000000011 /* ScenarioTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* ScenarioTransport.swift */; };
+		A10000000000000000000012 /* CPAQuotaKit in Frameworks */ = {isa = PBXBuildFile; productRef = A70000000000000000000003 /* CPAQuotaKit */; };
+		A10000000000000000000013 /* CPAQuotaUI in Frameworks */ = {isa = PBXBuildFile; productRef = A70000000000000000000004 /* CPAQuotaUI */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		A20000000000000000000001 /* CPAQuotaiOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Sources/CPAQuotaApp/CPAQuotaiOSApp.swift; sourceTree = "<group>"; };
 		A20000000000000000000002 /* CPAQuota.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CPAQuota.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A20000000000000000000003 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A20000000000000000000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A20000000000000000000005 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		A20000000000000000000006 /* CPAClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/CPAClientTests.swift; sourceTree = "<group>"; };
+		A20000000000000000000007 /* CPAQuotaStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/CPAQuotaStoreTests.swift; sourceTree = "<group>"; };
+		A20000000000000000000008 /* CPAQuotaUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/CPAQuotaUITests.swift; sourceTree = "<group>"; };
+		A20000000000000000000009 /* CoreModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/CoreModelTests.swift; sourceTree = "<group>"; };
+		A2000000000000000000000A /* CredentialStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/CredentialStoreTests.swift; sourceTree = "<group>"; };
+		A2000000000000000000000B /* HTTPTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/HTTPTransportTests.swift; sourceTree = "<group>"; };
+		A2000000000000000000000C /* IntegrationPresentationRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/IntegrationPresentationRegressionTests.swift; sourceTree = "<group>"; };
+		A2000000000000000000000D /* IntegrationSessionRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/IntegrationSessionRegressionTests.swift; sourceTree = "<group>"; };
+		A2000000000000000000000E /* PublicInterfaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/PublicInterfaceTests.swift; sourceTree = "<group>"; };
+		A2000000000000000000000F /* QuotaParsingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/QuotaParsingTests.swift; sourceTree = "<group>"; };
+		A20000000000000000000010 /* ReviewRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/ReviewRegressionTests.swift; sourceTree = "<group>"; };
+		A20000000000000000000011 /* ScenarioTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/ScenarioTransport.swift; sourceTree = "<group>"; };
+		A20000000000000000000018 /* CPAQuotaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CPAQuotaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -26,6 +58,15 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A30000000000000000000004 /* CPAQuotaTests Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000012 /* CPAQuotaKit in Frameworks */,
+				A10000000000000000000013 /* CPAQuotaUI in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -33,6 +74,21 @@
 			isa = PBXGroup;
 			children = (
 				A20000000000000000000001 /* CPAQuotaiOSApp.swift */,
+				A20000000000000000000003 /* Assets.xcassets */,
+				A20000000000000000000004 /* Info.plist */,
+				A20000000000000000000005 /* PrivacyInfo.xcprivacy */,
+				A20000000000000000000006 /* CPAClientTests.swift */,
+				A20000000000000000000007 /* CPAQuotaStoreTests.swift */,
+				A20000000000000000000008 /* CPAQuotaUITests.swift */,
+				A20000000000000000000009 /* CoreModelTests.swift */,
+				A2000000000000000000000A /* CredentialStoreTests.swift */,
+				A2000000000000000000000B /* HTTPTransportTests.swift */,
+				A2000000000000000000000C /* IntegrationPresentationRegressionTests.swift */,
+				A2000000000000000000000D /* IntegrationSessionRegressionTests.swift */,
+				A2000000000000000000000E /* PublicInterfaceTests.swift */,
+				A2000000000000000000000F /* QuotaParsingTests.swift */,
+				A20000000000000000000010 /* ReviewRegressionTests.swift */,
+				A20000000000000000000011 /* ScenarioTransport.swift */,
 				A40000000000000000000002 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +97,7 @@
 			isa = PBXGroup;
 			children = (
 				A20000000000000000000002 /* CPAQuota.app */,
+				A20000000000000000000018 /* CPAQuotaTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -67,6 +124,25 @@
 			productReference = A20000000000000000000002 /* CPAQuota.app */;
 			productType = "com.apple.product-type.application";
 		};
+		A50000000000000000000002 /* CPAQuotaTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A80000000000000000000009 /* Build configuration list for PBXNativeTarget "CPAQuotaTests" */;
+			buildPhases = (
+				A30000000000000000000005 /* CPAQuotaTests Sources */,
+				A30000000000000000000004 /* CPAQuotaTests Frameworks */,
+				A30000000000000000000006 /* CPAQuotaTests Resources */,
+			);
+			buildRules = ();
+			dependencies = ();
+			name = CPAQuotaTests;
+			packageProductDependencies = (
+				A70000000000000000000003 /* CPAQuotaKit */,
+				A70000000000000000000004 /* CPAQuotaUI */,
+			);
+			productName = CPAQuotaTests;
+			productReference = A20000000000000000000018 /* CPAQuotaTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -78,6 +154,7 @@
 				LastUpgradeCheck = 1600;
 				TargetAttributes = {
 					A50000000000000000000001 = { CreatedOnToolsVersion = 16.0; };
+					A50000000000000000000002 = { CreatedOnToolsVersion = 16.0; };
 			};
 			};
 			buildConfigurationList = A80000000000000000000002 /* Build configuration list for PBXProject "CPAQuota" */;
@@ -93,6 +170,7 @@
 			projectRoot = "";
 			targets = (
 				A50000000000000000000001 /* CPAQuota */,
+				A50000000000000000000002 /* CPAQuotaTests */,
 			);
 		};
 /* End PBXProject section */
@@ -106,10 +184,38 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A30000000000000000000005 /* CPAQuotaTests Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000006 /* CPAClientTests.swift in Sources */,
+				A10000000000000000000007 /* CPAQuotaStoreTests.swift in Sources */,
+				A10000000000000000000008 /* CPAQuotaUITests.swift in Sources */,
+				A10000000000000000000009 /* CoreModelTests.swift in Sources */,
+				A1000000000000000000000A /* CredentialStoreTests.swift in Sources */,
+				A1000000000000000000000B /* HTTPTransportTests.swift in Sources */,
+				A1000000000000000000000C /* IntegrationPresentationRegressionTests.swift in Sources */,
+				A1000000000000000000000D /* IntegrationSessionRegressionTests.swift in Sources */,
+				A1000000000000000000000E /* PublicInterfaceTests.swift in Sources */,
+				A1000000000000000000000F /* QuotaParsingTests.swift in Sources */,
+				A10000000000000000000010 /* ReviewRegressionTests.swift in Sources */,
+				A10000000000000000000011 /* ScenarioTransport.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXResourcesBuildPhase section */
 		A30000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000004 /* Assets.xcassets in Resources */,
+				A10000000000000000000005 /* PrivacyInfo.xcprivacy in Resources */,
+				);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A30000000000000000000006 /* CPAQuotaTests Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = ();
@@ -123,6 +229,7 @@
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ENABLE_MODULES = YES;
+				ENABLE_TESTABILITY = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 6.0;
@@ -143,21 +250,22 @@
 		A80000000000000000000005 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGNING_REQUIRED = NO;
 				CODE_SIGN_IDENTITY = "";
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 					INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "CPA Quota";
 				INFOPLIST_KEY_CFBundleIdentifier = icu.nahida.cpaquota;
-				INFOPLIST_KEY_CFBundleShortVersionString = 1.0.0;
-				INFOPLIST_KEY_CFBundleVersion = 1;
+				MARKETING_VERSION = 1.0.0;
+				CURRENT_PROJECT_VERSION = 1;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				PRODUCT_BUNDLE_IDENTIFIER = icu.nahida.cpaquota;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SUPPORTED_PLATFORMS = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -166,23 +274,63 @@
 		A80000000000000000000006 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGNING_REQUIRED = NO;
 				CODE_SIGN_IDENTITY = "";
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 					INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "CPA Quota";
 				INFOPLIST_KEY_CFBundleIdentifier = icu.nahida.cpaquota;
-				INFOPLIST_KEY_CFBundleShortVersionString = 1.0.0;
-				INFOPLIST_KEY_CFBundleVersion = 1;
+				MARKETING_VERSION = 1.0.0;
+				CURRENT_PROJECT_VERSION = 1;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				PRODUCT_BUNDLE_IDENTIFIER = icu.nahida.cpaquota;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SUPPORTED_PLATFORMS = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		A80000000000000000000007 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_IDENTITY = "";
+				ENABLE_TESTABILITY = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = icu.nahida.cpaquota.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "";
+			};
+			name = Debug;
+		};
+		A80000000000000000000008 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_IDENTITY = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = icu.nahida.cpaquota.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "";
 			};
 			name = Release;
 		};
@@ -207,6 +355,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		A80000000000000000000009 /* Build configuration list for PBXNativeTarget "CPAQuotaTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A80000000000000000000007 /* Debug */,
+				A80000000000000000000008 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -222,6 +379,8 @@
 /* Begin XCSwiftPackageProductDependency section */
 		A70000000000000000000001 /* CPAQuotaKit */ = {isa = XCSwiftPackageProductDependency; package = A90000000000000000000001 /* XCLocalSwiftPackageReference ".." */; productName = CPAQuotaKit; };
 		A70000000000000000000002 /* CPAQuotaUI */ = {isa = XCSwiftPackageProductDependency; package = A90000000000000000000001 /* XCLocalSwiftPackageReference ".." */; productName = CPAQuotaUI; };
+		A70000000000000000000003 /* CPAQuotaKit */ = {isa = XCSwiftPackageProductDependency; package = A90000000000000000000001 /* XCLocalSwiftPackageReference ".." */; productName = CPAQuotaKit; };
+		A70000000000000000000004 /* CPAQuotaUI */ = {isa = XCSwiftPackageProductDependency; package = A90000000000000000000001 /* XCLocalSwiftPackageReference ".." */; productName = CPAQuotaUI; };
 /* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = A60000000000000000000001 /* Project object */;

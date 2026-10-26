@@ -38,6 +38,25 @@ jobs:
           printf 'iOS SDK: %s\n' "$SDK_VERSION"
           python3 -c 'import sys; v=tuple(map(int, sys.argv[1].split("."))); sys.exit(0 if v >= (26, 0) else "iOS SDK 26.0 or newer is required")' "$SDK_VERSION"
 
+      - name: Run iOS simulator tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          SIMULATOR_UDID="$(xcrun simctl list devices available --json | python3 -c 'import json, sys; devices=json.load(sys.stdin).get("devices", {}); candidates=[device for runtime, group in devices.items() if runtime.startswith("com.apple.CoreSimulator.SimRuntime.iOS-") for device in group if device.get("isAvailable") and device.get("name", "").startswith("iPhone")]; sys.exit("No available iPhone simulator was found") if not candidates else print(candidates[0]["udid"])')"
+          test -n "$SIMULATOR_UDID"
+          xcodebuild test \
+            -project Apple/CPAQuota.xcodeproj \
+            -scheme CPAQuota \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -derivedDataPath "$RUNNER_TEMP/TestDerivedData" \
+            -parallel-testing-enabled NO \
+            -collect-test-diagnostics never \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= \
+            2>&1 | tee "$RUNNER_TEMP/swift-test.log"
+
       - name: Create unsigned archive
         shell: bash
         run: |
@@ -75,7 +94,7 @@ jobs:
             -C "$RUNNER_TEMP" CPAQuota.xcarchive
           cd "$RUNNER_TEMP"
           shasum -a 256 CPAQuota-unsigned.xcarchive.tar.gz archive-validation.json \
-            swift-sources.sha256 xcodebuild-archive.log > SHA256SUMS
+            swift-sources.sha256 xcodebuild-archive.log swift-test.log > SHA256SUMS
 
       - name: Save unsigned archive to private draft release
         shell: bash
@@ -91,11 +110,12 @@ jobs:
             "$RUNNER_TEMP/archive-validation.json" \
             "$RUNNER_TEMP/swift-sources.sha256" \
             "$RUNNER_TEMP/xcodebuild-archive.log" \
+            "$RUNNER_TEMP/swift-test.log" \
             "$RUNNER_TEMP/SHA256SUMS" \
             --repo "$GH_REPO" \
             --target "$GITHUB_SHA" \
             --draft \
             --title "CPA Quota unsigned CI $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT" \
-            --notes "Private unsigned build verification archive. Not installable or uploaded to TestFlight. Source commit: $GITHUB_SHA. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID."
+            --notes "Private CI build verification archive. Includes xcodebuild iOS Simulator test results. Unsigned; not uploaded to TestFlight. Source commit: $GITHUB_SHA. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID."
           gh release view "$RELEASE_TAG" --repo "$GH_REPO" \
             --json isDraft,tagName,targetCommitish,assets,url

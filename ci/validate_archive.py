@@ -158,6 +158,44 @@ def collect_swift_hashes(source_root, manifest_path, expected_count):
     return len(candidates)
 
 
+def is_nonempty_png(path):
+    try:
+        with path.open("rb") as stream:
+            return path.stat().st_size > 0 and stream.read(8) == b"\x89PNG\r\n\x1a\n"
+    except OSError:
+        return False
+
+
+def primary_icon_files(info, key, app):
+    icons = info.get(key)
+    if not isinstance(icons, dict):
+        raise ValueError(f"{key} is missing")
+    primary = icons.get("CFBundlePrimaryIcon")
+    if not isinstance(primary, dict) or primary.get("CFBundleIconName") != "AppIcon":
+        raise ValueError(f"{key} does not declare the AppIcon primary icon")
+    files = primary.get("CFBundleIconFiles")
+    if not isinstance(files, list) or not files or any(not isinstance(name, str) for name in files):
+        raise ValueError(f"{key} has no compiled icon file declarations")
+
+    resolved_files = []
+    suffixes = ("", "@2x", "@3x", "~ipad", "@2x~ipad", "@3x~ipad", "~ipad@2x", "~ipad@3x")
+    for name in files:
+        declared_name = Path(name).name
+        stem = declared_name[:-4] if declared_name.lower().endswith(".png") else declared_name
+        candidates = {declared_name}
+        candidates.update(f"{stem}{suffix}.png" for suffix in suffixes)
+        matches = sorted(
+            candidate
+            for candidate in candidates
+            if candidate.lower().endswith(".png")
+            and is_nonempty_png(app / candidate)
+        )
+        if not matches:
+            raise ValueError(f"{key} icon {name!r} has no non-empty matching PNG file")
+        resolved_files.append({"declared": name, "matchedPNGFiles": matches})
+    return resolved_files
+
+
 def validate_archive(archive_path):
     products = archive_path / "Products" / "Applications"
     apps = sorted(products.glob("*.app"))
@@ -169,6 +207,12 @@ def validate_archive(archive_path):
 
     if info.get("CFBundlePackageType") != "APPL":
         raise ValueError("CFBundlePackageType is not APPL")
+    short_version = info.get("CFBundleShortVersionString")
+    if short_version != "1.0.0":
+        raise ValueError(f"unexpected CFBundleShortVersionString: {short_version!r}")
+    build_version = info.get("CFBundleVersion")
+    if build_version != "1":
+        raise ValueError(f"unexpected CFBundleVersion: {build_version!r}")
     bundle_id = info.get("CFBundleIdentifier")
     if bundle_id != "icu.nahida.cpaquota":
         raise ValueError(f"unexpected bundle identifier: {bundle_id!r}")
@@ -177,6 +221,24 @@ def validate_archive(archive_path):
         raise ValueError(f"minimum iOS version is below 17.0: {minimum_system!r}")
     if version_tuple(minimum_system) != (17, 0):
         raise ValueError(f"minimum iOS version must be 17.0, found {minimum_system!r}")
+
+    iphone_orientations = set(info.get("UISupportedInterfaceOrientations", []))
+    expected_iphone_orientations = {
+        "UIInterfaceOrientationPortrait",
+        "UIInterfaceOrientationLandscapeLeft",
+        "UIInterfaceOrientationLandscapeRight",
+    }
+    if iphone_orientations != expected_iphone_orientations:
+        raise ValueError(f"unexpected iPhone orientations: {sorted(iphone_orientations)}")
+    ipad_orientations = set(info.get("UISupportedInterfaceOrientations~ipad", []))
+    expected_ipad_orientations = {
+        "UIInterfaceOrientationPortrait",
+        "UIInterfaceOrientationPortraitUpsideDown",
+        "UIInterfaceOrientationLandscapeLeft",
+        "UIInterfaceOrientationLandscapeRight",
+    }
+    if ipad_orientations != expected_ipad_orientations:
+        raise ValueError(f"unexpected iPad orientations: {sorted(ipad_orientations)}")
 
     executable_name = info.get("CFBundleExecutable")
     if not executable_name:
@@ -191,6 +253,28 @@ def validate_archive(archive_path):
         raise ValueError(f"Mach-O SDK is below iOS 26.0: {macho['sdk']}")
     if not any("SwiftUI.framework/SwiftUI" in item for item in macho["linkedLibraries"]):
         raise ValueError("SwiftUI is not linked into the archived executable")
+    assets_catalog = app / "Assets.car"
+    if not assets_catalog.is_file() or assets_catalog.stat().st_size == 0:
+        raise ValueError("compiled Assets.car is missing or empty")
+    iphone_icon_files = primary_icon_files(info, "CFBundleIcons", app)
+    ipad_icon_files = primary_icon_files(info, "CFBundleIcons~ipad", app)
+
+    privacy_path = app / "PrivacyInfo.xcprivacy"
+    with privacy_path.open("rb") as stream:
+        privacy = plistlib.load(stream)
+    expected_accessed_apis = [{
+        "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryUserDefaults",
+        "NSPrivacyAccessedAPITypeReasons": ["CA92.1"],
+    }]
+    if privacy.get("NSPrivacyTracking") is not False:
+        raise ValueError("privacy manifest must disable tracking")
+    if privacy.get("NSPrivacyTrackingDomains") != []:
+        raise ValueError("privacy manifest tracking domains must be empty")
+    if privacy.get("NSPrivacyCollectedDataTypes") != []:
+        raise ValueError("privacy manifest collected data types must be empty")
+    if privacy.get("NSPrivacyAccessedAPITypes") != expected_accessed_apis:
+        raise ValueError("privacy manifest must declare only UserDefaults with reason CA92.1")
+
     profiles = list(app.rglob("embedded.mobileprovision"))
     if profiles:
         raise ValueError("archive contains an embedded.mobileprovision")
@@ -202,6 +286,19 @@ def validate_archive(archive_path):
         "bundleIdentifier": bundle_id,
         "packageType": info["CFBundlePackageType"],
         "minimumOSVersion": minimum_system,
+        "marketingVersion": short_version,
+        "buildVersion": build_version,
+        "supportedInterfaceOrientations": sorted(iphone_orientations),
+        "supportedIPadInterfaceOrientations": sorted(ipad_orientations),
+        "assetCatalogCompiled": True,
+        "appIcon": {"name": "AppIcon", "files": iphone_icon_files},
+        "ipadAppIcon": {"name": "AppIcon", "files": ipad_icon_files},
+        "privacyManifest": {
+            "tracking": privacy["NSPrivacyTracking"],
+            "trackingDomains": privacy["NSPrivacyTrackingDomains"],
+            "collectedDataTypes": privacy["NSPrivacyCollectedDataTypes"],
+            "accessedAPIs": privacy["NSPrivacyAccessedAPITypes"],
+        },
         "architectures": macho["architectures"],
         "platform": "iOS" if macho["platform"] == IOS_PLATFORM else macho["platform"],
         "sdkVersion": ".".join(map(str, macho["sdk"])),
