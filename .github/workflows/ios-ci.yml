@@ -1,0 +1,85 @@
+name: iOS unsigned archive
+
+on:
+  push:
+    branches:
+      - ci/macos-build-20261026
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-archive-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  archive:
+    runs-on: macos-15
+    timeout-minutes: 10
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Report toolchain versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun swift --version
+          SDK_VERSION="$(xcrun --sdk iphoneos --show-sdk-version)"
+          printf 'iOS SDK: %s\n' "$SDK_VERSION"
+          python3 -c 'import sys; v=tuple(map(int, sys.argv[1].split("."))); sys.exit(0 if v >= (26, 0) else "iOS SDK 26.0 or newer is required")' "$SDK_VERSION"
+
+      - name: Create unsigned archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE_PATH="$RUNNER_TEMP/CPAQuota.xcarchive"
+          LOG_PATH="$RUNNER_TEMP/xcodebuild-archive.log"
+          xcodebuild archive \
+            -project Apple/CPAQuota.xcodeproj \
+            -scheme CPAQuota \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$ARCHIVE_PATH" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= \
+            2>&1 | tee "$LOG_PATH"
+
+      - name: Validate archive and hash Swift sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I ci/validate_archive.py \
+            --archive "$RUNNER_TEMP/CPAQuota.xcarchive" \
+            --source-root . \
+            --report "$RUNNER_TEMP/archive-validation.json" \
+            --sha-manifest "$RUNNER_TEMP/swift-sources.sha256" \
+            --expected-swift-count 39
+
+      - name: Package unsigned archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -czf "$RUNNER_TEMP/CPAQuota-unsigned.xcarchive.tar.gz" \
+            -C "$RUNNER_TEMP" CPAQuota.xcarchive
+
+      - name: Upload private build artifacts
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: cpa-quota-ios-unsigned-archive
+          path: |
+            ${{ runner.temp }}/CPAQuota-unsigned.xcarchive.tar.gz
+            ${{ runner.temp }}/archive-validation.json
+            ${{ runner.temp }}/swift-sources.sha256
+            ${{ runner.temp }}/xcodebuild-archive.log
+          retention-days: 3
+          if-no-files-found: error
