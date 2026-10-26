@@ -15,6 +15,9 @@ concurrency:
 
 jobs:
   archive:
+    if: github.repository == 'rinmashiro0529/cpa-quota-ios' && github.ref == 'refs/heads/ci/macos-build-20261026'
+    permissions:
+      contents: write
     runs-on: macos-15
     timeout-minutes: 10
     env:
@@ -70,16 +73,29 @@ jobs:
           set -euo pipefail
           tar -czf "$RUNNER_TEMP/CPAQuota-unsigned.xcarchive.tar.gz" \
             -C "$RUNNER_TEMP" CPAQuota.xcarchive
+          cd "$RUNNER_TEMP"
+          shasum -a 256 CPAQuota-unsigned.xcarchive.tar.gz archive-validation.json \
+            swift-sources.sha256 xcodebuild-archive.log > SHA256SUMS
 
-      - name: Upload private build artifacts
-        if: success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: cpa-quota-ios-unsigned-archive
-          path: |
-            ${{ runner.temp }}/CPAQuota-unsigned.xcarchive.tar.gz
-            ${{ runner.temp }}/archive-validation.json
-            ${{ runner.temp }}/swift-sources.sha256
-            ${{ runner.temp }}/xcodebuild-archive.log
-          retention-days: 3
-          if-no-files-found: error
+      - name: Save unsigned archive to private draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ci-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          test "$(gh repo view "$GH_REPO" --json isPrivate --jq '.isPrivate')" = true
+          gh release create "$RELEASE_TAG" \
+            "$RUNNER_TEMP/CPAQuota-unsigned.xcarchive.tar.gz" \
+            "$RUNNER_TEMP/archive-validation.json" \
+            "$RUNNER_TEMP/swift-sources.sha256" \
+            "$RUNNER_TEMP/xcodebuild-archive.log" \
+            "$RUNNER_TEMP/SHA256SUMS" \
+            --repo "$GH_REPO" \
+            --target "$GITHUB_SHA" \
+            --draft \
+            --title "CPA Quota unsigned CI $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT" \
+            --notes "Private unsigned build verification archive. Not installable or uploaded to TestFlight. Source commit: $GITHUB_SHA. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID."
+          gh release view "$RELEASE_TAG" --repo "$GH_REPO" \
+            --json isDraft,tagName,targetCommitish,assets,url
