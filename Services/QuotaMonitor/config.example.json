@@ -1,0 +1,41 @@
+{
+  "listen": "127.0.0.1:8787",
+  "state_path": ".state/state.enc",
+  "state_key_env": "QUOTA_MONITOR_STATE_KEY",
+  "dry_run": true,
+  "sources": [
+    {
+      "id": "personal",
+      "base_url": "https://cpa.example.invalid",
+      "management_key_env": "QUOTA_MONITOR_CPA_KEY",
+      "accounts": [
+        {
+          "id": "replace-with-allowlisted-cpa-account-id",
+          "safe_id": "account-1",
+          "label": "账号1",
+          "provider": "codex",
+          "reader": "codex",
+          "selection": "primary",
+          "window_id": "primary",
+          "window_label": "主要窗口"
+        }
+      ]
+    }
+  ],
+  "principals": [
+    {
+      "id": "personal-device",
+      "bearer_token_env": "QUOTA_MONITOR_BRIDGE_TOKEN",
+      "source_accounts": {
+        "personal": ["replace-with-allowlisted-cpa-account-id"]
+      }
+    }
+  ],
+  "apns": {
+    "team_id": "",
+    "key_id": "",
+    "bundle_id": "icu.nahida.cpaquota",
+    "environment": "sandbox",
+    "private_key_env": "QUOTA_MONITOR_APNS_KEY"
+  }
+}

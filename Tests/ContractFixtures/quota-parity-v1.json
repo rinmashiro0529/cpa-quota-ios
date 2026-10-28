@@ -1,0 +1,34 @@
+[
+  {
+    "name": "codex-over-limit-primary-stays-independent",
+    "provider": "codex",
+    "body": {"rate_limit": {"primary_window": {"used_percent": 125, "limit_window_seconds": 18000, "reset_at": 1900000000}, "secondary_window": {"used_percent": 9, "limit_window_seconds": 604800, "reset_at": 1900600000}}},
+    "expected_primary_remaining": 0,
+    "expected_secondary_remaining": 0.91,
+    "must_not_add_windows": true
+  },
+  {
+    "name": "plugin-summary-only-is-not-zero-percent",
+    "provider": "plugin",
+    "body": {"subscription": {"plan": "fixture"}, "summary": [{"key": "requests", "label": "Requests remaining", "value": 123, "unit": "requests"}]},
+    "expected_remaining_fraction": null,
+    "expected_value": 123,
+    "expected_unit": "requests"
+  },
+  {
+    "name": "xai-monthly-percent-and-cents",
+    "provider": "xai",
+    "body": {"config": {"monthlyLimit": 10000, "used": 2500, "onDemandCap": 0}},
+    "expected_remaining_fraction": 0.75,
+    "expected_monthly_limit_usd": 100,
+    "expected_used_usd": 25
+  },
+  {
+    "name": "plugin-window-with-missing-ratio-is-unknown",
+    "provider": "plugin",
+    "body": {"groups": [{"displayName": "fixture", "buckets": [{"window": "daily", "description": "Daily quota"}]}]},
+    "expected_remaining_fraction": null,
+    "expected_value": null,
+    "must_not_infer_zero_or_unlimited": true
+  }
+]

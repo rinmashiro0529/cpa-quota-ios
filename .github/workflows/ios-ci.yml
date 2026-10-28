@@ -84,7 +84,7 @@ jobs:
             --source-root . \
             --report "$RUNNER_TEMP/archive-validation.json" \
             --sha-manifest "$RUNNER_TEMP/swift-sources.sha256" \
-            --expected-swift-count 39
+            --expected-swift-count "$(python3 -I ci/validate_source_layout.py --root . --emit-count)"
 
       - name: Package unsigned archive
         shell: bash

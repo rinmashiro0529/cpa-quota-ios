@@ -187,16 +187,20 @@ struct CPAClientTests {
         #expect(await transport.quotaRequestCount() <= 3)
     }
 
-    @Test func explicitSuccessfulReloadClearsTheAuthorizationCircuit() async throws {
+    @Test func explicitSuccessfulReloadDoesNotClearTheAuthorizationCircuit() async throws {
         let transport = try ScenarioTransport(accounts: [FixtureAccount("a")])
         let client = try client(transport)
         await transport.setReply(FixtureReply(outerStatus: 401), for: "index-a")
         do { _ = try await client.refreshQuota(for: "a", force: true) }
         catch { #expect(CPAError.normalize(error).kind == .managementUnauthorized) }
         await transport.setReply(FixtureReply(), for: "index-a")
-        _ = try await client.loadAccounts()
-        let snapshot = try await client.refreshQuota(for: "a", force: true)
-        #expect(snapshot.windows.count == 2)
+        do {
+            _ = try await client.loadAccounts()
+            Issue.record("Expected retained management authorization block")
+        } catch {
+            #expect(CPAError.normalize(error).kind == .managementUnauthorized)
+        }
+        #expect(await transport.capturedRequests().count == 3)
     }
 
     @Test func zeroCacheLifetimeRevalidatesEveryRead() async throws {

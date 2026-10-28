@@ -431,9 +431,9 @@ public final class CPAQuotaSession {
     @ObservationIgnored private let clientFactory: @Sendable (CPAServer, ManagementKey) -> CPAClient
     @ObservationIgnored private var operationGeneration: UInt64 = 0
     @ObservationIgnored private var pendingServer: CPAServer?
+    @ObservationIgnored private var pendingStore: CPAQuotaStore?
     @ObservationIgnored private var credentialIntentVersion: UInt64 = 0
     @ObservationIgnored private var progressRoundID: UInt64 = 0
-    @ObservationIgnored private var progressBaseline: [String: QuotaRecord] = [:]
     @ObservationIgnored private var isProgressRoundActive = false
 
     public init(
@@ -540,9 +540,7 @@ public final class CPAQuotaSession {
             guard generation == operationGeneration else { return }
             let client = clientFactory(server, restoredKey)
             let newStore = CPAQuotaStore(client: client)
-            store = newStore
-            currentServer = server
-            isRememberedInKeychain = false
+            pendingStore = newStore
 
             let progressRound = beginProgressRound()
             await newStore.load()
@@ -559,6 +557,7 @@ public final class CPAQuotaSession {
                loadError.kind == .managementUnauthorized || loadError.kind == .managementForbidden {
                 await newStore.cancel()
                 guard generation == operationGeneration else { return }
+                pendingStore = nil
                 store = nil
                 currentServer = nil
                 isRememberedInKeychain = false
@@ -573,6 +572,9 @@ public final class CPAQuotaSession {
                 return
             }
 
+            pendingStore = nil
+            store = newStore
+            currentServer = server
             pendingServer = nil
             isRememberedInKeychain = true
             authState = .connected(server: server, isRememberedInKeychain: true)
@@ -614,6 +616,7 @@ public final class CPAQuotaSession {
             presentStorageFailure(failure)
         }
         pendingServer = nil
+        pendingStore = nil
         store = nil
         currentServer = nil
         isRememberedInKeychain = false
@@ -645,8 +648,10 @@ public final class CPAQuotaSession {
         let generation = operationGeneration
         pendingServer = server
         authState = .connecting(serverIdentifier: server.identifier)
-        if let existingStore = store {
-            await existingStore.cancel()
+        let previousCandidate = pendingStore
+        pendingStore = nil
+        if let previousCandidate {
+            await previousCandidate.cancel()
         }
         guard generation == operationGeneration else { return }
 
@@ -661,9 +666,7 @@ public final class CPAQuotaSession {
 
         let client = clientFactory(server, managementKey)
         let newStore = CPAQuotaStore(client: client)
-        self.store = newStore
-        self.currentServer = server
-        self.isRememberedInKeychain = false
+        pendingStore = newStore
 
         let progressRound = beginProgressRound()
         await newStore.load()
@@ -688,11 +691,9 @@ public final class CPAQuotaSession {
             } else {
                 connectionFormError = loadError
             }
-            self.authState = .unconfigured
-            self.store = nil
-            self.currentServer = nil
-            self.isRememberedInKeychain = false
+            pendingStore = nil
             pendingServer = nil
+            restoreActiveAuthState()
             return
         }
 
@@ -746,6 +747,10 @@ public final class CPAQuotaSession {
             updateSavedServer(nil)
         }
 
+        let previousStore = store
+        self.store = newStore
+        self.currentServer = server
+        pendingStore = nil
         self.serverAddressDraft = server.identifier
         self.managementKeyDraft = ""
         self.isRememberedInKeychain = savedToKeychain
@@ -753,6 +758,15 @@ public final class CPAQuotaSession {
         self.authState = .connected(server: server, isRememberedInKeychain: savedToKeychain)
         self.isPresentingConnectionSheet = false
         _ = await credentialCoordinator.finalize(commitIntent.version)
+        await previousStore?.cancel()
+    }
+
+    private func restoreActiveAuthState() {
+        if let currentServer, store != nil {
+            authState = .connected(server: currentServer, isRememberedInKeychain: isRememberedInKeychain)
+        } else {
+            authState = .unconfigured
+        }
     }
 
     private func abandonConnect(
@@ -776,10 +790,8 @@ public final class CPAQuotaSession {
             presentStorageFailure(failure)
         }
         pendingServer = nil
-        store = nil
-        currentServer = nil
-        isRememberedInKeychain = false
-        authState = .unconfigured
+        pendingStore = nil
+        restoreActiveAuthState()
     }
 
     public func refreshAll(force: Bool = true) async {
@@ -788,6 +800,20 @@ public final class CPAQuotaSession {
         let round = ownsRound ? beginProgressRound() : 0
         await store.refresh(force: force)
         if ownsRound { endProgressRound(round) }
+    }
+
+    public func makeCAPUsageClient() async -> CAPUsageClient? {
+        guard let activeStore = store, currentServer != nil else { return nil }
+        let generation = operationGeneration
+        let client = await activeStore.makeCAPUsageClient()
+        guard generation == operationGeneration, store === activeStore, currentServer != nil,
+              !Task.isCancelled else { return nil }
+        return client
+    }
+
+    public func refreshAccount(_ accountID: String, force: Bool = true) async {
+        guard let store else { return }
+        await store.refresh(accountID: accountID, force: force)
     }
 
     public func loadInitialIfNeeded() async {
@@ -809,7 +835,6 @@ public final class CPAQuotaSession {
 
     private func beginProgressRound() -> UInt64 {
         progressRoundID &+= 1
-        progressBaseline = store?.records ?? [:]
         isProgressRoundActive = true
         return progressRoundID
     }
@@ -817,7 +842,6 @@ public final class CPAQuotaSession {
     private func endProgressRound(_ id: UInt64) {
         guard progressRoundID == id else { return }
         isProgressRoundActive = false
-        progressBaseline = [:]
     }
 
     public func cancelActiveOperation() async {
@@ -833,15 +857,13 @@ public final class CPAQuotaSession {
             if let failure = outcome.failure {
                 presentStorageFailure(failure)
             }
-            if let store {
-                await store.cancel()
+            if let pendingStore {
+                await pendingStore.cancel()
                 guard generation == operationGeneration else { return }
             }
-            self.store = nil
-            currentServer = nil
+            pendingStore = nil
             pendingServer = nil
-            isRememberedInKeychain = false
-            authState = .unconfigured
+            restoreActiveAuthState()
             return
         }
         guard let store else { return }
@@ -878,6 +900,11 @@ public final class CPAQuotaSession {
             return
         }
 
+        if let candidate = pendingStore {
+            await candidate.cancel()
+            guard generation == operationGeneration else { return }
+            pendingStore = nil
+        }
         if let existingStore = store {
             await existingStore.cancel()
             guard generation == operationGeneration else { return }
@@ -899,6 +926,10 @@ public final class CPAQuotaSession {
 
     public var records: [String: QuotaRecord] {
         store?.records ?? [:]
+    }
+
+    public var isWorkspaceReady: Bool {
+        currentServer != nil && store != nil
     }
 
     public var isBusy: Bool {
@@ -928,19 +959,11 @@ public final class CPAQuotaSession {
     }
 
     public func completedEnabledAccountCount() -> Int {
-        let enabled = accounts.filter { !$0.isDisabled }
-        guard isProgressRoundActive else {
-            return enabled.filter { account in
-                guard let record = records[account.id] else { return false }
-                return record.snapshot?.source == .live || record.error != nil
-            }.count
+        let enabledIDs = Set(accounts.filter { !$0.isDisabled }.map(\.id))
+        if let operation = store?.refreshOperation {
+            return operation.processed.intersection(enabledIDs).count
         }
-        return enabled.filter { account in
-            guard let record = records[account.id] else { return false }
-            guard record.snapshot?.source == .live || record.error != nil else { return false }
-            guard let baseline = progressBaseline[account.id] else { return true }
-            return record.snapshot != baseline.snapshot || record.error != baseline.error
-        }.count
+        return 0
     }
 
     public func dynamicIslandState(now: Date = Date()) -> DynamicIslandState {
