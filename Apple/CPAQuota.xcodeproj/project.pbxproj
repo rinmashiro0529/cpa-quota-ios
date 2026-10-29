@@ -46,6 +46,7 @@
 			B10000000000000000000012 /* CAPUsageRequestPageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000012 /* CAPUsageRequestPageTests.swift */; };
 			B10000000000000000000013 /* CAPUsageResourceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000013 /* CAPUsageResourceTests.swift */; };
 			B10000000000000000000014 /* CAPUsageStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000014 /* CAPUsageStoreTests.swift */; };
+			B10000000000000000000015 /* FrontendCloudIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000015 /* FrontendCloudIntegrationTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -88,6 +89,7 @@
 			B20000000000000000000012 /* CAPUsageRequestPageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/CAPUsageRequestPageTests.swift; sourceTree = "<group>"; };
 			B20000000000000000000013 /* CAPUsageResourceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/CAPUsageResourceTests.swift; sourceTree = "<group>"; };
 			B20000000000000000000014 /* CAPUsageStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/CAPUsageStoreTests.swift; sourceTree = "<group>"; };
+			B20000000000000000000015 /* FrontendCloudIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/FrontendCloudIntegrationTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -152,6 +154,7 @@
 				B20000000000000000000012 /* CAPUsageRequestPageTests.swift */,
 				B20000000000000000000013 /* CAPUsageResourceTests.swift */,
 				B20000000000000000000014 /* CAPUsageStoreTests.swift */,
+				B20000000000000000000015 /* FrontendCloudIntegrationTests.swift */,
 				A40000000000000000000002 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -283,6 +286,7 @@
 				B10000000000000000000012 /* CAPUsageRequestPageTests.swift in Sources */,
 				B10000000000000000000013 /* CAPUsageResourceTests.swift in Sources */,
 				B10000000000000000000014 /* CAPUsageStoreTests.swift in Sources */,
+				B10000000000000000000015 /* FrontendCloudIntegrationTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

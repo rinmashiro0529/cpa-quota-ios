@@ -409,6 +409,9 @@ public final class CPAQuotaSession {
     public var selectedAccountIDForDetail: String?
     public var isPresentingConnectionSheet = false
 
+    public let capUsageCoordinator = CAPUsageWorkspaceCoordinator()
+    public let monitoringCoordinator = MonitoringWorkspaceCoordinator()
+
     public var serverAddressDraft: String = ""
     public var managementKeyDraft: String = ""
     public var rememberCredentialsDraft: Bool = true
@@ -578,6 +581,10 @@ public final class CPAQuotaSession {
             pendingServer = nil
             isRememberedInKeychain = true
             authState = .connected(server: server, isRememberedInKeychain: true)
+            let capClient = await makeCAPUsageClient()
+            if generation == operationGeneration {
+                capUsageCoordinator.bind(client: capClient)
+            }
         } catch let error as CPAError {
             guard generation == operationGeneration else { return }
             if Task.isCancelled {
@@ -759,6 +766,10 @@ public final class CPAQuotaSession {
         self.isPresentingConnectionSheet = false
         _ = await credentialCoordinator.finalize(commitIntent.version)
         await previousStore?.cancel()
+        let capClient = await makeCAPUsageClient()
+        if generation == operationGeneration {
+            capUsageCoordinator.bind(client: capClient)
+        }
     }
 
     private func restoreActiveAuthState() {
@@ -895,6 +906,7 @@ public final class CPAQuotaSession {
                 store = nil
                 currentServer = nil
                 isRememberedInKeychain = false
+                capUsageCoordinator.teardown()
                 authState = .unconfigured
             }
             return
@@ -917,6 +929,7 @@ public final class CPAQuotaSession {
         statusBannerMessage = nil
         managementKeyDraft = ""
         selectedAccountIDForDetail = nil
+        capUsageCoordinator.teardown()
         authState = .unconfigured
     }
 

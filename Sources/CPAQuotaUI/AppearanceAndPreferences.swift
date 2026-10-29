@@ -55,6 +55,8 @@ public enum QuotaDisplayMode: String, CaseIterable, Codable, Sendable, Identifia
 
 public enum CPAWorkspaceTab: String, CaseIterable, Codable, Sendable, Identifiable {
     case quotas
+    case usage
+    case monitoring
     case accounts
     case connection
 
@@ -63,6 +65,8 @@ public enum CPAWorkspaceTab: String, CaseIterable, Codable, Sendable, Identifiab
     public var title: String {
         switch self {
         case .quotas: "额度总览"
+        case .usage: "CAP用量"
+        case .monitoring: "监控与活动"
         case .accounts: "账号诊断"
         case .connection: "连接管理"
         }
@@ -71,6 +75,8 @@ public enum CPAWorkspaceTab: String, CaseIterable, Codable, Sendable, Identifiab
     public var symbolName: String {
         switch self {
         case .quotas: "chart.bar.xaxis"
+        case .usage: "waveform.path.ecg.rectangle"
+        case .monitoring: "bell.badge.waveform"
         case .accounts: "person.2.badge.gearshape"
         case .connection: "lock.shield"
         }

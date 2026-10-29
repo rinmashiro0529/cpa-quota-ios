@@ -19,13 +19,19 @@ public struct CPAQuotaRootView: View {
 
                 ScrollView {
                     VStack(spacing: 16) {
-                        if case .unconfigured = session.authState, session.activeTab != .connection {
+                        if case .unconfigured = session.authState,
+                           session.activeTab != .connection,
+                           session.activeTab != .monitoring {
                             LoginOnboardingView(session: session, showCloseButton: false)
                                 .padding(.top, 8)
                         } else {
                             switch session.activeTab {
                             case .quotas:
                                 QuotasOverviewTabView(session: session)
+                            case .usage:
+                                CAPUsageTabView(session: session)
+                            case .monitoring:
+                                MonitoringTabView(session: session)
                             case .accounts:
                                 AccountsDiagnosticsTabView(session: session)
                             case .connection:
