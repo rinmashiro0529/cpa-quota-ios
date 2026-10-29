@@ -85,6 +85,9 @@ jobs:
             --report "$RUNNER_TEMP/archive-validation.json" \
             --sha-manifest "$RUNNER_TEMP/swift-sources.sha256" \
             --expected-swift-count "$(python3 -I ci/validate_source_layout.py --root . --emit-count)"
+          python3 -I ci/validate_activity_extension.py \
+            --app "$RUNNER_TEMP/CPAQuota.xcarchive/Products/Applications/CPAQuota.app" \
+            --platform ios
 
       - name: Package unsigned archive
         shell: bash

@@ -122,7 +122,7 @@ public struct AccountsDiagnosticsTabView: View {
                                     .fill(palette.trackBackground)
                             )
 
-                        Text(account.displayName)
+                        Text(QuotaFormatter.maskEmail(account.displayName, enabled: session.maskEmail))
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(palette.textPrimary)
                             .lineLimit(1)

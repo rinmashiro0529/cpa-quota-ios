@@ -28,7 +28,7 @@ def inspect_layout(root):
             native.append(path)
     expected = {p.resolve() for p in (root / "Tests/CPAQuotaKitTests").rglob("*.swift") if p.is_file()}
     candidates = [root / "Package.swift"]
-    for folder in (root / "Sources", root / "Tests"):
+    for folder in (root / "Sources", root / "Tests", root / "Apple"):
         candidates.extend(p for p in folder.rglob("*.swift") if p.is_file())
     unsafe = [str(p.relative_to(root)) for p in candidates if p.is_symlink() or not p.resolve().is_relative_to(root)]
     missing = sorted(str(p.relative_to(root / "Tests/CPAQuotaKitTests")) for p in expected - set(native))

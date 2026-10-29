@@ -137,7 +137,7 @@ public struct AccountDetailSheetView: View {
                     if !account.isDisabled {
                         Button {
                             Task {
-                                await session.refreshAll(force: true)
+                                await session.refreshAccount(account.id, force: true)
                             }
                         } label: {
                             HStack(spacing: 6) {
@@ -195,7 +195,7 @@ public struct AccountDetailSheetView: View {
                         .foregroundStyle(palette.textSecondary)
                 }
 
-                Text(account.displayName)
+                Text(QuotaFormatter.maskEmail(account.displayName, enabled: session.maskEmail))
                     .font(.system(size: 22, weight: .semibold, design: .serif))
                     .foregroundStyle(palette.textPrimary)
 

@@ -154,7 +154,9 @@ public struct QuotasOverviewTabView: View {
                     }
                     .buttonStyle(.plain)
 
-                    if pres.remainingCooldownSeconds(at: context.date) == nil {
+                    if pres.kind != .managementUnauthorized,
+                       pres.kind != .managementForbidden,
+                       pres.remainingCooldownSeconds(at: context.date) == nil {
                         Button {
                             Task { await session.loadInitialIfNeeded() }
                         } label: {
@@ -395,7 +397,7 @@ public struct AccountQuotaCardView: View {
                                 .fill(palette.accentSoft)
                         )
 
-                    Text(account.displayName)
+                    Text(QuotaFormatter.maskEmail(account.displayName, enabled: maskEmail))
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(palette.textPrimary)
                         .lineLimit(1)

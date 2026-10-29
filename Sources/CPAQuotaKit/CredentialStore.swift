@@ -9,26 +9,41 @@ public protocol CredentialStore: Sendable {
     func remove(for server: CPAServer) async throws
 }
 
-public actor MemoryCredentialStore: CredentialStore {
-    private var keys: [String: ManagementKey] = [:]
+/// Internal storage for versioned credentials that include non-secret binding metadata.
+/// This does not relax ManagementKey's public 4096-byte input contract.
+protocol CredentialRecordStore: CredentialStore {
+    func loadRecord(for server: CPAServer) async throws -> Data?
+    func saveRecord(_ data: Data, for server: CPAServer) async throws
+}
+
+public actor MemoryCredentialStore: CredentialRecordStore {
+    private var keys: [String: Data] = [:]
 
     public init() {}
 
     public func load(for server: CPAServer) async throws -> ManagementKey? {
-        keys[server.identifier]
+        guard let data = keys[server.identifier], let text = String(data: data, encoding: .utf8) else { return nil }
+        return try ManagementKey(text)
     }
 
     public func save(_ key: ManagementKey, for server: CPAServer) async throws {
-        keys[server.identifier] = key
+        keys[server.identifier] = Data(key.value.utf8)
     }
 
     public func remove(for server: CPAServer) async throws {
         keys.removeValue(forKey: server.identifier)
     }
+
+    func loadRecord(for server: CPAServer) async throws -> Data? { keys[server.identifier] }
+
+    func saveRecord(_ data: Data, for server: CPAServer) async throws {
+        guard data.count <= 16_384 else { throw CPAError(.secureStorageFailure) }
+        keys[server.identifier] = data
+    }
 }
 
 #if canImport(Security)
-public actor KeychainCredentialStore: CredentialStore {
+public actor KeychainCredentialStore: CredentialRecordStore {
     private let service: String
 
     public init(service: String = "CPAQuotaKit.ManagementCredentials") {
@@ -36,6 +51,15 @@ public actor KeychainCredentialStore: CredentialStore {
     }
 
     public func load(for server: CPAServer) async throws -> ManagementKey? {
+        guard let data = try await loadRecord(for: server) else { return nil }
+        guard let text = String(data: data, encoding: .utf8),
+              let key = try? ManagementKey(text) else {
+            throw CPAError(.secureStorageFailure)
+        }
+        return key
+    }
+
+    func loadRecord(for server: CPAServer) async throws -> Data? {
         var query = baseQuery(for: server)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -44,12 +68,10 @@ public actor KeychainCredentialStore: CredentialStore {
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         switch status {
         case errSecSuccess:
-            guard let data = item as? Data,
-                  let text = String(data: data, encoding: .utf8),
-                  let key = try? ManagementKey(text) else {
+            guard let data = item as? Data, data.count <= 16_384 else {
                 throw CPAError(.secureStorageFailure)
             }
-            return key
+            return data
         case errSecItemNotFound:
             return nil
         default:
@@ -58,7 +80,11 @@ public actor KeychainCredentialStore: CredentialStore {
     }
 
     public func save(_ key: ManagementKey, for server: CPAServer) async throws {
-        let data = Data(key.value.utf8)
+        try await saveRecord(Data(key.value.utf8), for: server)
+    }
+
+    func saveRecord(_ data: Data, for server: CPAServer) async throws {
+        guard data.count <= 16_384 else { throw CPAError(.secureStorageFailure) }
         let query = baseQuery(for: server)
 
         let updateStatus = SecItemUpdate(query as CFDictionary,
@@ -121,7 +147,7 @@ public actor KeychainCredentialStore: CredentialStore {
 }
 #else
 // No Security framework: refuse secure storage instead of falling back to plaintext.
-public actor KeychainCredentialStore: CredentialStore {
+public actor KeychainCredentialStore: CredentialRecordStore {
     private let service: String
 
     public init(service: String = "CPAQuotaKit.ManagementCredentials") {
@@ -139,5 +165,8 @@ public actor KeychainCredentialStore: CredentialStore {
     public func remove(for server: CPAServer) async throws {
         throw CPAError(.secureStorageUnavailable)
     }
+
+    func loadRecord(for server: CPAServer) async throws -> Data? { throw CPAError(.secureStorageUnavailable) }
+    func saveRecord(_ data: Data, for server: CPAServer) async throws { throw CPAError(.secureStorageUnavailable) }
 }
 #endif

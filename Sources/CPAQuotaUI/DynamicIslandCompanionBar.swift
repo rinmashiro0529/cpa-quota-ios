@@ -33,6 +33,9 @@ public struct DynamicIslandCompanionBar: View {
                 }
 
                 companionStatusPill(island: island, palette: palette)
+                Text("应用内连接状态栏 · 系统级锁屏/灵动岛实时活动请在「监控」页配置")
+                    .font(.system(size: 9.5, weight: .regular))
+                    .foregroundStyle(palette.textMuted)
             }
             .padding(.horizontal, 16)
             .padding(.top, 4)
