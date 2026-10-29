@@ -65,7 +65,7 @@ public struct ErrorPresentation: Equatable, Sendable {
         case .managementForbidden:
             self.title = "CPA 管理访问受限或暂时封禁"
             self.summary = "远程管理接口拒绝访问或当前 IP 处于临时封禁保护期（HTTP \(error.statusCode ?? 403)）。"
-            self.recoveryAdvice = "请勿连续高频重试；检查服务器管理访问策略或等待封禁期结束后再试。\(snapshotNote)"
+            self.recoveryAdvice = "请勿连续高频重试；检查服务器管理访问策略或等待封禁期结束，然后通过「更新管理密钥或连接」显式重新连接。\(snapshotNote)"
             self.symbolName = "hand.raised.slash"
             self.severity = .critical
             self.preservesManagementKey = true

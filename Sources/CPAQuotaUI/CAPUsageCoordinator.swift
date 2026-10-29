@@ -9,10 +9,12 @@ public final class CAPUsageWorkspaceCoordinator {
     public private(set) var client: CAPUsageClient?
     public private(set) var activeWindow: CAPUsageWindow
     public private(set) var managementStats: CAPUsageStats?
+    public private(set) var managementStatsWindow: CAPUsageWindow?
     public private(set) var managementStatsError: CAPUsageError?
     public private(set) var isLoadingManagementStats = false
 
     public private(set) var requestPage: CAPUsageRequestPage?
+    public private(set) var requestPageWindow: CAPUsageWindow?
     public private(set) var requestPageError: CAPUsageError?
     public private(set) var isLoadingRequestPage = false
     public private(set) var requestPageOffset = 0
@@ -31,6 +33,10 @@ public final class CAPUsageWorkspaceCoordinator {
     @ObservationIgnored private var detailsTask: Task<Void, Never>?
     @ObservationIgnored private var managementTask: Task<Void, Never>?
     @ObservationIgnored private var requestPageTask: Task<Void, Never>?
+    @ObservationIgnored private var overviewRequestID: UUID?
+    @ObservationIgnored private var detailsRequestID: UUID?
+    @ObservationIgnored private var managementRequestID: UUID?
+    @ObservationIgnored private var pageRequestID: UUID?
 
     public init(
         resourceAccess: CAPUsageResourceAccess = .anonymous,
@@ -43,11 +49,12 @@ public final class CAPUsageWorkspaceCoordinator {
 
     public func bind(client: CAPUsageClient?) {
         cancelAll()
-        generation &+= 1
         self.client = client
         self.managementStats = nil
+        self.managementStatsWindow = nil
         self.managementStatsError = nil
         self.requestPage = nil
+        self.requestPageWindow = nil
         self.requestPageError = nil
         self.requestPageOffset = 0
         self.activeWindow = CAPUsageWindow(now: clock())
@@ -64,8 +71,8 @@ public final class CAPUsageWorkspaceCoordinator {
 
     private func rebuildStoreForAccessChange() {
         cancelAll()
-        generation &+= 1
         requestPage = nil
+        requestPageWindow = nil
         requestPageError = nil
         requestPageOffset = 0
         if let client {
@@ -76,6 +83,11 @@ public final class CAPUsageWorkspaceCoordinator {
     }
 
     public func cancelAll() {
+        generation &+= 1
+        overviewRequestID = nil
+        detailsRequestID = nil
+        managementRequestID = nil
+        pageRequestID = nil
         overviewTask?.cancel()
         overviewTask = nil
         detailsTask?.cancel()
@@ -89,8 +101,10 @@ public final class CAPUsageWorkspaceCoordinator {
     }
 
     public func refreshOverview(now: Date? = nil) async {
-        guard let store else { return }
+        guard let store, !Task.isCancelled else { return }
         overviewTask?.cancel()
+        let requestID = UUID()
+        overviewRequestID = requestID
         let window = CAPUsageWindow(now: now ?? clock())
         activeWindow = window
         let currentGen = generation
@@ -98,67 +112,97 @@ public final class CAPUsageWorkspaceCoordinator {
             await store.refresh(window: window)
         }
         overviewTask = task
-        await task.value
-        if currentGen == generation {
+        await withTaskCancellationHandler {
+            await task.value
+        } onCancel: { task.cancel() }
+        if currentGen == generation, overviewRequestID == requestID {
             overviewTask = nil
+            overviewRequestID = nil
         }
     }
 
-    public func refreshDetails(groupOffset: Int = 0, groupLimit: Int = 100) async {
-        guard let store else { return }
+    public func refreshDetails(window: CAPUsageWindow? = nil, groupOffset: Int = 0, groupLimit: Int = 100) async {
+        guard let store, !Task.isCancelled else { return }
         detailsTask?.cancel()
-        let window = store.snapshot?.window ?? activeWindow
+        let requestID = UUID()
+        detailsRequestID = requestID
+        let window = window ?? store.snapshot?.window ?? activeWindow
         let currentGen = generation
         let task = Task { @MainActor in
             await store.refreshDetails(window: window, groupOffset: groupOffset, groupLimit: groupLimit)
         }
         detailsTask = task
-        await task.value
-        if currentGen == generation {
+        await withTaskCancellationHandler {
+            await task.value
+        } onCancel: { task.cancel() }
+        if currentGen == generation, detailsRequestID == requestID {
             detailsTask = nil
+            detailsRequestID = nil
         }
     }
 
     public func refreshManagementStats() async {
-        guard let client else { return }
+        guard let client, !Task.isCancelled else { return }
         managementTask?.cancel()
+        let requestID = UUID()
+        managementRequestID = requestID
         isLoadingManagementStats = true
         managementStatsError = nil
         let window = store?.snapshot?.window ?? activeWindow
         let currentGen = generation
         let task = Task { @MainActor in
+            defer {
+                if self.generation == currentGen, self.managementRequestID == requestID {
+                    self.isLoadingManagementStats = false
+                    self.managementTask = nil
+                    self.managementRequestID = nil
+                }
+            }
             do {
                 let stats = try await client.loadManagementStats(window: window)
-                guard !Task.isCancelled, self.generation == currentGen else { return }
+                guard !Task.isCancelled, self.generation == currentGen,
+                      self.managementRequestID == requestID else { return }
                 self.managementStats = stats
+                self.managementStatsWindow = window
             } catch is CancellationError {
             } catch let error as CAPUsageError {
-                guard self.generation == currentGen else { return }
+                guard !Task.isCancelled, self.generation == currentGen,
+                      self.managementRequestID == requestID else { return }
                 self.managementStatsError = error
             } catch let error as CPAError {
-                guard self.generation == currentGen else { return }
+                guard !Task.isCancelled, self.generation == currentGen,
+                      self.managementRequestID == requestID else { return }
                 self.managementStatsError = .management(error)
             } catch {
-                guard self.generation == currentGen else { return }
+                guard !Task.isCancelled, self.generation == currentGen,
+                      self.managementRequestID == requestID else { return }
                 self.managementStatsError = .network
-            }
-            if self.generation == currentGen {
-                self.isLoadingManagementStats = false
             }
         }
         managementTask = task
-        await task.value
+        await withTaskCancellationHandler {
+            await task.value
+        } onCancel: { task.cancel() }
     }
 
-    public func loadRequestPage(offset: Int = 0, limit: Int = 50) async {
-        guard let client else { return }
+    public func loadRequestPage(window: CAPUsageWindow? = nil, offset: Int = 0, limit: Int = 50) async {
+        guard let client, !Task.isCancelled else { return }
         requestPageTask?.cancel()
+        let requestID = UUID()
+        pageRequestID = requestID
         isLoadingRequestPage = true
         requestPageError = nil
-        let window = store?.snapshot?.window ?? activeWindow
+        let window = window ?? store?.snapshot?.window ?? activeWindow
         let access = resourceAccess
         let currentGen = generation
         let task = Task { @MainActor in
+            defer {
+                if self.generation == currentGen, self.pageRequestID == requestID {
+                    self.isLoadingRequestPage = false
+                    self.requestPageTask = nil
+                    self.pageRequestID = nil
+                }
+            }
             do {
                 let page = try await client.loadRequestPage(
                     window: window,
@@ -166,27 +210,31 @@ public final class CAPUsageWorkspaceCoordinator {
                     limit: limit,
                     access: access
                 )
-                guard !Task.isCancelled, self.generation == currentGen else { return }
+                guard !Task.isCancelled, self.generation == currentGen,
+                      self.pageRequestID == requestID else { return }
                 self.requestPage = page
+                self.requestPageWindow = window
                 self.requestPageOffset = offset
                 self.requestPageLimit = limit
             } catch is CancellationError {
             } catch let error as CAPUsageError {
-                guard self.generation == currentGen else { return }
+                guard !Task.isCancelled, self.generation == currentGen,
+                      self.pageRequestID == requestID else { return }
                 self.requestPageError = error
             } catch let error as CPAError {
-                guard self.generation == currentGen else { return }
+                guard !Task.isCancelled, self.generation == currentGen,
+                      self.pageRequestID == requestID else { return }
                 self.requestPageError = .management(error)
             } catch {
-                guard self.generation == currentGen else { return }
+                guard !Task.isCancelled, self.generation == currentGen,
+                      self.pageRequestID == requestID else { return }
                 self.requestPageError = .network
-            }
-            if self.generation == currentGen {
-                self.isLoadingRequestPage = false
             }
         }
         requestPageTask = task
-        await task.value
+        await withTaskCancellationHandler {
+            await task.value
+        } onCancel: { task.cancel() }
     }
 }
 
@@ -264,12 +312,27 @@ public enum CAPUsagePresentation {
     }
 
     public static func costReliabilityBanner(_ costs: CAPUsageCosts) -> String {
-        let unpriced = costs.summary.unpricedRequests ?? 0
+        let unpriced = costs.summary.unpricedRequests
         let missingCount = costs.missingPrices.count
-        if unpriced > 0 || missingCount > 0 {
-            return "存在未计价请求 (\(unpriced) 次) 或缺失价格条目 (\(missingCount) 个模型) · 缺价不等于免费 ($0)"
+        if unpriced.map({ $0 > 0 }) == true || missingCount > 0 {
+            return "存在未计价请求 (\(formatCounter(unpriced)) 次) 或缺失价格条目 (\(missingCount) 个模型) · 缺价不等于免费 ($0)"
         }
+        guard costCoverageIsComplete(costs) else { return "计价覆盖未知或计数不一致，不能据此认定所有请求都已计价。" }
         return "价格簿版本 #\(costs.priceBookRevision) · 估算基准: \(costs.estimateBasis)"
+    }
+
+    public static func costCoverageIsComplete(_ costs: CAPUsageCosts) -> Bool {
+        guard let requests = costs.summary.requests, let priced = costs.summary.pricedRequests,
+              let unpriced = costs.summary.unpricedRequests else { return false }
+        return requests == priced && unpriced == 0 && costs.missingPrices.isEmpty
+    }
+
+    public static func requestOutcomeText(_ request: CAPUsageRequest) -> String {
+        switch request.failed {
+        case .some(true): "失败 (\(request.failureStatus.map(String.init) ?? "err"))"
+        case .some(false): request.result ?? "成功"
+        case .none: "结果未知"
+        }
     }
 
     public static func groupPaginationBanner(offset: Int, limit: Int, count: Int, total: Int) -> String {

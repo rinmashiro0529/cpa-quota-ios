@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-10-29T15:34:49.401729+00:00",
+  "repository": "rinmashiro0529/cpa-quota-ios",
+  "main": "1ee5ba9c6a95abaa7875497d8732e49ff18d6287",
+  "audited_pr": 3,
+  "audited_head": "aa01caab819aa8112740060814e3fb23128a9220",
+  "base_tree": "27567498f2f1ffdea316acc44cf526f4abb7f6f3",
+  "baseline_ci": {
+    "run_id": 40897099378,
+    "go": "success",
+    "swift": "failure_before_tests"
+  },
+  "local_verification": {
+    "swift": {
+      "version": "6.2.4",
+      "platform": "x86_64-unknown-linux-gnu",
+      "command": "swift test -j 2 -Xswiftc -warnings-as-errors",
+      "tests": 288,
+      "suites": 42,
+      "result": "passed"
+    },
+    "go": {
+      "version": "go1.26.10",
+      "commands": [
+        "go test -race -count=1 ./...",
+        "go vet ./..."
+      ],
+      "package_count": 5,
+      "result": "passed"
+    },
+    "python": {
+      "source_layout_tests": 5,
+      "activity_packaging_tests": 6,
+      "result": "passed"
+    },
+    "membership": {
+      "native_test_files": 36,
+      "package_test_files": 36,
+      "swift_sources": 87,
+      "result": "passed"
+    },
+    "negative_controls": {
+      "cap": {
+        "declarations": 4,
+        "cases": 12,
+        "issues": 24,
+        "result": "expected_failure",
+        "note": "Original PR3 CAP coordinator/session/view; other integration compile fixes retained; not an original full-project pass"
+      },
+      "monitoring": {
+        "tests": 3,
+        "issues": 6,
+        "result": "expected_failure",
+        "note": "Original PR3 product Sources unchanged; isolated test manifest and regression tests; executed after implementation"
+      }
+    }
+  },
+  "log_integrity": {
+    "swift_full": {
+      "sha256": "2c4bf514997de09a33fa74322d5fc45b09f21af3599f7e65512862bb1e4da732",
+      "bytes": 59327
+    },
+    "go_race": {
+      "sha256": "b2cc89b49f81cbefc99f08cca4c87bf9b01bf604b74021ac0a17c94edf67b7d8",
+      "bytes": 233
+    },
+    "go_vet": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "cap_negative": {
+      "sha256": "68e4643dc678e2cf0881d15022e5187524162adcd2ec1bbb9134f4f080b7feda",
+      "bytes": 14249
+    },
+    "monitor_negative": {
+      "sha256": "eb80266f9970be04fb01eaaaa71d74377e5ade31ebf5acfd3c66fc9195c22e51",
+      "bytes": 6256
+    }
+  },
+  "apple_validation": {
+    "local_execution": false,
+    "evidence": "GitHub Actions checks on the pull request current head; simulator tests and embedded extension validation are distinct from physical-device verification",
+    "first_attempt": {
+      "head": "ddf235b803035bfc8278ac6220260a6cffd99c25",
+      "run_id": 40902368779,
+      "swift_job_id": 123547816263,
+      "macos_package_tests": 286,
+      "macos_package_suites": 42,
+      "macos_result": "passed",
+      "native_result": "compile_failed_non_sendable_Activity_crossing_MainActor",
+      "followup": "Activity lookup and SDK mutations share a nonisolated helper; value types cross the boundary; latest-head CI remains authoritative"
+    }
+  },
+  "not_verified": [
+    "Physical device ActivityKit lifecycle and APNs delivery",
+    "Production CPA/bridge deployment and principal configuration",
+    "Signed provisioning and installation",
+    "Rendered UI, VoiceOver and energy measurements"
+  ],
+  "production_requests": false
+}

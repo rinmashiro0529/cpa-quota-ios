@@ -18,6 +18,8 @@ private actor FrontendCAPMockTransport: HTTPTransport {
         requestURLs.count
     }
 
+    func recordedURLs() -> [String] { requestURLs }
+
     func send(_ request: URLRequest) async throws -> HTTPResponse {
         let urlString = request.url?.absoluteString ?? ""
         requestURLs.append(urlString)
@@ -30,26 +32,26 @@ private actor FrontendCAPMockTransport: HTTPTransport {
             let wrapper = #"{"status_code":200,"header":{},"body":"{\"plan_type\":\"pro\",\"rate_limit\":{\"allowed\":true,\"limit_reached\":false,\"primary_window\":{\"used_percent\":25,\"limit_window_seconds\":3600,\"reset_at\":1900003600}}}"}"#
             return HTTPResponse(statusCode: 200, headers: [:], body: Data(wrapper.utf8))
         }
-        if urlString.contains("/_resources/cap/api/requests") {
+        if urlString.contains("/v0/resource/plugins/cap-token-usage-tracker/requests") {
             if shouldFailOverview {
                 return HTTPResponse(statusCode: 503, headers: [:], body: Data())
             }
             let json = #"{"generated_at":"2026-10-29T12:00:00Z","range":"custom","price_book_revision":3,"total":2,"offset":0,"limit":500,"items":[{"sequence":10,"time":"2026-10-29T11:58:00Z","provider":"openai","model":"gpt-5","executor_type":"codex","stream":true,"failed":false,"input_tokens":120,"output_tokens":90,"reasoning_tokens":0,"total_tokens":210,"latency_ns":4000000000,"ttft_ns":1000000000},{"sequence":11,"time":"2026-10-29T11:59:00Z","provider":"openai","model":"gpt-5","executor_type":"codex","stream":true,"failed":true,"failure_status":502,"input_tokens":50}]}"#
             return HTTPResponse(statusCode: 200, headers: [:], body: Data(json.utf8))
         }
-        if urlString.contains("/_resources/cap/api/initial") {
+        if urlString.contains("/v0/resource/plugins/cap-token-usage-tracker/stats/initial") {
             let json = #"{"schema_version":1,"generated_at":"2026-10-29T12:00:00Z","range":"custom","retained_since":"2026-10-01T00:00:00Z","last_used":"2026-10-29T11:59:00Z","bucket_seconds":300,"summary":{"requests":2,"failed_requests":1,"input_tokens":170,"output_tokens":90,"total_tokens":260},"models":[],"series":[],"sources":["codex"]}"#
             return HTTPResponse(statusCode: 200, headers: [:], body: Data(json.utf8))
         }
-        if urlString.contains("/_resources/cap/api/trends") {
+        if urlString.contains("/v0/resource/plugins/cap-token-usage-tracker/stats/trends") {
             let json = #"{"schema_version":1,"generated_at":"2026-10-29T12:00:00Z","range":"custom","bucket_seconds":300,"model_series":[]}"#
             return HTTPResponse(statusCode: 200, headers: [:], body: Data(json.utf8))
         }
-        if urlString.contains("/_resources/cap/api/groups") {
+        if urlString.contains("/v0/resource/plugins/cap-token-usage-tracker/stats/groups") {
             let json = #"{"schema_version":1,"generated_at":"2026-10-29T12:00:00Z","range":"custom","total":1,"items":[{"provider":"openai","model":"gpt-5","requests":2,"failed_requests":1,"total_tokens":260}]}"#
             return HTTPResponse(statusCode: 200, headers: [:], body: Data(json.utf8))
         }
-        if urlString.contains("/_resources/cap/api/costs") {
+        if urlString.contains("/v0/resource/plugins/cap-token-usage-tracker/costs") {
             let json = #"{"schema_version":1,"generated_at":"2026-10-29T12:00:00Z","range":"custom","currency":"USD","estimate_basis":"list_price","price_book_revision":3,"summary":{"requests":2,"priced_requests":1,"unpriced_requests":1,"total_usd":0.015},"models":[],"series":[],"missing_prices":[{"provider":"openai","model":"gpt-5-unpriced","requests":1}]}"#
             return HTTPResponse(statusCode: 200, headers: [:], body: Data(json.utf8))
         }
@@ -59,38 +61,6 @@ private actor FrontendCAPMockTransport: HTTPTransport {
         }
         return HTTPResponse(statusCode: 404, headers: [:], body: Data())
     }
-}
-
-private actor FrontendMonitorMockTransport: HTTPTransport {
-    private var responses: [Result<HTTPResponse, any Error>]
-    private(set) var requests: [URLRequest] = []
-
-    init(_ responses: [Result<HTTPResponse, any Error>]) {
-        self.responses = responses
-    }
-
-    func send(_ request: URLRequest) async throws -> HTTPResponse {
-        requests.append(request)
-        guard !responses.isEmpty else {
-            return HTTPResponse(statusCode: 503, headers: [:], body: Data())
-        }
-        let next = responses.removeFirst()
-        return try next.get()
-    }
-
-    func requestMethodsAndPaths() -> [String] {
-        requests.map { "\($0.httpMethod ?? "GET") \($0.url?.path ?? "")" }
-    }
-}
-
-private final class InMemoryMonitoringMetadataPersistence: MonitoringMetadataPersistence, @unchecked Sendable {
-    var savedBridgeAddress: String?
-    var records: [PersistedMonitoringRecord] = []
-
-    func loadSavedBridgeAddress() -> String? { savedBridgeAddress }
-    func saveBridgeAddress(_ address: String?) { savedBridgeAddress = address }
-    func loadPersistedRecords() -> [PersistedMonitoringRecord] { records }
-    func savePersistedRecords(_ newRecords: [PersistedMonitoringRecord]) { records = newRecords }
 }
 
 @Suite("Frontend Cloud Integration Tests (CAP Usage, Monitoring, Live Activity, Tab Routing)")
@@ -141,13 +111,13 @@ struct FrontendCloudIntegrationTests {
         // Switching tabs across all 5 workspace tabs must not trigger automatic network storms (U24).
         let callsBeforeTabSwitch = await transport.recordedCount()
         for tab in CPAWorkspaceTab.allCases {
-            session.selectedTab = tab
+            session.activeTab = tab
         }
         let callsAfterTabSwitch = await transport.recordedCount()
         #expect(callsAfterTabSwitch == callsBeforeTabSwitch)
 
         // Refresh 30m overview and verify strict weighted TPS (90 tokens / 3s = 30.0 token/s)
-        await session.capUsageCoordinator.refreshOverview(now: Date(timeIntervalSince1970: 1_800_000_090))
+        await session.capUsageCoordinator.refreshOverview(now: Date(timeIntervalSince1970: 1_793_275_230))
         let snapshot = try #require(session.capUsageCoordinator.store?.snapshot)
         #expect(snapshot.requests.completeness == .singlePage)
         #expect(snapshot.models.count == 1)
@@ -157,7 +127,7 @@ struct FrontendCloudIntegrationTests {
 
         // Subsequent failure preserves previous overview snapshot (U11)
         await transport.setShouldFailOverview(true)
-        await session.capUsageCoordinator.refreshOverview(now: Date(timeIntervalSince1970: 1_800_000_180))
+        await session.capUsageCoordinator.refreshOverview(now: Date(timeIntervalSince1970: 1_793_275_290))
         #expect(session.capUsageCoordinator.store?.snapshot?.models.first?.summary.generationTPS == 30.0)
         #expect(session.capUsageCoordinator.store?.error != nil)
 
@@ -178,13 +148,35 @@ struct FrontendCloudIntegrationTests {
     }
 
     @Test @MainActor
+    func workspaceRefreshTargetsCAPAndDoesNotStartUnconfiguredMonitoring() async throws {
+        let transport = FrontendCAPMockTransport()
+        let session = CPAQuotaSession(
+            credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore(),
+            clientFactory: { server, key in CPAClient(server: server, managementKey: key, transport: transport) }
+        )
+        await session.connect(serverAddress: "https://cpa.example.test", managementKeyInput: "synthetic-key", rememberInKeychain: false)
+        let before = await transport.recordedCount()
+        session.activeTab = .usage
+        await session.refreshCurrentWorkspace()
+        #expect(session.capUsageCoordinator.store?.snapshot != nil)
+        let requests = await transport.recordedURLs()
+        #expect(Array(requests.dropFirst(before)).count == 1)
+        #expect(requests.last?.contains("/v0/resource/plugins/cap-token-usage-tracker/requests") == true)
+        session.activeTab = .monitoring
+        await session.refreshCurrentWorkspace()
+        #expect(await transport.recordedCount() == requests.count)
+        #expect(session.monitoringCoordinator.store == nil)
+        #expect(session.monitoringCoordinator.pendingCreateUUID == nil)
+        #expect(!session.isPresentingConnectionSheet)
+    }
+
+    @Test @MainActor
     func monitoringCoordinatorReconcilesTimedOutCreateWithSameUUIDAndHonorsDelete204Vs404And507() async throws {
         let bridgeStorage = MemoryCredentialStore()
         let bridgeCredStore = MonitoringBridgeCredentialStore(storage: bridgeStorage)
-        let metadata = InMemoryMonitoringMetadataPersistence()
+        let metadata = MemoryMonitoringMetadataPersistence()
         let liveDriver = SyntheticLiveActivityDriver()
 
-        var capturedUUID: UUID?
         let coordinator = MonitoringWorkspaceCoordinator(
             credentialStore: bridgeCredStore,
             metadataStore: metadata,
@@ -197,7 +189,7 @@ struct FrontendCloudIntegrationTests {
                 try CPAMonitorClient(
                     baseURL: url,
                     token: token,
-                    transport: DynamicMonitorScenarioTransport(uuidProvider: { capturedUUID })
+                    transport: DynamicMonitorScenarioTransport()
                 )
             }
         )
@@ -210,13 +202,14 @@ struct FrontendCloudIntegrationTests {
         #expect(coordinator.isSavedInKeychain)
 
         coordinator.sourceIDDraft = "prod-cpa"
-        coordinator.populateAccountsFromCPASession(["acc-1", "acc-2", "acc-3", "acc-4", "acc-5", "acc-6"])
+        for id in ["acc-1", "acc-2", "acc-3", "acc-4", "acc-5", "acc-6"] {
+            coordinator.addAccountIDDraft(id)
+        }
         #expect(coordinator.selectedAccountIDsDraft.count == 5)
 
         // 1. Start session -> POST times out -> state becomes .uncertain and pendingCreateUUID is preserved (U16)
         await coordinator.startOrReconcileMonitoringSession()
         let firstUUID = try #require(coordinator.pendingCreateUUID)
-        capturedUUID = firstUUID
         #expect(coordinator.store?.state == .uncertain)
         #expect(coordinator.persistedRecords.first?.sessionID == firstUUID)
 
@@ -240,7 +233,7 @@ struct FrontendCloudIntegrationTests {
     }
 
     @Test
-    func liveActivityStateEnforces3584ByteCeilingAndRotatesAccounts() throws {
+    func liveActivityStateUsesFlatWireContractAndSafeLocalAccountSelection() throws {
         let acc1 = try MonitoringAccount(
             id: "codex-a",
             label: "Codex Primary",
@@ -269,37 +262,45 @@ struct FrontendCloudIntegrationTests {
             accounts: [acc1, acc2]
         )
 
-        let state0 = try CPAQuotaLiveActivityState(snapshot: snapshot, focusedIndex: 0)
-        #expect(state0.snapshotData.count <= 3_584)
-        #expect(state0.focusedAccount?.id == "codex-a")
+        let state = try CPAQuotaLiveActivityState(snapshot: snapshot)
+        let encoded = try JSONEncoder().encode(state)
+        #expect(encoded.count <= 3_584)
+        let wire = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        #expect(wire["snapshotData"] == nil)
+        #expect(wire["focusedIndex"] == nil)
+        #expect(wire["version"] as? Int == 1)
+        #expect(state.account(at: 0)?.id == "codex-a")
+        #expect(state.account(at: 1)?.id == "claude-b")
+        #expect(state.account(at: 2)?.id == "codex-a")
+        #expect(state.account(at: -1)?.id == "claude-b")
 
-        let state1 = try state0.rotated()
-        #expect(state1.focusedAccount?.id == "claude-b")
-
-        let state2 = try state1.rotated()
-        #expect(state2.focusedAccount?.id == "codex-a")
     }
 }
 
 private actor DynamicMonitorScenarioTransport: HTTPTransport {
     private var step = 0
-    private let uuidProvider: @Sendable () -> UUID?
-
-    init(uuidProvider: @escaping @Sendable () -> UUID?) {
-        self.uuidProvider = uuidProvider
-    }
+    private var registeredID: String?
+    private var registeredActivityID: String?
 
     func send(_ request: URLRequest) async throws -> HTTPResponse {
         step += 1
         switch step {
         case 1:
-            // Step 1: POST /v1/monitoring/sessions times out
+            // Capture the actual POST rather than mutating a variable inside a Sendable closure.
+            #expect(request.httpMethod == "POST")
+            let body = try #require(request.httpBody)
+            let registration = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            registeredID = try #require(registration["id"] as? String)
+            registeredActivityID = try #require(registration["activity_id"] as? String)
             throw URLError(.timedOut)
         case 2:
             // Step 2: GET /v1/monitoring/sessions/{id} reconciles the exact same UUID
-            let id = (uuidProvider() ?? UUID()).uuidString.lowercased()
+            let id = try #require(registeredID)
+            let activityID = try #require(registeredActivityID)
+            #expect(request.httpMethod == "GET")
+            #expect(request.url?.lastPathComponent == id)
             let json = """
-            {"version":1,"id":"\(id)","source_id":"prod-cpa","account_ids":["acc-1","acc-2","acc-3","acc-4","acc-5"],"activity_id":"synthetic-live-activity-1","starts_at":1800000000,"expires_at":1800014400,"next_refresh_at":1800000300,"status":"active","revision":1,"delivery_state":"sent"}
+            {"version":1,"id":"\(id)","source_id":"prod-cpa","account_ids":["acc-1","acc-2","acc-3","acc-4","acc-5"],"activity_id":"\(activityID)","starts_at":1800000000,"expires_at":1800014400,"next_refresh_at":1800000300,"status":"active","revision":1,"delivery_state":"sent"}
             """
             return HTTPResponse(statusCode: 200, headers: [:], body: Data(json.utf8))
         case 3:

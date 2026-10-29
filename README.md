@@ -1,16 +1,17 @@
-# CPA Quota iOS App & Backend (`CPAQuotaKit` + `CPAQuotaUI` + `CPAQuotaApp`)
+# CPA Quota iOS App & Backend (`CPAQuotaKit` + `CPAQuotaUI` + `CPAQuotaActivity`)
 
-Rin，本工程包含原生 Swift 6 后端包 `CPAQuotaKit`、SwiftUI 前端模块 `CPAQuotaUI` 以及 App 入口 `CPAQuotaApp`。后端负责连接个人 CPA、枚举已有账号、读取并归一化额度、缓存最后成功结果、管理并发/取消以及通过系统 Keychain 保存管理凭据；前端通过 `@MainActor @Observable CPAQuotaSession` 与 `CPAQuotaStore` 驱动登录态、应用内灵动岛样式状态伴生栏、深浅双模外观（跟随系统 / 浅色羊皮纸 / 深色曜石）以及底部玻璃导航栏。玻璃视觉沿用交付设计，不代表集成了系统 Live Activity 或 ActivityKit。
+Rin，本工程包含原生 Swift 6 后端包 `CPAQuotaKit`、SwiftUI 前端模块 `CPAQuotaUI`、共享活动模块 `CPAQuotaActivity` 以及 App 入口 `CPAQuotaApp`。后端负责连接个人 CPA、枚举已有账号、读取并归一化额度、缓存最后成功结果、管理并发/取消以及通过系统 Keychain 保存管理凭据；前端通过 `@MainActor @Observable` 状态驱动额度、CAP 用量、监控、账号与连接工作台。应用内灵动岛样式状态栏沿用交付设计；真正的系统 Live Activity 由独立 `CPAQuotaActivityExtension` 承载，两者是不同功能。
 
 ## Rin，当前交付与启用状态
 
 | 层次 | 当前状态 | 边界 |
 | --- | --- | --- |
-| 现有 App | 已有账号、额度与连接状态界面 | 真机、Keychain 和完整交互验收不由后端合并代替 |
-| 新增 Swift 后端 | CAP 近30分钟用量、逐模型加权 TPS、详情读取、监控客户端及独立桥接凭据存储 | 公开接口已提供，不代表新页面或系统活动已经接入 |
+| App 工作台 | 账号、额度、连接、CAP 近30分钟统计与监控控制页面 | 原生构建与模型测试不代替完整交互、Keychain 和真机验收 |
+| Swift 数据与状态层 | CAP 加权 TPS/详情、共享鉴权冷却、监控客户端及独立桥接凭据 | 统计、历史记录及异步结果绑定其原连接和窗口 |
+| 系统活动 | ActivityKit driver、共享 Snapshot 内容合同、Widget extension 与嵌入配置 | 签名、Push provisioning、APNs 实际送达及锁屏行为仍需真机验收 |
 | 独立 Go 监控服务 | 受控读取、租约、取消墓碑、有界准入、加密状态和 APNs update/end | 源码合并不会启动或部署服务，不会配置真实凭据或启用 Apple 能力 |
 
-Rin，监控服务必须由操作者另行配置并运行。`dry_run=true` 仅禁止 APNs，不禁止有活动时的 CPA 采集，因此不能把 dry-run 当作完全离线模式。真实 CPA、插件鉴权、APNs、ActivityKit 扩展、系统轮播与设备送达仍需独立接入和验收；600秒是服务端采集目标，不是设备必达承诺。
+Rin，监控服务必须由操作者另行配置并运行。`dry_run=true` 仅禁止 APNs，不禁止有活动时的 CPA 采集，因此不能把 dry-run 当作完全离线模式。真实 CPA、插件鉴权、APNs 与设备送达仍需独立接入和验收；600秒是服务端采集目标，不是设备必达承诺。系统活动显示首个账号和其他账号数量，App 内预览可切换账号，不承诺后台自动轮播。
 
 ## Rin，运行与兼容性
 
@@ -32,6 +33,8 @@ Rin，监控服务必须由操作者另行配置并运行。`dry_run=true` 仅�
 | --- | --- | --- |
 | `CPAQuotaKit` | Swift Library | `Sources/CPAQuotaKit/`：网络传输、解析、共享管理冷却与并发资格、取消、凭据存储、额度/CAP/监控状态层 |
 | `CPAQuotaUI` | Swift Library | `Sources/CPAQuotaUI/`：会话管理、展示归一化及 SwiftUI 视图组件 |
+| `CPAQuotaActivity` | Swift Library | `Sources/CPAQuotaActivity/`：共享 ActivityAttributes、与 Go 一致的 ContentState 和 Widget 视图；仅依赖 Kit |
+| `CPAQuotaActivityExtension` | iOS Widget Extension | `Apple/CPAQuotaActivityExtension/`：系统活动入口，由 Xcode App target 显式构建和嵌入 |
 | `CPAQuotaApp` | Swift Library（App 入口） | `Sources/CPAQuotaApp/`：SwiftUI `@main` 应用入口 |
 | `cpa-quota-probe` | Swift Executable | `Sources/CPAQuotaProbe/`：只读实服命令行探针；不属于合成测试的默认联网目标 |
 | `CPAQuotaKitTests` | Swift Test | `Tests/CPAQuotaKitTests/`：额度、凭据事务、取消、CAP 与监控回归；共享 JSON 由 `Tests/ContractFixtures/` 打包进入 SwiftPM/native 测试 bundle |
@@ -39,13 +42,14 @@ Rin，监控服务必须由操作者另行配置并运行。`dry_run=true` 仅�
 
 ## Rin，验证与构建
 
-Rin，`.github/workflows/backend-checks.yml` 在 PR 和 `main` 更新时运行 Go test/race/vet、Linux/Windows 构建、macOS SwiftPM、iOS Simulator 原生测试和 App 构建。该工作流仅使用 `contents: read`，不签名、不发布、不部署，也不使用真实 CPA/APNs/Apple 账号凭据；包含 macOS 作业，会消耗相应 CI 额度。当前结果应查看对应提交的 [GitHub Actions](https://github.com/rinmashiro0529/cpa-quota-ios/actions)，不能用历史回执替代新提交的检查。既有 `ios-ci.yml` 归档流程仍受原指定 CI 分支限制。
+Rin，`.github/workflows/backend-checks.yml` 在 PR 和 `main` 更新时运行 Go test/race/vet、Linux/Windows 构建、macOS SwiftPM、iOS Simulator 原生测试、App 构建和实际嵌入活动扩展检查。该工作流仅使用 `contents: read`，不签名、不发布、不部署，也不使用真实 CPA/APNs/Apple 账号凭据；包含 macOS 作业，会消耗相应 CI 额度。当前结果应查看对应提交的 [GitHub Actions](https://github.com/rinmashiro0529/cpa-quota-ios/actions)，不能用历史回执替代新提交的检查。既有 `ios-ci.yml` 归档流程仍受原指定 CI 分支限制，并另验收设备平台的扩展产物。
 
 Rin，在仓库根目录可运行源码接线校验和独立 Go 合成验收；后者输出真实退出码、源码哈希和构建回执到新的 `artifacts/backend-verification/` 目录，不启动真实监控服务。
 
 ```powershell
 python -I -X utf8 -B ci/validate_source_layout.py --root .
 python -I -X utf8 -B ci/test_source_layout.py
+python -I -X utf8 -B ci/test_activity_extension.py
 python -I -X utf8 -B tools/test_monitor_backend.py --project .
 ```
 
@@ -77,6 +81,7 @@ Rin，PR #1 的功能与 PR #2 的可靠性修复应作为完整组合维护，�
 | [桥接凭据隔离](docs/MONITOR_BRIDGE_CREDENTIALS.md) | 独立 Keychain 命名空间和保护边界 |
 | [独立监控服务](docs/MONITOR_SERVICE.md) | 配置、容量、稳定选择器、v2 状态与运行限制 |
 | [可靠性专项验收](docs/BACKEND_RELIABILITY_PR.md) | PR #2 整改、验证范围与升级条件 |
+| [PR #3 前端集成审计](docs/FRONTEND_PR3_AUDIT.md) | 新增功能风险、修复、逐文件覆盖、Activity 接线、迁移与未验收范围 |
 | [后端历史回执](docs/BACKEND_VERIFICATION.md) | PR #1 的源码验证、失败历史及未验收项 |
 | [开发资料](docs/BACKEND_CONTEXT.md) | 开发前收集的 CPA/构建/签名资料及边界 |
 | [集成历史回执](docs/INTEGRATION_VERIFICATION.md) | 既有集成修复与验证限制 |

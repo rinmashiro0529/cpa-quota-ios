@@ -44,9 +44,7 @@ public struct CPAQuotaRootView: View {
                     .padding(.bottom, 108)
                 }
                 .refreshable {
-                    if case .connected = session.authState {
-                        await session.refreshAll(force: true)
-                    }
+                    await session.refreshCurrentWorkspace()
                 }
             }
 

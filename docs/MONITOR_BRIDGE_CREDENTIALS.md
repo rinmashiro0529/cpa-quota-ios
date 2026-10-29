@@ -33,6 +33,16 @@ Rin，`MonitorBridgeAddress` 只接受HTTPS、合法端口与无内嵌用户名�
 
 Rin，内部复用现有通用凭据存储时，为桥接地址派生带固定作用域后缀的独立account标识；不会向该派生地址发HTTP请求。不同路径的桥接凭据和原管理凭据互不覆盖。将已标准化的`address.baseURL`传给监控客户端，以免UI自行重复拼接地址。
 
+## Rin，凭据身份与格式迁移
+
+Rin，前端历史会话还需要区分同一地址下的不同凭据。`loadCredential` / `bind` 使用 schemaVersion 1 的受保护记录，在同一个 Keychain item 中原子保存 token 与随机 binding UUID。UUID 仅是本地凭据身份，不是客户端自行断言的服务端 principal；UserDefaults 可以引用它，但不会保存 token 或 token hash。相同 token 的已保存 binding 可复用，更换 token 会得到新 binding。
+
+Rin，旧 plain token 可读取；显式建立 binding 时只有完整受保护写入成功才完成迁移，失败保留旧值。Keychain/Memory 的内部 raw-record 接口限 16 KiB，以容纳完整 4096-byte token 与封装；公开 `ManagementKey` 和 `MonitorBridgeToken` 输入上限仍是 4096 bytes。
+
+Rin，历史记录没有 binding，或与当前凭据 binding 不同时，仅允许在原桥接地址 GET 对账。只有服务器成功返回且 UUID、source、accounts、activityID 与 revision 匹配后，前端才能接管；404 不会转移归属，也不能证明远端已停止。临时连接重启后若失去原 binding，同样遵守该规则。
+
+Rin，旧客户端不理解新 Keychain 封装，会拒绝恢复，不能把回滚当成无损自动迁移。需要回滚时应先使用理解新格式的版本明确断开、保留会话索引，再在旧版本重新输入 token；不自动导出秘密，不通过清空历史规避对账。
+
 ## Rin，错误与测试边界
 
 Rin，已知安全存储失败保留其安全错误类别；未知存储错误统一映射为`secureStorageFailure`，不把底层错误的任意文本或秘密转给前端。敏感Token没有Codable表示，文本描述脱敏；任何调用方仍不应记录其原值、请求认证头或完整会话上下文。
