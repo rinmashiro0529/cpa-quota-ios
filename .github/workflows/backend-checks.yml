@@ -69,6 +69,7 @@ jobs:
           xcrun swift --version
           python3 -I ci/validate_source_layout.py --root .
           python3 -I ci/test_source_layout.py
+          python3 -I ci/test_activity_extension.py
       - name: Run Swift package tests with bundled fixtures
         run: swift test --parallel
       - name: Run native iOS tests with bundled fixtures
@@ -95,4 +96,9 @@ jobs:
             -configuration Debug \
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/AppDerivedData" \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=
+            ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=
+      - name: Verify embedded Live Activity executable
+        run: >-
+          python3 -I ci/validate_activity_extension.py
+          --app "$RUNNER_TEMP/AppDerivedData/Build/Products/Debug-iphonesimulator/CPAQuota.app"
+          --platform ios-simulator

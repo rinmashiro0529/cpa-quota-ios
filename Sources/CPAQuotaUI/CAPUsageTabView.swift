@@ -27,32 +27,26 @@ public struct CAPUsageTabView: View {
         let coordinator = session.capUsageCoordinator
         let store = coordinator.store
 
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 16) {
-                headerAndControlCard(coordinator: coordinator, store: store, palette: palette)
+        VStack(alignment: .leading, spacing: 16) {
+            headerAndControlCard(coordinator: coordinator, store: store, palette: palette)
 
-                if let error = store?.error {
-                    let desc = CAPUsagePresentation.errorDescription(error)
-                    errorBanner(title: desc.title, detail: desc.detail, hasPreservedData: store?.snapshot != nil, palette: palette)
-                }
-
-                sectionPicker(palette: palette)
-
-                switch selectedSection {
-                case .models:
-                    modelsOverviewSection(coordinator: coordinator, store: store, palette: palette)
-                case .details:
-                    detailsAnalyticsSection(coordinator: coordinator, store: store, palette: palette)
-                case .requests:
-                    requestPageSection(coordinator: coordinator, palette: palette)
-                case .management:
-                    managementStatsSection(coordinator: coordinator, palette: palette)
-                }
-
-                Spacer(minLength: 96)
+            if let error = store?.error {
+                let desc = CAPUsagePresentation.errorDescription(error)
+                errorBanner(title: desc.title, detail: desc.detail, hasPreservedData: store?.snapshot != nil, palette: palette)
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
+
+            sectionPicker(palette: palette)
+
+            switch selectedSection {
+            case .models:
+                modelsOverviewSection(coordinator: coordinator, store: store, palette: palette)
+            case .details:
+                detailsAnalyticsSection(coordinator: coordinator, store: store, palette: palette)
+            case .requests:
+                requestPageSection(coordinator: coordinator, palette: palette)
+            case .management:
+                managementStatsSection(coordinator: coordinator, palette: palette)
+            }
         }
     }
 
@@ -368,6 +362,9 @@ public struct CAPUsageTabView: View {
             }
 
             if let details = store?.details {
+                Text("详情窗口 · \(CAPUsagePresentation.windowBadgeText(details.window))")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(palette.textSecondary)
                 // 1. Initial Stats Card
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
@@ -412,7 +409,7 @@ public struct CAPUsageTabView: View {
                     }
                     Text(CAPUsagePresentation.costReliabilityBanner(details.costs))
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(details.costs.missingPrices.isEmpty && (details.costs.summary.unpricedRequests ?? 0) == 0 ? palette.statusOK : palette.statusWarn)
+                        .foregroundStyle(CAPUsagePresentation.costCoverageIsComplete(details.costs) ? palette.statusOK : palette.statusWarn)
 
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
                         counterMetricPill(label: "估算总费用 (\(details.costs.currency))", value: CAPUsagePresentation.formatUSD(details.costs.summary.totalUsd, currency: details.costs.currency), palette: palette)
@@ -455,6 +452,11 @@ public struct CAPUsageTabView: View {
                             .font(.system(size: 11))
                             .foregroundStyle(palette.textSecondary)
                     } else {
+                        if details.trends.modelSeries.count > 20 {
+                            Text("显示前 20 项，共 \(details.trends.modelSeries.count) 项；此处未展示完整趋势列表。")
+                                .font(.system(size: 11))
+                                .foregroundStyle(palette.statusWarn)
+                        }
                         ForEach(Array(details.trends.modelSeries.prefix(20).enumerated()), id: \.offset) { _, row in
                             statRowItem(row: row, palette: palette)
                         }
@@ -487,7 +489,7 @@ public struct CAPUsageTabView: View {
                     HStack(spacing: 8) {
                         Button {
                             let prev = max(0, details.groupOffset - details.groupLimit)
-                            Task { await coordinator.refreshDetails(groupOffset: prev, groupLimit: details.groupLimit) }
+                            Task { await coordinator.refreshDetails(window: details.window, groupOffset: prev, groupLimit: details.groupLimit) }
                         } label: {
                             Text("上一页分组")
                                 .font(.system(size: 11, weight: .semibold))
@@ -500,7 +502,7 @@ public struct CAPUsageTabView: View {
 
                         Button {
                             let next = details.groupOffset + details.groupLimit
-                            Task { await coordinator.refreshDetails(groupOffset: next, groupLimit: details.groupLimit) }
+                            Task { await coordinator.refreshDetails(window: details.window, groupOffset: next, groupLimit: details.groupLimit) }
                         } label: {
                             Text("下一页分组")
                                 .font(.system(size: 11, weight: .semibold))
@@ -540,9 +542,9 @@ public struct CAPUsageTabView: View {
                     .foregroundStyle(palette.textPrimary)
                 Spacer()
                 Button {
-                    Task { await coordinator.loadRequestPage(offset: coordinator.requestPageOffset, limit: requestPageSize) }
+                    Task { await coordinator.loadRequestPage(offset: 0, limit: requestPageSize) }
                 } label: {
-                    Text(coordinator.isLoadingRequestPage ? "读取中…" : "加载当前页")
+                    Text(coordinator.isLoadingRequestPage ? "读取中…" : "读取当前窗口首页")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(palette.accent)
                         .padding(.horizontal, 12)
@@ -557,7 +559,10 @@ public struct CAPUsageTabView: View {
                 errorBanner(title: desc.title, detail: desc.detail, hasPreservedData: coordinator.requestPage != nil, palette: palette)
             }
 
-            if let page = coordinator.requestPage {
+            if let page = coordinator.requestPage, let pageWindow = coordinator.requestPageWindow {
+                Text("请求页窗口 · \(CAPUsagePresentation.windowBadgeText(pageWindow))")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(palette.textSecondary)
                 Text("请求明细分页：当前显示 \(page.items.count) 条 (offset \(page.offset), limit \(page.limit)) / 报告总计 \(page.total) 条 · 价格簿版本: \(page.priceBookRevision.map { "#\($0)" } ?? "未知")")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(palette.accent)
@@ -565,7 +570,7 @@ public struct CAPUsageTabView: View {
                 HStack(spacing: 8) {
                     Button {
                         let prev = max(0, page.offset - page.limit)
-                        Task { await coordinator.loadRequestPage(offset: prev, limit: page.limit) }
+                        Task { await coordinator.loadRequestPage(window: pageWindow, offset: prev, limit: page.limit) }
                     } label: {
                         Text("上一页")
                             .font(.system(size: 11, weight: .semibold))
@@ -578,7 +583,7 @@ public struct CAPUsageTabView: View {
 
                     Button {
                         let next = page.offset + page.limit
-                        Task { await coordinator.loadRequestPage(offset: next, limit: page.limit) }
+                        Task { await coordinator.loadRequestPage(window: pageWindow, offset: next, limit: page.limit) }
                     } label: {
                         Text("下一页")
                             .font(.system(size: 11, weight: .semibold))
@@ -596,7 +601,7 @@ public struct CAPUsageTabView: View {
             } else {
                 emptyCard(
                     title: "按需分页查看单条请求明细",
-                    subtitle: "点击「加载当前页」查看请求序列号、模型、Provider、Stream、Token 用量与 TTFT/Latency 指标。失败请求可能包含部分 Token 用量，但不计入成功生成 TPS 样本。",
+                    subtitle: "点击「读取当前窗口首页」查看请求序列号、模型、Provider、Stream、Token 用量与 TTFT/Latency 指标。翻页保持该页的查询窗口；失败请求的部分用量不计入成功生成 TPS 样本。",
                     palette: palette
                 )
             }
@@ -634,7 +639,10 @@ public struct CAPUsageTabView: View {
                 errorBanner(title: desc.title, detail: desc.detail, hasPreservedData: coordinator.managementStats != nil, palette: palette)
             }
 
-            if let stats = coordinator.managementStats {
+            if let stats = coordinator.managementStats, let window = coordinator.managementStatsWindow {
+                Text("管理统计窗口 · \(CAPUsagePresentation.windowBadgeText(window))")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(palette.textSecondary)
                 Text("生成时间: \(stats.generatedAt ?? "未知") · 保留起点: \(stats.retainedSince ?? "未知") · 最后使用: \(stats.lastUsed ?? "未知")")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(palette.textSecondary)
@@ -691,9 +699,9 @@ public struct CAPUsageTabView: View {
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .foregroundStyle(palette.textPrimary)
                 Spacer()
-                Text(isFailed ? "失败 (\(req.failureStatus.map(String.init) ?? "err"))" : (req.result ?? "成功"))
+                Text(CAPUsagePresentation.requestOutcomeText(req))
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(isFailed ? palette.statusError : palette.statusOK)
+                    .foregroundStyle(isFailed ? palette.statusError : req.failed == false ? palette.statusOK : palette.textMuted)
             }
             Text("时间: \(req.time ?? "未知") · \(CAPUsagePresentation.streamLabel(req.stream)) · Executor: \(req.executorType ?? "-")")
                 .font(.system(size: 10, design: .monospaced))

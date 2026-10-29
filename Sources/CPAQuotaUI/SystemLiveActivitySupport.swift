@@ -1,79 +1,35 @@
 import Foundation
 import CPAQuotaKit
+import CPAQuotaActivity
 #if canImport(SwiftUI)
 import SwiftUI
 #endif
 #if canImport(ActivityKit) && os(iOS)
 import ActivityKit
 #endif
-#if canImport(WidgetKit) && os(iOS)
-import WidgetKit
-#endif
 
-public struct CPAQuotaLiveActivityState: Codable, Hashable, Sendable {
-    public let snapshotData: Data
-    public let focusedIndex: Int
-
-    public init(snapshot: MonitoringSnapshot, focusedIndex: Int = 0) throws {
-        let data = try snapshot.activityContentData()
-        guard data.count <= 3_584 else {
-            throw MonitoringError.invalidConfiguration
-        }
-        self.snapshotData = data
-        self.focusedIndex = max(0, focusedIndex)
-    }
-
-    public func decodedSnapshot() -> MonitoringSnapshot? {
-        try? JSONDecoder().decode(MonitoringSnapshot.self, from: snapshotData)
-    }
-
-    public var accounts: [MonitoringAccount] {
-        decodedSnapshot()?.accounts ?? []
-    }
-
-    public var focusedAccount: MonitoringAccount? {
-        let list = accounts
-        guard !list.isEmpty else { return nil }
-        return list[focusedIndex % list.count]
-    }
-
-    public func rotated() throws -> CPAQuotaLiveActivityState {
-        guard let snap = decodedSnapshot() else {
-            throw MonitoringError.invalidConfiguration
-        }
-        let nextIndex = snap.accounts.isEmpty ? 0 : (focusedIndex + 1) % snap.accounts.count
-        return try CPAQuotaLiveActivityState(snapshot: snap, focusedIndex: nextIndex)
-    }
-}
-
-#if canImport(ActivityKit) && os(iOS)
-public struct CPAQuotaActivityAttributes: ActivityAttributes, Sendable {
-    public typealias ContentState = CPAQuotaLiveActivityState
-
-    public let sourceID: String
-
-    public init(sourceID: String) throws {
-        guard !sourceID.isEmpty, sourceID.utf8.count <= 128, !sourceID.contains("@"), !sourceID.contains("://") else {
-            throw MonitoringError.invalidConfiguration
-        }
-        self.sourceID = sourceID
-    }
-}
+public typealias CPAQuotaLiveActivityState = CPAQuotaActivity.CPAQuotaLiveActivityState
+public typealias CPAQuotaActivityAttributes = CPAQuotaActivity.CPAQuotaActivityAttributes
+#if canImport(ActivityKit) && canImport(WidgetKit) && canImport(SwiftUI) && os(iOS)
+public typealias CPAQuotaLiveActivityWidget = CPAQuotaActivity.CPAQuotaLiveActivityWidget
 #endif
 
 @MainActor
 public final class DefaultSystemLiveActivityDriver: SystemLiveActivityDriver {
     public private(set) var activeActivityID: String?
     public private(set) var latestPushTokenHex: String?
+    // Kept for source compatibility; selection belongs to the in-app preview.
     public var selectedRotationIndex: Int = 0
-
-    #if canImport(ActivityKit) && os(iOS)
+    private var observationID = UUID()
     private var tokenObservationTask: Task<Void, Never>?
     private var stateObservationTask: Task<Void, Never>?
-    private var lastSnapshot: MonitoringSnapshot?
-    #endif
 
     public init() {}
+
+    deinit {
+        tokenObservationTask?.cancel()
+        stateObservationTask?.cancel()
+    }
 
     public var isSupportedOnCurrentPlatform: Bool {
         #if canImport(ActivityKit) && os(iOS)
@@ -94,134 +50,154 @@ public final class DefaultSystemLiveActivityDriver: SystemLiveActivityDriver {
     public func startActivity(
         sourceID: String,
         initialSnapshot: MonitoringSnapshot?,
-        onPushTokenUpdate: @escaping @MainActor (String) -> Void,
+        onPushTokenUpdate: @escaping @MainActor (String, String) -> Void,
         onSystemDismissed: @escaping @MainActor (String) -> Void
     ) async throws -> LocalLiveActivityRegistrationResult {
         #if canImport(ActivityKit) && os(iOS)
+        try Task.checkCancellation()
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
             throw LocalLiveActivityError.activitiesDisabled
         }
-        let attributes: CPAQuotaActivityAttributes
-        let fallbackSnapshot: MonitoringSnapshot
-        if let initialSnapshot {
-            fallbackSnapshot = initialSnapshot
-        } else {
-            let placeholderAccount = try MonitoringAccount(
-                id: "pending",
-                label: "Waiting for quota",
-                provider: "cpa",
-                windowID: "default",
-                windowLabel: "Pending",
-                status: .unavailable
-            )
-            fallbackSnapshot = try MonitoringSnapshot(
-                sequence: 0,
-                phase: .ready,
-                generatedAt: Date(),
-                expiresAt: Date().addingTimeInterval(600),
-                accounts: [placeholderAccount]
-            )
-        }
+        guard activeActivityID == nil else { throw LocalLiveActivityError.startFailed }
+        let attributes = try CPAQuotaActivityAttributes(sourceID: sourceID)
+        let now = Date()
+        let snapshot = try initialSnapshot ?? MonitoringSnapshot(
+            sequence: 0, phase: .partial, generatedAt: now, expiresAt: now,
+            accounts: [MonitoringAccount(id: "pending", label: "等待读数", provider: "cpa",
+                                         windowID: "pending", windowLabel: "等待服务端", status: .unavailable)]
+        )
+        let state = try CPAQuotaLiveActivityState(snapshot: snapshot)
         do {
-            attributes = try CPAQuotaActivityAttributes(sourceID: sourceID)
-        } catch {
-            throw LocalLiveActivityError.startFailed
-        }
-        let contentState: CPAQuotaLiveActivityState
-        do {
-            contentState = try CPAQuotaLiveActivityState(snapshot: fallbackSnapshot, focusedIndex: selectedRotationIndex)
+            try attributes.validateContent(state)
         } catch {
             throw LocalLiveActivityError.payloadTooLarge
         }
-
-        let content = ActivityContent(state: contentState, staleDate: fallbackSnapshot.expiresAt)
         let activity: Activity<CPAQuotaActivityAttributes>
         do {
-            activity = try Activity.request(
-                attributes: attributes,
-                content: content,
-                pushType: .token
-            )
+            activity = try Activity.request(attributes: attributes,
+                                            content: ActivityContent(state: state, staleDate: snapshot.expiresAt),
+                                            pushType: .token)
         } catch {
             throw LocalLiveActivityError.startFailed
         }
-
-        self.activeActivityID = activity.id
-        self.lastSnapshot = fallbackSnapshot
-        let initialTokenHex = activity.pushToken.map { data in
-            data.map { String(format: "%02x", $0) }.joined()
-        }
-        self.latestPushTokenHex = initialTokenHex
-
-        tokenObservationTask?.cancel()
-        tokenObservationTask = Task { [weak self] in
-            for await tokenData in activity.pushTokenUpdates {
-                let hex = tokenData.map { String(format: "%02x", $0) }.joined()
-                await MainActor.run {
-                    self?.latestPushTokenHex = hex
-                    onPushTokenUpdate(hex)
-                }
-            }
-        }
-
-        stateObservationTask?.cancel()
-        stateObservationTask = Task { [weak self] in
-            for await state in activity.activityStateUpdates {
-                if state == .dismissed || state == .ended {
-                    let dismissedID = activity.id
-                    await MainActor.run {
-                        if self?.activeActivityID == dismissedID {
-                            self?.activeActivityID = nil
-                        }
-                        onSystemDismissed(dismissedID)
-                    }
-                }
-            }
-        }
-
-        return LocalLiveActivityRegistrationResult(
-            activityID: activity.id,
-            initialPushTokenHex: initialTokenHex
-        )
+        observe(activity, onPushTokenUpdate: onPushTokenUpdate, onSystemDismissed: onSystemDismissed)
+        return LocalLiveActivityRegistrationResult(activityID: activity.id, initialPushTokenHex: latestPushTokenHex)
         #else
         throw LocalLiveActivityError.unsupportedPlatform
         #endif
     }
 
-    public func updateActivity(snapshot: MonitoringSnapshot) async throws {
+    public func restoreActivity(
+        activityID: String,
+        sourceID: String,
+        onPushTokenUpdate: @escaping @MainActor (String, String) -> Void,
+        onSystemDismissed: @escaping @MainActor (String) -> Void
+    ) async throws -> LocalLiveActivityRegistrationResult? {
         #if canImport(ActivityKit) && os(iOS)
-        self.lastSnapshot = snapshot
-        guard let targetID = activeActivityID,
-              let activity = Activity<CPAQuotaActivityAttributes>.activities.first(where: { $0.id == targetID }) else {
-            return
-        }
-        let state = try CPAQuotaLiveActivityState(snapshot: snapshot, focusedIndex: selectedRotationIndex)
-        let content = ActivityContent(state: state, staleDate: snapshot.expiresAt)
-        await activity.update(content)
+        try Task.checkCancellation()
+        _ = try CPAQuotaActivityAttributes(sourceID: sourceID)
+        guard let activity = Activity<CPAQuotaActivityAttributes>.activities.first(where: {
+            $0.id == activityID && $0.attributes.sourceID == sourceID
+                && ($0.activityState == .active || $0.activityState == .stale)
+        }) else { return nil }
+        observe(activity, onPushTokenUpdate: onPushTokenUpdate, onSystemDismissed: onSystemDismissed)
+        return LocalLiveActivityRegistrationResult(activityID: activity.id, initialPushTokenHex: latestPushTokenHex)
+        #else
+        return nil
         #endif
     }
 
-    public func endActivity(immediate: Bool) async {
+    public func updateActivity(activityID: String, snapshot: MonitoringSnapshot) async throws {
         #if canImport(ActivityKit) && os(iOS)
+        try Task.checkCancellation()
+        guard activeActivityID == activityID,
+              let activity = Activity<CPAQuotaActivityAttributes>.activities.first(where: { $0.id == activityID }),
+              activity.activityState == .active || activity.activityState == .stale,
+              activity.content.state.accepts(snapshot) else { return }
+        let state = try CPAQuotaLiveActivityState(snapshot: snapshot)
+        try activity.attributes.validateContent(state)
+        // A sequence check alone cannot arbitrate an APNs update arriving after
+        // this read. iOS 17.2 adds a system-side timestamp comparison. On 17.0/17.1
+        // leave remote content to APNs instead of stamping an old HTTP response "now".
+        if #available(iOS 17.2, *) {
+            await activity.update(ActivityContent(state: state, staleDate: snapshot.expiresAt),
+                                  alertConfiguration: nil, timestamp: snapshot.generatedAt)
+        }
+        #endif
+    }
+
+    public func endActivity(activityID: String, immediate: Bool) async {
+        #if canImport(ActivityKit) && os(iOS)
+        // Capture the exact object and invalidate its observers before suspension.
+        // A new activity started during end() must keep its own binding and token.
+        let activity = Activity<CPAQuotaActivityAttributes>.activities.first { $0.id == activityID }
+        if activeActivityID == activityID { detachActivity() }
+        guard let activity else { return }
+        let previous = activity.content.state.snapshot
+        let terminal = try? MonitoringSnapshot(
+            sequence: previous.sequence, phase: previous.phase == .expired ? .expired : .stopped,
+            generatedAt: previous.generatedAt, expiresAt: previous.expiresAt, accounts: previous.accounts
+        )
+        let state = terminal.flatMap { try? CPAQuotaLiveActivityState(snapshot: $0) } ?? activity.content.state
+        await activity.end(ActivityContent(state: state, staleDate: .distantPast),
+                           dismissalPolicy: immediate ? .immediate : .default)
+        #else
+        if activeActivityID == activityID { detachActivity() }
+        #endif
+    }
+
+    /// Stop observing, without pretending to cancel a backend lease or another activity.
+    public func detachActivity() {
+        observationID = UUID()
         tokenObservationTask?.cancel()
         tokenObservationTask = nil
         stateObservationTask?.cancel()
         stateObservationTask = nil
-        for activity in Activity<CPAQuotaActivityAttributes>.activities {
-            if activeActivityID == nil || activity.id == activeActivityID {
-                await activity.end(nil, dismissalPolicy: immediate ? .immediate : .default)
+        activeActivityID = nil
+        latestPushTokenHex = nil
+    }
+
+    #if canImport(ActivityKit) && os(iOS)
+    private func observe(
+        _ activity: Activity<CPAQuotaActivityAttributes>,
+        onPushTokenUpdate: @escaping @MainActor (String, String) -> Void,
+        onSystemDismissed: @escaping @MainActor (String) -> Void
+    ) {
+        detachActivity()
+        activeActivityID = activity.id
+        let generation = observationID
+        latestPushTokenHex = activity.pushToken.flatMap(Self.tokenHex)
+        tokenObservationTask = Task { [weak self] in
+            for await data in activity.pushTokenUpdates {
+                guard !Task.isCancelled, let self,
+                      self.observationID == generation, self.activeActivityID == activity.id else { return }
+                guard let hex = Self.tokenHex(data), hex != self.latestPushTokenHex else { continue }
+                self.latestPushTokenHex = hex
+                onPushTokenUpdate(activity.id, hex)
             }
         }
-        activeActivityID = nil
-        latestPushTokenHex = nil
-        #else
-        activeActivityID = nil
-        latestPushTokenHex = nil
-        #endif
+        stateObservationTask = Task { [weak self] in
+            for await state in activity.activityStateUpdates {
+                guard !Task.isCancelled, let self,
+                      self.observationID == generation, self.activeActivityID == activity.id else { return }
+                if state == .dismissed || state == .ended {
+                    self.detachActivity()
+                    onSystemDismissed(activity.id)
+                    return
+                }
+            }
+        }
     }
+
+    private static func tokenHex(_ data: Data) -> String? {
+        let value = data.map { String(format: "%02x", $0) }.joined()
+        guard (try? MonitoringPushToken(value)) != nil else { return nil }
+        return value
+    }
+    #endif
 }
 
-/// Testable / synthetic driver used strictly in automated tests or explicit preview mode.
+/// An explicit test/preview implementation; production never falls back to it.
 @MainActor
 public final class SyntheticLiveActivityDriver: SystemLiveActivityDriver {
     public var isSupportedOnCurrentPlatform: Bool
@@ -231,8 +207,16 @@ public final class SyntheticLiveActivityDriver: SystemLiveActivityDriver {
     public var selectedRotationIndex: Int = 0
     public private(set) var lastUpdatedSnapshot: MonitoringSnapshot?
     public private(set) var endedImmediately: Bool?
+    public private(set) var startCount = 0
+    public private(set) var endedActivityIDs: [String] = []
 
-    private var pushTokenCallback: (@MainActor (String) -> Void)?
+    private struct Record {
+        let sourceID: String
+        var snapshot: MonitoringSnapshot?
+        var token: String?
+    }
+    private var records: [String: Record] = [:]
+    private var pushTokenCallback: (@MainActor (String, String) -> Void)?
     private var dismissCallback: (@MainActor (String) -> Void)?
     private let simulatedActivityID: String
     private let simulatedPushTokenHex: String?
@@ -252,45 +236,84 @@ public final class SyntheticLiveActivityDriver: SystemLiveActivityDriver {
     public func startActivity(
         sourceID: String,
         initialSnapshot: MonitoringSnapshot?,
-        onPushTokenUpdate: @escaping @MainActor (String) -> Void,
+        onPushTokenUpdate: @escaping @MainActor (String, String) -> Void,
         onSystemDismissed: @escaping @MainActor (String) -> Void
     ) async throws -> LocalLiveActivityRegistrationResult {
+        try Task.checkCancellation()
         guard isSupportedOnCurrentPlatform else { throw LocalLiveActivityError.unsupportedPlatform }
         guard areActivitiesEnabled else { throw LocalLiveActivityError.activitiesDisabled }
-        if let initialSnapshot {
-            _ = try CPAQuotaLiveActivityState(snapshot: initialSnapshot, focusedIndex: selectedRotationIndex)
-        }
-        activeActivityID = simulatedActivityID
-        latestPushTokenHex = simulatedPushTokenHex
-        lastUpdatedSnapshot = initialSnapshot
-        pushTokenCallback = onPushTokenUpdate
-        dismissCallback = onSystemDismissed
-        return LocalLiveActivityRegistrationResult(
-            activityID: simulatedActivityID,
-            initialPushTokenHex: simulatedPushTokenHex
-        )
+        guard activeActivityID == nil else { throw LocalLiveActivityError.startFailed }
+        let attributes = try CPAQuotaActivityAttributes(sourceID: sourceID)
+        if let initialSnapshot { try attributes.validateContent(CPAQuotaLiveActivityState(snapshot: initialSnapshot)) }
+        startCount += 1
+        let id = startCount == 1 ? simulatedActivityID : "\(simulatedActivityID)-\(startCount)"
+        records[id] = Record(sourceID: sourceID, snapshot: initialSnapshot, token: simulatedPushTokenHex)
+        attach(id: id, onPushTokenUpdate: onPushTokenUpdate, onSystemDismissed: onSystemDismissed)
+        return LocalLiveActivityRegistrationResult(activityID: id, initialPushTokenHex: latestPushTokenHex)
     }
 
-    public func updateActivity(snapshot: MonitoringSnapshot) async throws {
-        _ = try CPAQuotaLiveActivityState(snapshot: snapshot, focusedIndex: selectedRotationIndex)
+    public func restoreActivity(
+        activityID: String,
+        sourceID: String,
+        onPushTokenUpdate: @escaping @MainActor (String, String) -> Void,
+        onSystemDismissed: @escaping @MainActor (String) -> Void
+    ) async throws -> LocalLiveActivityRegistrationResult? {
+        try Task.checkCancellation()
+        guard records[activityID]?.sourceID == sourceID else { return nil }
+        attach(id: activityID, onPushTokenUpdate: onPushTokenUpdate, onSystemDismissed: onSystemDismissed)
+        return LocalLiveActivityRegistrationResult(activityID: activityID, initialPushTokenHex: latestPushTokenHex)
+    }
+
+    public func updateActivity(activityID: String, snapshot: MonitoringSnapshot) async throws {
+        try Task.checkCancellation()
+        guard activeActivityID == activityID, let record = records[activityID] else { return }
+        if let previous = record.snapshot, snapshot.sequence <= previous.sequence { return }
+        try CPAQuotaActivityAttributes(sourceID: record.sourceID).validateContent(CPAQuotaLiveActivityState(snapshot: snapshot))
+        records[activityID]?.snapshot = snapshot
         lastUpdatedSnapshot = snapshot
     }
 
-    public func endActivity(immediate: Bool) async {
+    public func endActivity(activityID: String, immediate: Bool) async {
+        guard records.removeValue(forKey: activityID) != nil else { return }
         endedImmediately = immediate
+        endedActivityIDs.append(activityID)
+        if activeActivityID == activityID { detachActivity() }
+    }
+
+    public func detachActivity() {
         activeActivityID = nil
         latestPushTokenHex = nil
+        lastUpdatedSnapshot = nil
+        pushTokenCallback = nil
+        dismissCallback = nil
     }
 
     public func simulateSystemPushTokenRotation(_ newHex: String) {
+        guard let id = activeActivityID, (try? MonitoringPushToken(newHex)) != nil else { return }
         latestPushTokenHex = newHex
-        pushTokenCallback?(newHex)
+        records[id]?.token = newHex
+        pushTokenCallback?(id, newHex)
     }
 
     public func simulateUserDismissal() {
-        let id = activeActivityID ?? simulatedActivityID
-        activeActivityID = nil
-        dismissCallback?(id)
+        guard let id = activeActivityID else { return }
+        let callback = dismissCallback
+        records.removeValue(forKey: id)
+        detachActivity()
+        callback?(id)
+    }
+
+    private func attach(
+        id: String,
+        onPushTokenUpdate: @escaping @MainActor (String, String) -> Void,
+        onSystemDismissed: @escaping @MainActor (String) -> Void
+    ) {
+        detachActivity()
+        activeActivityID = id
+        latestPushTokenHex = records[id]?.token
+        lastUpdatedSnapshot = records[id]?.snapshot
+        pushTokenCallback = onPushTokenUpdate
+        dismissCallback = onSystemDismissed
     }
 }
 
@@ -315,7 +338,7 @@ public struct SystemLiveActivityPreviewCard: View {
 
     public var body: some View {
         let accounts = snapshot.accounts
-        let safeIndex = accounts.isEmpty ? 0 : (focusedIndex % accounts.count)
+        let safeIndex = CPAQuotaLiveActivityState.normalizedIndex(focusedIndex, count: accounts.count)
         let currentAccount = accounts.isEmpty ? nil : accounts[safeIndex]
 
         VStack(alignment: .leading, spacing: 10) {
@@ -403,101 +426,6 @@ public struct SystemLiveActivityPreviewCard: View {
         }
         .padding(14)
         .liquidGlassCard(cornerRadius: 20)
-    }
-}
-#endif
-
-#if canImport(ActivityKit) && canImport(WidgetKit) && canImport(SwiftUI) && os(iOS)
-public struct CPAQuotaLiveActivityWidget: Widget {
-    public init() {}
-
-    public var body: some WidgetConfiguration {
-        ActivityConfiguration(for: CPAQuotaActivityAttributes.self) { context in
-            let snapshot = context.state.decodedSnapshot()
-            let account = context.state.focusedAccount
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("CPA 额度监控 · \(context.attributes.sourceID)")
-                        .font(.system(size: 12, weight: .semibold))
-                    Spacer()
-                    if let snapshot {
-                        Text("seq #\(snapshot.sequence) · \(snapshot.phase.rawValue)")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                if let account {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("\(account.label) · \(account.windowLabel)")
-                                .font(.system(size: 13, weight: .bold))
-                            Text("观察: \(QuotaFormatter.exactTimestampString(account.observedAt))")
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if let rem = account.remainingFraction {
-                            Text(String(format: "%.0f%%", (rem * 100).rounded()))
-                                .font(.system(size: 16, weight: .bold, design: .monospaced))
-                        } else if let val = account.value {
-                            Text("\(String(format: "%.1f", val)) \(account.unit ?? "")")
-                                .font(.system(size: 14, weight: .bold, design: .monospaced))
-                        } else {
-                            Text(account.status.rawValue)
-                                .font(.system(size: 12, design: .monospaced))
-                        }
-                    }
-                } else {
-                    Text("等待授权来源快照更新…")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(14)
-        } dynamicIsland: { context in
-            let account = context.state.focusedAccount
-            return DynamicIsland {
-                DynamicIslandExpandedRegion(.leading) {
-                    Text(account?.label ?? context.attributes.sourceID)
-                        .font(.system(size: 12, weight: .semibold))
-                        .lineLimit(1)
-                }
-                DynamicIslandExpandedRegion(.trailing) {
-                    if let rem = account?.remainingFraction {
-                        Text(String(format: "%.0f%%", (rem * 100).rounded()))
-                            .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    } else {
-                        Text(account?.status.rawValue ?? "--")
-                            .font(.system(size: 11, design: .monospaced))
-                    }
-                }
-                DynamicIslandExpandedRegion(.bottom) {
-                    HStack {
-                        Text(account?.windowLabel ?? "监控会话")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text(QuotaFormatter.exactTimestampString(account?.observedAt))
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            } compactLeading: {
-                Text(account?.provider.prefix(4).uppercased() ?? "CPA")
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-            } compactTrailing: {
-                if let rem = account?.remainingFraction {
-                    Text(String(format: "%.0f%%", (rem * 100).rounded()))
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                } else {
-                    Text("--")
-                        .font(.system(size: 11, design: .monospaced))
-                }
-            } minimal: {
-                Text("Q")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-            }
-        }
     }
 }
 #endif

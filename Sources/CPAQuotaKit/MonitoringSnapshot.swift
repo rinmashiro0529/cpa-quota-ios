@@ -1,6 +1,6 @@
 import Foundation
 
-public struct MonitoringAccount: Codable, Sendable, Equatable {
+public struct MonitoringAccount: Codable, Sendable, Hashable {
     public enum Status: String, Codable, Sendable { case ok, stale, unavailable, failed, coolingDown = "cooling_down" }
     public let id: String
     public let label: String
@@ -83,7 +83,7 @@ public struct MonitoringAccount: Codable, Sendable, Equatable {
     }
 }
 
-public struct MonitoringSnapshot: Codable, Sendable, Equatable {
+public struct MonitoringSnapshot: Codable, Sendable, Hashable {
     public enum Phase: String, Codable, Sendable { case ready, partial, failed, coolingDown = "cooling_down", stopped, expired }
     public let version: Int
     public let sequence: UInt64

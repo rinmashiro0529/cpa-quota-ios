@@ -17,8 +17,7 @@ public struct MonitoringTabView: View {
         let monitor = session.monitoringCoordinator
         let store = monitor.store
 
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 16) {
                 headerBanner(monitor: monitor, palette: palette)
 
                 if let errorText = monitor.bridgeFormError {
@@ -45,7 +44,7 @@ public struct MonitoringTabView: View {
                     }
                 } else if let cached = monitor.cachedSourceSnapshot {
                     SystemLiveActivityPreviewCard(
-                        sourceID: monitor.sourceIDDraft.isEmpty ? "cached-source" : monitor.sourceIDDraft,
+                        sourceID: monitor.cachedSourceID ?? "cached-source",
                         snapshot: cached,
                         focusedIndex: $focusedSnapshotIndex,
                         palette: palette
@@ -62,10 +61,6 @@ public struct MonitoringTabView: View {
 
                 platformAndSecurityBoundaryCard(monitor: monitor, palette: palette)
 
-                Spacer(minLength: 96)
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
         }
         .task {
             if monitor.bridgeState == .unconfigured {
@@ -130,6 +125,7 @@ public struct MonitoringTabView: View {
 
     @ViewBuilder
     private func bridgeConfigurationCard(monitor: MonitoringWorkspaceCoordinator, palette: LiquidGlassPalette) -> some View {
+        @Bindable var monitor = monitor
         VStack(alignment: .leading, spacing: 12) {
             Text("1. 独立监控桥接配置 (CPAQuotaKit.MonitorBridgeCredentials)")
                 .font(.system(size: 13, weight: .semibold))
@@ -158,9 +154,9 @@ public struct MonitoringTabView: View {
                 Text("HTTPS 桥接服务地址（保留反向代理路径前缀，不自动剥离 /v0/management）")
                     .font(.system(size: 10))
                     .foregroundStyle(palette.textSecondary)
-                TextField("https://monitor.example.com/bridge", text: $session.monitoringCoordinator.bridgeURLDraft)
+                TextField("https://monitor.example.com/bridge", text: $monitor.bridgeURLDraft)
                     .font(.system(size: 12, design: .monospaced))
-                    .textInputAutocapitalization(.never)
+                    .monitoringInputCapitalization()
                     .autocorrectionDisabled(true)
                     .padding(10)
                     .liquidGlassPill(cornerRadius: 12)
@@ -170,15 +166,15 @@ public struct MonitoringTabView: View {
                 Text("MonitorBridgeToken（独立 Bearer 凭据，非 CPA 管理密钥）")
                     .font(.system(size: 10))
                     .foregroundStyle(palette.textSecondary)
-                SecureField("输入独立桥接访问 Token", text: $session.monitoringCoordinator.bridgeTokenDraft)
+                SecureField("输入独立桥接访问 Token", text: $monitor.bridgeTokenDraft)
                     .font(.system(size: 12, design: .monospaced))
-                    .textInputAutocapitalization(.never)
+                    .monitoringInputCapitalization()
                     .autocorrectionDisabled(true)
                     .padding(10)
                     .liquidGlassPill(cornerRadius: 12)
             }
 
-            Toggle(isOn: $session.monitoringCoordinator.rememberBridgeDraft) {
+            Toggle(isOn: $monitor.rememberBridgeDraft) {
                 Text("安全保存至独立桥接 Keychain 命名空间")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(palette.textPrimary)
@@ -195,7 +191,7 @@ public struct MonitoringTabView: View {
                         )
                     }
                 } label: {
-                    Text("验证并绑定桥接连接")
+                    Text("连接桥接")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Color.white)
                         .frame(maxWidth: .infinity)
@@ -203,6 +199,7 @@ public struct MonitoringTabView: View {
                         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(palette.accent))
                 }
                 .buttonStyle(.plain)
+                .disabled(monitor.isChangingBridge)
 
                 if monitor.bridgeState != .unconfigured || monitor.isSavedInKeychain {
                     Button {
@@ -229,6 +226,7 @@ public struct MonitoringTabView: View {
         store: MonitoringStore?,
         palette: LiquidGlassPalette
     ) -> some View {
+        @Bindable var monitor = monitor
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("2. 有限期监控会话注册与对账控制")
@@ -247,9 +245,9 @@ public struct MonitoringTabView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(palette.textSecondary)
                 HStack(spacing: 8) {
-                    TextField("例如: personal", text: $session.monitoringCoordinator.sourceIDDraft)
+                    TextField("例如: personal", text: $monitor.sourceIDDraft)
                         .font(.system(size: 12, design: .monospaced))
-                        .textInputAutocapitalization(.never)
+                        .monitoringInputCapitalization()
                         .autocorrectionDisabled(true)
                         .padding(10)
                         .liquidGlassPill(cornerRadius: 12)
@@ -265,6 +263,7 @@ public struct MonitoringTabView: View {
                             .liquidGlassPill(cornerRadius: 12)
                     }
                     .buttonStyle(.plain)
+                    .disabled(monitor.isBusy || monitor.bridgeState == .unconfigured)
                 }
             }
 
@@ -314,9 +313,9 @@ public struct MonitoringTabView: View {
                 }
 
                 HStack(spacing: 8) {
-                    TextField("输入部署白名单授权的 account_id", text: $session.monitoringCoordinator.newAccountIDDraft)
+                    TextField("输入部署白名单授权的 account_id", text: $monitor.newAccountIDDraft)
                         .font(.system(size: 11, design: .monospaced))
-                        .textInputAutocapitalization(.never)
+                        .monitoringInputCapitalization()
                         .autocorrectionDisabled(true)
                         .padding(9)
                         .liquidGlassPill(cornerRadius: 10)
@@ -376,6 +375,12 @@ public struct MonitoringTabView: View {
                     .foregroundStyle(palette.statusWarn)
             }
 
+            if monitor.isWaitingForPushToken {
+                Text("正在等待已创建活动的系统推送令牌；无需重复启动，可取消本次创建。")
+                    .font(.footnote)
+                    .foregroundStyle(palette.statusWarn)
+            }
+
             if let storeError = store?.error {
                 Text("Store 错误: \(monitor.monitoringErrorText(storeError))")
                     .font(.system(size: 11, weight: .medium))
@@ -394,6 +399,7 @@ public struct MonitoringTabView: View {
                         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(palette.accent))
                 }
                 .buttonStyle(.plain)
+                .disabled(monitor.isBusy || monitor.isWaitingForPushToken || monitor.bridgeState == .unconfigured)
 
                 Button {
                     Task { await monitor.reconcileCurrentSession() }
@@ -406,6 +412,7 @@ public struct MonitoringTabView: View {
                         .liquidGlassPill(cornerRadius: 12)
                 }
                 .buttonStyle(.plain)
+                .disabled(monitor.isBusy || monitor.bridgeState == .unconfigured)
 
                 Button {
                     Task { await monitor.refreshActiveMonitoringSession() }
@@ -418,7 +425,7 @@ public struct MonitoringTabView: View {
                         .liquidGlassPill(cornerRadius: 12)
                 }
                 .buttonStyle(.plain)
-                .disabled(store?.sessionID == nil)
+                .disabled(monitor.isBusy || store?.session?.status != .active || monitor.bridgeState == .unconfigured)
 
                 Button {
                     Task { await monitor.stopActiveMonitoringSession() }
@@ -431,14 +438,15 @@ public struct MonitoringTabView: View {
                         .liquidGlassPill(cornerRadius: 12)
                 }
                 .buttonStyle(.plain)
-                .disabled(store?.sessionID == nil)
+                .disabled(monitor.isChangingBridge || monitor.bridgeState == .unconfigured ||
+                          (store?.sessionID == nil && monitor.pendingCreateUUID == nil))
             }
 
-            if store?.state == .working {
+            if store?.state == .working || monitor.isWaitingForPushToken {
                 Button {
-                    Task { await store?.cancelPending() }
+                    Task { await monitor.stopActiveMonitoringSession() }
                 } label: {
-                    Text("取消当前请求并向服务端发起持久停止意图 (cancelPending)")
+                    Text("取消本次启动或停止原会话")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(palette.statusError)
                         .frame(maxWidth: .infinity)
@@ -598,10 +606,10 @@ public struct MonitoringTabView: View {
         palette: LiquidGlassPalette
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("跨重启持久化对账索引 (仅存非秘密 UUID 与桥接地址)")
+            Text("会话恢复记录（桥接、账号 ID、活动与凭据标识；不含访问令牌）")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(palette.textPrimary)
-            ForEach(monitor.persistedRecords, id: \.sessionID) { rec in
+            ForEach(monitor.persistedRecords) { rec in
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("\(rec.sourceID) · UUID \(rec.sessionID.uuidString.prefix(8))… · rev #\(rec.lastKnownRevision)")
@@ -614,10 +622,10 @@ public struct MonitoringTabView: View {
                     Spacer()
                     Button {
                         Task {
-                            await monitor.store?.load(id: rec.sessionID)
+                            await monitor.loadPersistedRecord(rec)
                         }
                     } label: {
-                        Text("加载对账")
+                        Text("核对并载入")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(palette.accent)
                             .padding(.horizontal, 8)
@@ -625,6 +633,7 @@ public struct MonitoringTabView: View {
                             .liquidGlassPill(cornerRadius: 8)
                     }
                     .buttonStyle(.plain)
+                    .disabled(monitor.isBusy)
                 }
                 .padding(8)
                 .liquidGlassPill(cornerRadius: 10)
@@ -643,7 +652,7 @@ public struct MonitoringTabView: View {
             Text("系统实时活动 (ActivityKit / WidgetKit) 与平台诚实边界")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(palette.textPrimary)
-            Text("• 本地 ActivityKit 驱动支持: \(monitor.liveActivityDriver.isSupportedOnCurrentPlatform ? "已编译 ActivityKit 分支" : "当前非 iOS 运行时") · 系统授权状态: \(monitor.liveActivityDriver.areActivitiesEnabled ? "已允许" : "未启用或需真机签名权限")\n• 服务端 600 秒采集为目标周期，非 APNs 必达承诺；客户端绝不使用手机 Timer、BGAppRefresh 或假滚动动画冒充后台刷新。\n• 退出 App 后的锁屏/常亮更新、APNs 推送送达及系统级自动轮换需在签名真机与已部署 QuotaMonitor 服务下最终验收。")
+            Text("• 本地 ActivityKit 驱动支持: \(monitor.liveActivityDriver.isSupportedOnCurrentPlatform ? "已编译 ActivityKit 分支" : "当前非 iOS 运行时") · 系统授权状态: \(monitor.liveActivityDriver.areActivitiesEnabled ? "已允许" : "未启用或需真机签名权限")\n• 服务端 600 秒是采集目标周期，不是设备送达承诺。系统活动显示首个授权账号与其余账号数量，全部账号可在 App 查看；当前未实现系统后台自动轮播。\n• 退出 App 后的锁屏更新、APNs 实际送达与活动恢复仍需使用签名真机及已部署服务验收。")
                 .font(.system(size: 10))
                 .foregroundStyle(palette.textSecondary)
                 .lineSpacing(2)
@@ -666,6 +675,17 @@ public struct MonitoringTabView: View {
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .liquidGlassCard(cornerRadius: 18)
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func monitoringInputCapitalization() -> some View {
+        #if os(iOS)
+        textInputAutocapitalization(.never)
+        #else
+        self
+        #endif
     }
 }
 #endif

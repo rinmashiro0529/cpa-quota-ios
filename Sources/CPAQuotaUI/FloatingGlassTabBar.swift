@@ -43,6 +43,7 @@ public struct FloatingGlassTabBar: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(tab.title)
+                    .accessibilityAddTraits(isSelected ? [.isSelected] : [])
                 }
             }
             .padding(5)
@@ -50,17 +51,11 @@ public struct FloatingGlassTabBar: View {
 
             Button {
                 Task {
-                    if session.isBusy {
-                        await session.cancelActiveOperation()
-                    } else if case .connected = session.authState {
-                        await session.refreshAll(force: true)
-                    } else {
-                        session.isPresentingConnectionSheet = true
-                    }
+                    await session.performCurrentWorkspaceAction()
                 }
             } label: {
                 ZStack {
-                    if session.isBusy {
+                    if session.currentWorkspaceCanCancelRead {
                         Image(systemName: "xmark")
                             .font(.system(size: 15, weight: .bold))
                             .foregroundStyle(palette.statusError)
@@ -74,7 +69,8 @@ public struct FloatingGlassTabBar: View {
                 .liquidGlassCard(cornerRadius: 24, prominent: true)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(session.isBusy ? "取消当前读取" : "刷新全部账号额度")
+            .disabled(session.currentWorkspaceActionDisabled)
+            .accessibilityLabel(session.currentWorkspaceActionLabel)
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 8)

@@ -563,6 +563,7 @@ public final class CPAQuotaSession {
                 pendingStore = nil
                 store = nil
                 currentServer = nil
+                capUsageCoordinator.teardown()
                 isRememberedInKeychain = false
                 pendingServer = nil
                 if let failure = holdOutcome.failure {
@@ -575,16 +576,21 @@ public final class CPAQuotaSession {
                 return
             }
 
+            let capClient = await newStore.makeCAPUsageClient()
+            guard generation == operationGeneration, !Task.isCancelled else {
+                if generation == operationGeneration {
+                    await newStore.cancel()
+                    await abandonRestore(server: server, generation: generation)
+                }
+                return
+            }
             pendingStore = nil
             store = newStore
             currentServer = server
             pendingServer = nil
             isRememberedInKeychain = true
+            capUsageCoordinator.bind(client: capClient)
             authState = .connected(server: server, isRememberedInKeychain: true)
-            let capClient = await makeCAPUsageClient()
-            if generation == operationGeneration {
-                capUsageCoordinator.bind(client: capClient)
-            }
         } catch let error as CPAError {
             guard generation == operationGeneration else { return }
             if Task.isCancelled {
@@ -626,6 +632,7 @@ public final class CPAQuotaSession {
         pendingStore = nil
         store = nil
         currentServer = nil
+        capUsageCoordinator.teardown()
         isRememberedInKeychain = false
         authState = .unconfigured
     }
@@ -704,6 +711,17 @@ public final class CPAQuotaSession {
             return
         }
 
+        // Prepare all connection-scoped clients before accepting credential side
+        // effects. The accepted quota and CAP contexts are then published together.
+        let capClient = await newStore.makeCAPUsageClient()
+        guard generation == operationGeneration, !Task.isCancelled else {
+            if generation == operationGeneration {
+                await newStore.cancel()
+                await abandonConnect(server: server, generation: generation)
+            }
+            return
+        }
+
         let action: CredentialIntent.Action = rememberInKeychain
             ? .remember(server: server, key: managementKey)
             : .discard(server: server)
@@ -762,14 +780,11 @@ public final class CPAQuotaSession {
         self.managementKeyDraft = ""
         self.isRememberedInKeychain = savedToKeychain
         pendingServer = nil
+        capUsageCoordinator.bind(client: capClient)
         self.authState = .connected(server: server, isRememberedInKeychain: savedToKeychain)
         self.isPresentingConnectionSheet = false
         _ = await credentialCoordinator.finalize(commitIntent.version)
         await previousStore?.cancel()
-        let capClient = await makeCAPUsageClient()
-        if generation == operationGeneration {
-            capUsageCoordinator.bind(client: capClient)
-        }
     }
 
     private func restoreActiveAuthState() {

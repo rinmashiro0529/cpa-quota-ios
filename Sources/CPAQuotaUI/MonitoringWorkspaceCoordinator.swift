@@ -2,16 +2,24 @@ import Foundation
 import Observation
 import CPAQuotaKit
 
-public struct PersistedMonitoringRecord: Codable, Equatable, Sendable {
+public struct PersistedMonitoringRecord: Codable, Equatable, Sendable, Identifiable {
     public let sessionID: UUID
     public let bridgeBaseURLString: String
+    /// Opaque identity stored with the credential in Keychain. Never a token or token hash.
+    /// Legacy records have no binding and require explicit, successful reconciliation.
+    public let credentialBindingID: UUID?
     public let sourceID: String
     public let accountIDs: [String]
     public let durationSeconds: Int
     public let activityID: String
     public let lastKnownRevision: UInt64
     public let stopIntentRecorded: Bool
+    public let terminalStatus: MonitoringSession.Status?
     public let savedAt: Date
+
+    public var id: String {
+        "\(bridgeBaseURLString)|\(credentialBindingID?.uuidString ?? "legacy")|\(sessionID.uuidString)"
+    }
 
     public init(
         sessionID: UUID,
@@ -22,16 +30,20 @@ public struct PersistedMonitoringRecord: Codable, Equatable, Sendable {
         activityID: String,
         lastKnownRevision: UInt64,
         stopIntentRecorded: Bool,
+        credentialBindingID: UUID? = nil,
+        terminalStatus: MonitoringSession.Status? = nil,
         savedAt: Date = Date()
     ) {
         self.sessionID = sessionID
         self.bridgeBaseURLString = bridgeBaseURLString
+        self.credentialBindingID = credentialBindingID
         self.sourceID = sourceID
         self.accountIDs = accountIDs
         self.durationSeconds = durationSeconds
         self.activityID = activityID
         self.lastKnownRevision = lastKnownRevision
         self.stopIntentRecorded = stopIntentRecorded
+        self.terminalStatus = terminalStatus
         self.savedAt = savedAt
     }
 }
@@ -154,12 +166,20 @@ public protocol SystemLiveActivityDriver: AnyObject {
     func startActivity(
         sourceID: String,
         initialSnapshot: MonitoringSnapshot?,
-        onPushTokenUpdate: @escaping @MainActor (String) -> Void,
+        onPushTokenUpdate: @escaping @MainActor (String, String) -> Void,
         onSystemDismissed: @escaping @MainActor (String) -> Void
     ) async throws -> LocalLiveActivityRegistrationResult
 
-    func updateActivity(snapshot: MonitoringSnapshot) async throws
-    func endActivity(immediate: Bool) async
+    func restoreActivity(
+        activityID: String,
+        sourceID: String,
+        onPushTokenUpdate: @escaping @MainActor (String, String) -> Void,
+        onSystemDismissed: @escaping @MainActor (String) -> Void
+    ) async throws -> LocalLiveActivityRegistrationResult?
+
+    func updateActivity(activityID: String, snapshot: MonitoringSnapshot) async throws
+    func endActivity(activityID: String, immediate: Bool) async
+    func detachActivity()
 }
 
 @MainActor
@@ -173,30 +193,82 @@ public final class MonitoringWorkspaceCoordinator {
     public private(set) var bridgeState: BridgeState = .unconfigured
     public private(set) var store: MonitoringStore?
     public private(set) var activeAddress: MonitorBridgeAddress?
+    public private(set) var credentialBindingID: UUID?
     public private(set) var isSavedInKeychain = false
     public private(set) var bridgeFormError: String?
     public private(set) var bridgeStatusNotice: String?
     public private(set) var cachedSourceSnapshot: MonitoringSnapshot?
+    public private(set) var cachedSourceID: String?
     public private(set) var persistedRecords: [PersistedMonitoringRecord] = []
-
-    public var bridgeURLDraft: String = ""
-    public var bridgeTokenDraft: String = ""
-    public var rememberBridgeDraft: Bool = true
-
-    public var sourceIDDraft: String = ""
-    public var selectedAccountIDsDraft: [String] = []
-    public var newAccountIDDraft: String = ""
-    public var durationDraft: MonitoringDuration = .fourHours
-    public var manualActivityIDDraft: String = ""
-    public var manualPushTokenDraft: String = ""
-
-    /// Pending UUID preserved across create timeouts so retries reconcile the same UUID instead of minting a new one (U16).
     public private(set) var pendingCreateUUID: UUID?
+    public private(set) var isWaitingForPushToken = false
+    public private(set) var isChangingBridge = false
+    public private(set) var isSessionActionInProgress = false
+    public private(set) var isRotatingToken = false
+    public private(set) var isLoadingCachedQuota = false
+    public var isBusy: Bool { isChangingBridge || isSessionActionInProgress || isRotatingToken || isLoadingCachedQuota }
+
+    public var bridgeURLDraft = ""
+    public var bridgeTokenDraft = ""
+    public var rememberBridgeDraft = true
+    public var sourceIDDraft = "" {
+        didSet {
+            if sourceIDDraft.trimmingCharacters(in: .whitespacesAndNewlines) != cachedSourceID {
+                cachedSourceSnapshot = nil
+                cachedSourceID = nil
+            }
+        }
+    }
+    public var selectedAccountIDsDraft: [String] = []
+    public var newAccountIDDraft = ""
+    public var durationDraft: MonitoringDuration = .fourHours
+    public var manualActivityIDDraft = ""
+    public var manualPushTokenDraft = ""
+
+    private struct Connection {
+        let credential: MonitoringBridgeCredential
+        let client: CPAMonitorClient
+        let generation: UInt64
+        var address: MonitorBridgeAddress { credential.address }
+        var bindingID: UUID { credential.bindingID }
+    }
+
+    private struct PendingIntent {
+        let id: UUID
+        let sourceID: String
+        let accountIDs: [String]
+        let duration: MonitoringDuration
+        var activityID: String?
+        var registration: MonitoringRegistration?
+        var submittedToken: String?
+        var wasSubmitted: Bool
+    }
+
+    private struct TokenUpdate {
+        let activityID: String
+        let sessionID: UUID
+        let token: String
+    }
 
     @ObservationIgnored private let credentialStore: MonitoringBridgeCredentialStore
     @ObservationIgnored private let metadataStore: any MonitoringMetadataPersistence
     @ObservationIgnored private let clientFactory: @Sendable (URL, MonitorBridgeToken) throws -> CPAMonitorClient
     @ObservationIgnored public let liveActivityDriver: any SystemLiveActivityDriver
+    @ObservationIgnored private var connection: Connection?
+    @ObservationIgnored private var connectionGeneration: UInt64 = 0
+    @ObservationIgnored private var configurationGeneration: UInt64 = 0
+    @ObservationIgnored private var configurationTask: Task<Void, Never>?
+    @ObservationIgnored private var configurationAddresses: Set<MonitorBridgeAddress> = []
+    @ObservationIgnored private var pendingIntent: PendingIntent?
+    @ObservationIgnored private var operationID: UUID?
+    @ObservationIgnored private var tokenTask: Task<Void, Never>?
+    @ObservationIgnored private var tokenWorkID: UUID?
+    @ObservationIgnored private var cacheOperationID: UUID?
+    @ObservationIgnored private var latestToken: TokenUpdate?
+    @ObservationIgnored private var acknowledgedToken: String?
+    @ObservationIgnored private var blockedToken: String?
+    @ObservationIgnored private var attachedActivityID: String?
+    @ObservationIgnored private var detachedConnections: [UUID: Connection] = [:]
 
     public init(
         credentialStore: MonitoringBridgeCredentialStore = MonitoringBridgeCredentialStore(),
@@ -210,154 +282,187 @@ public final class MonitoringWorkspaceCoordinator {
         self.metadataStore = metadataStore
         self.clientFactory = clientFactory
         self.liveActivityDriver = liveActivityDriver ?? DefaultSystemLiveActivityDriver()
-        self.persistedRecords = metadataStore.loadPersistedRecords()
-        if let saved = metadataStore.loadSavedBridgeAddress() {
-            self.bridgeURLDraft = saved
-        }
+        persistedRecords = metadataStore.loadPersistedRecords()
+        bridgeURLDraft = metadataStore.loadSavedBridgeAddress() ?? ""
     }
 
     public func restoreBridgeIfAvailable() async {
-        bridgeFormError = nil
-        guard let saved = metadataStore.loadSavedBridgeAddress(),
-              let rawURL = URL(string: saved) else {
-            return
-        }
-        do {
-            let address = try MonitorBridgeAddress(baseURL: rawURL)
-            guard let token = try await credentialStore.load(for: address) else {
-                bridgeState = .unconfigured
-                isSavedInKeychain = false
-                return
+        guard connection == nil, !isChangingBridge,
+              let saved = metadataStore.loadSavedBridgeAddress(),
+              let url = URL(string: saved), let address = try? MonitorBridgeAddress(baseURL: url) else { return }
+        configurationGeneration &+= 1
+        let generation = configurationGeneration
+        isChangingBridge = true
+        configurationAddresses.insert(address)
+        let previous = configurationTask
+        let task = Task { @MainActor [weak self] in
+            await previous?.value
+            guard let self, self.configurationGeneration == generation else { return }
+            do {
+                guard let credential = try await self.credentialStore.loadCredential(for: address) else { return }
+                guard self.configurationGeneration == generation else { return }
+                let client = try self.clientFactory(address.baseURL, credential.token)
+                self.bindClient(client, credential: credential, isSaved: true)
+            } catch {
+                guard self.configurationGeneration == generation else { return }
+                self.bridgeFormError = "桥接安全存储读取失败，请重新连接。"
             }
-            let client = try clientFactory(address.baseURL, token)
-            bindClient(client, address: address, isSaved: true)
-            await reconcilePersistedRecordIfMatching(address: address)
-        } catch let error as CPAError {
-            bridgeFormError = ErrorPresentation(error: error).summary
-        } catch {
-            bridgeFormError = "桥接地址或安全存储读取失败，请重新验证桥接配置。"
         }
+        configurationTask = task
+        await task.value
+        guard configurationGeneration == generation else { return }
+        finishConfiguration()
+        await restoreMatchingRecord()
     }
 
-    public func connectBridge(
-        rawURLString: String,
-        rawTokenString: String,
-        rememberInKeychain: Bool
-    ) async {
-        bridgeFormError = nil
-        bridgeStatusNotice = nil
-        let trimmedURL = rawURLString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let parsedURL = URL(string: trimmedURL) else {
-            bridgeFormError = "请输入合法的 HTTPS 监控桥接地址（不含用户名密码、查询参数或锚点）。"
+    public func connectBridge(rawURLString: String, rawTokenString: String, rememberInKeychain: Bool) async {
+        guard !isChangingBridge else {
+            bridgeFormError = "桥接凭据正在处理，请等待完成后再连接；仍可选择仅在本机忘记。"
             return
         }
         let address: MonitorBridgeAddress
         let token: MonitorBridgeToken
         let client: CPAMonitorClient
         do {
-            address = try MonitorBridgeAddress(baseURL: parsedURL)
+            guard let url = URL(string: rawURLString.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                throw MonitoringError.invalidConfiguration
+            }
+            address = try MonitorBridgeAddress(baseURL: url)
             token = try MonitorBridgeToken(rawTokenString)
             client = try clientFactory(address.baseURL, token)
-        } catch MonitoringError.invalidConfiguration {
-            bridgeFormError = "桥接地址需为安全 HTTPS URL，且桥接 Token 不能为空或包含控制字符。"
-            return
         } catch {
-            bridgeFormError = "桥接配置格式无效，请检查 HTTPS 地址与独立桥接 Token。"
+            bridgeFormError = "请检查 HTTPS 桥接地址与独立桥接 Token。"
             return
         }
-
-        var savedFlag = false
-        if rememberInKeychain {
+        configurationGeneration &+= 1
+        let generation = configurationGeneration
+        isChangingBridge = true
+        bridgeFormError = nil
+        bridgeStatusNotice = nil
+        configurationAddresses.insert(address)
+        let previousTask = configurationTask
+        let priorCredential = connection?.credential
+        let task = Task { @MainActor [weak self] in
+            await previousTask?.value
+            guard let self, self.configurationGeneration == generation else { return }
             do {
-                try await credentialStore.save(token, for: address)
-                metadataStore.saveBridgeAddress(address.baseURL.absoluteString)
-                savedFlag = true
+                let credential = try await self.credentialStore.bind(token, for: address,
+                    remember: rememberInKeychain, previous: priorCredential)
+                guard self.configurationGeneration == generation else { return }
+                self.metadataStore.saveBridgeAddress(rememberInKeychain ? address.baseURL.absoluteString : nil)
+                self.bindClient(client, credential: credential, isSaved: rememberInKeychain)
+                self.bridgeURLDraft = address.baseURL.absoluteString
+                self.bridgeTokenDraft = ""
             } catch let error as CPAError {
-                bridgeFormError = ErrorPresentation(error: error).summary
-                savedFlag = false
+                guard self.configurationGeneration == generation else { return }
+                self.bridgeFormError = ErrorPresentation(error: error).summary
             } catch {
-                bridgeFormError = ErrorPresentation(error: CPAError(.secureStorageFailure)).summary
-                savedFlag = false
+                guard self.configurationGeneration == generation else { return }
+                self.bridgeFormError = "桥接凭据保存或移除失败，原连接保持不变。"
             }
-        } else {
-            if let oldAddress = activeAddress {
-                try? await credentialStore.remove(for: oldAddress)
-            }
-            metadataStore.saveBridgeAddress(nil)
         }
-
-        bindClient(client, address: address, isSaved: savedFlag)
-        bridgeURLDraft = address.baseURL.absoluteString
-        bridgeTokenDraft = ""
-        await reconcilePersistedRecordIfMatching(address: address)
+        configurationTask = task
+        await task.value
+        guard configurationGeneration == generation else { return }
+        finishConfiguration()
+        guard connection?.client === client else { return }
+        await restoreMatchingRecord()
     }
 
-    private func bindClient(_ client: CPAMonitorClient, address: MonitorBridgeAddress, isSaved: Bool) {
-        if let existingStore = store {
-            existingStore.replaceClient(client)
+    private func finishConfiguration(clearAddresses: Bool = true) {
+        isChangingBridge = false
+        configurationTask = nil
+        if clearAddresses { configurationAddresses.removeAll() }
+    }
+
+    private func bindClient(_ client: CPAMonitorClient, credential: MonitoringBridgeCredential, isSaved: Bool) {
+        cancelLocalWork()
+        if let store {
+            let old = connection
+            store.replaceClient(client)
+            if let old { captureDetachedConnections(old) }
         } else {
             store = MonitoringStore(client: client)
         }
-        activeAddress = address
+        connectionGeneration &+= 1
+        connection = Connection(credential: credential, client: client, generation: connectionGeneration)
+        activeAddress = credential.address
+        credentialBindingID = credential.bindingID
         isSavedInKeychain = isSaved
-        bridgeState = .connected(address: address.baseURL, isSavedInKeychain: isSaved)
+        bridgeState = .connected(address: credential.address.baseURL, isSavedInKeychain: isSaved)
+        cachedSourceSnapshot = nil
+        cachedSourceID = nil
     }
 
-    private func reconcilePersistedRecordIfMatching(address: MonitorBridgeAddress) async {
-        guard let store else { return }
-        if let record = persistedRecords.first(where: { $0.bridgeBaseURLString == address.baseURL.absoluteString }) {
-            sourceIDDraft = record.sourceID
-            selectedAccountIDsDraft = record.accountIDs
-            if let dur = MonitoringDuration(rawValue: record.durationSeconds) {
-                durationDraft = dur
-            }
-            if !record.stopIntentRecorded {
-                await store.load(id: record.sessionID)
-                syncPersistedStateFromStore()
-            }
-        }
+    private func restoreMatchingRecord() async {
+        guard let context = connection else { return }
+        guard let record = persistedRecords.first(where: { matches($0, context) && !isConfirmedTerminal($0) }) else { return }
+        await loadPersistedRecord(record)
     }
 
-    /// Forget local bridge credentials only. Does NOT claim the remote monitoring session has stopped (MON-01, U19).
+    /// Leaves remote leases untouched, but releases every in-memory client and callback.
     public func forgetBridgeLocallyOnly() async {
+        configurationGeneration &+= 1
+        let generation = configurationGeneration
+        let currentID = store?.sessionID ?? pendingCreateUUID
+        var addresses = configurationAddresses
+        if let activeAddress { addresses.insert(activeAddress) }
+        if let saved = metadataStore.loadSavedBridgeAddress(), let url = URL(string: saved),
+           let address = try? MonitorBridgeAddress(baseURL: url) { addresses.insert(address) }
+        isChangingBridge = true
         bridgeFormError = nil
-        let targetAddress: MonitorBridgeAddress? = activeAddress ?? {
-            guard let saved = metadataStore.loadSavedBridgeAddress(), let url = URL(string: saved) else { return nil }
-            return try? MonitorBridgeAddress(baseURL: url)
-        }()
-
-        if let targetAddress {
+        let previousTask = configurationTask
+        let task = Task { @MainActor [weak self] in
+            await previousTask?.value
+            guard let self, self.configurationGeneration == generation else { return }
             do {
-                try await credentialStore.remove(for: targetAddress)
+                for address in addresses {
+                    try await self.credentialStore.remove(for: address)
+                    if self.activeAddress == address {
+                        self.isSavedInKeychain = false
+                        self.bridgeState = .connected(address: address.baseURL, isSavedInKeychain: false)
+                        self.metadataStore.saveBridgeAddress(nil)
+                    }
+                }
+                guard self.configurationGeneration == generation else { return }
+                self.cancelLocalWork()
+                self.connectionGeneration &+= 1
+                self.connection = nil
+                self.store = nil
+                self.detachedConnections.removeAll()
+                self.metadataStore.saveBridgeAddress(nil)
+                self.activeAddress = nil
+                self.credentialBindingID = nil
+                self.isSavedInKeychain = false
+                self.bridgeState = .unconfigured
+                self.bridgeTokenDraft = ""
+                self.manualPushTokenDraft = ""
+                self.cachedSourceSnapshot = nil
+                self.cachedSourceID = nil
+                self.bridgeStatusNotice = currentID == nil
+                    ? "已移除本机桥接凭据并断开连接。"
+                    : "已移除本机桥接凭据并断开连接；远端监控未因此停止。已保留原桥接与会话索引，重新连接后可对账或停止，租约也会有限期到期。"
             } catch let error as CPAError {
-                bridgeFormError = ErrorPresentation(error: error).summary
-                return
+                guard self.configurationGeneration == generation else { return }
+                self.bridgeFormError = ErrorPresentation(error: error).summary
             } catch {
-                bridgeFormError = ErrorPresentation(error: CPAError(.secureStorageFailure)).summary
-                return
+                guard self.configurationGeneration == generation else { return }
+                self.bridgeFormError = "未能移除桥接凭据，连接和对账记录已保留。"
             }
         }
-
-        metadataStore.saveBridgeAddress(nil)
-        isSavedInKeychain = false
-        activeAddress = nil
-        bridgeState = .unconfigured
-        bridgeTokenDraft = ""
-
-        if let currentID = store?.sessionID {
-            bridgeStatusNotice = "已从本机 Keychain 移除桥接凭据。注意：仅在本机忘记凭据不等于服务端监控已停止（会话 \(currentID.uuidString.prefix(8))… 将按服务端有限期租约自然到期兜底，或重新连接后显式停止）。"
-        } else {
-            bridgeStatusNotice = "已从本机 Keychain 移除桥接凭据。"
-        }
+        configurationTask = task
+        await task.value
+        guard configurationGeneration == generation else { return }
+        finishConfiguration(clearAddresses: connection == nil)
     }
 
-    /// Attempt to stop the remote session first, verify 204 cancellation receipt, then forget local credentials.
     public func stopAndForgetBridge() async {
-        bridgeFormError = nil
-        if let store, store.sessionID != nil {
+        guard let context = connection else { await forgetBridgeLocallyOnly(); return }
+        if store?.sessionID != nil || pendingIntent != nil {
             await stopActiveMonitoringSession()
-            if store.state != .stopIntentRecorded && store.session?.status != .stopped && store.session?.status != .expired {
-                bridgeStatusNotice = "服务端停止未获得确认回执（状态不明 uncertain），已保留会话 UUID 供后续对账；若仍需仅清除本机凭据，请选择「仅在本机忘记桥接凭据」。"
+            guard isCurrent(context) else { return }
+            guard pendingIntent == nil, store?.sessionID == nil || isCurrentSessionTerminal else {
+                bridgeStatusNotice = "尚未确认停止，已保留原凭据与会话索引；可再次对账，或明确选择仅在本机忘记。"
                 return
             }
         }
@@ -365,287 +470,610 @@ public final class MonitoringWorkspaceCoordinator {
     }
 
     public func addAccountIDDraft(_ rawID: String) {
-        let trimmed = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        guard !selectedAccountIDsDraft.contains(trimmed) else { return }
-        guard selectedAccountIDsDraft.count < 5 else {
-            bridgeFormError = "单次监控会话最多选择 5 个授权账号 ID（1–5 个）。"
-            return
-        }
-        selectedAccountIDsDraft.append(trimmed)
+        let id = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty, !selectedAccountIDsDraft.contains(id) else { return }
+        guard selectedAccountIDsDraft.count < 5 else { bridgeFormError = "单次监控最多选择 5 个授权账号。"; return }
+        selectedAccountIDsDraft.append(id)
         newAccountIDDraft = ""
-        bridgeFormError = nil
     }
 
-    public func removeAccountIDDraft(_ id: String) {
-        selectedAccountIDsDraft.removeAll { $0 == id }
-    }
+    public func removeAccountIDDraft(_ id: String) { selectedAccountIDsDraft.removeAll { $0 == id } }
 
     public func startOrReconcileMonitoringSession() async {
-        bridgeFormError = nil
-        bridgeStatusNotice = nil
-        guard let store, let activeAddress else {
-            bridgeFormError = "尚未配置监控桥接连接，无法启动监控会话。"
-            return
-        }
+        guard let context = connection, let store else { bridgeFormError = "请先连接监控桥接。"; return }
+        guard let operation = beginOperation(context) else { return }
+        defer { finishOperation(operation) }
 
-        let trimmedSource = sourceIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedSource.isEmpty else {
-            bridgeFormError = "请填写部署侧配置的授权 Source ID（桥接不提供任意来源枚举接口）。"
-            return
+        if pendingIntent == nil {
+            guard store.sessionID == nil || isCurrentSessionTerminal else {
+                bridgeFormError = "现有会话尚未确认结束，请先查询或停止；未创建新的系统活动。"
+                return
+            }
+            let source = sourceIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !source.isEmpty, (1...5).contains(selectedAccountIDsDraft.count) else {
+                bridgeFormError = "请填写授权 Source ID 并选择 1–5 个账号。"
+                return
+            }
+            let intent = PendingIntent(id: UUID(), sourceID: source, accountIDs: selectedAccountIDsDraft,
+                duration: durationDraft, activityID: nil, registration: nil, submittedToken: nil, wasSubmitted: false)
+            pendingIntent = intent
+            pendingCreateUUID = intent.id
+            latestToken = nil
+            acknowledgedToken = nil
+            blockedToken = nil
+            saveIntent(intent, context: context)
         }
-        guard (1...5).contains(selectedAccountIDsDraft.count) else {
-            bridgeFormError = "请指定 1–5 个部署白名单授权的 CPA 账号 ID。"
-            return
-        }
+        guard var intent = pendingIntent else { return }
 
-        // If a previous create timed out or became uncertain with a known pendingCreateUUID, reconcile it first (U16)!
-        if let existingPending = pendingCreateUUID,
-           store.sessionID == existingPending,
-           store.state == .uncertain {
-            await store.load(id: existingPending)
-            syncPersistedStateFromStore()
-            if store.state == .available {
-                pendingCreateUUID = nil
-                bridgeStatusNotice = "已使用原 UUID (\(existingPending.uuidString.prefix(8))…) 与服务端完成对账恢复，未重复创建新会话。"
+        if intent.wasSubmitted {
+            await store.load(id: intent.id)
+            guard isCurrent(context, operation) else { return }
+            captureDetachedConnections(context)
+            if store.state == .available, sessionMatchesIntent(store.session, intent) {
+                await acceptLoadedSession(context, operation: operation)
+                return
+            }
+            guard store.error == .notFound, intent.registration != nil else {
+                bridgeStatusNotice = "原会话仍待对账。未更换 UUID 或重建活动；不能恢复原注册时，请明确停止该 UUID 后再开始。"
                 return
             }
         }
 
-        var resolvedActivityID = manualActivityIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        var resolvedPushTokenHex = manualPushTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if resolvedActivityID.isEmpty || resolvedPushTokenHex.isEmpty {
-            if liveActivityDriver.isSupportedOnCurrentPlatform && liveActivityDriver.areActivitiesEnabled {
+        if intent.activityID == nil {
+            let manualID = manualActivityIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+            let manualToken = manualPushTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !manualID.isEmpty, !manualToken.isEmpty {
+                intent.activityID = manualID
+                pendingIntent = intent
+                latestToken = TokenUpdate(activityID: manualID, sessionID: intent.id, token: manualToken.lowercased())
+            } else {
                 do {
-                    let result = try await liveActivityDriver.startActivity(
-                        sourceID: trimmedSource,
-                        initialSnapshot: cachedSourceSnapshot
-                    ) { [weak self] newTokenHex in
-                        guard let self else { return }
-                        Task { @MainActor in
-                            await self.handleSystemPushTokenRotation(newTokenHex: newTokenHex)
-                        }
-                    } onSystemDismissed: { [weak self] dismissedActivityID in
-                        guard let self else { return }
-                        Task { @MainActor in
-                            self.handleUserDismissedActivity(activityID: dismissedActivityID)
-                        }
+                    let result = try await liveActivityDriver.startActivity(sourceID: intent.sourceID, initialSnapshot: nil,
+                        onPushTokenUpdate: tokenCallback(context: context, sessionID: intent.id),
+                        onSystemDismissed: dismissalCallback(context: context))
+                    guard isCurrent(context, operation), pendingIntent?.id == intent.id else {
+                        await liveActivityDriver.endActivity(activityID: result.activityID, immediate: true)
+                        return
                     }
-                    if resolvedActivityID.isEmpty {
-                        resolvedActivityID = result.activityID
+                    intent.activityID = result.activityID
+                    pendingIntent = intent
+                    saveIntent(intent, context: context)
+                    guard liveActivityDriver.activeActivityID == result.activityID else {
+                        latestToken = nil
+                        bridgeFormError = "系统活动在启动期间已结束；未注册远端会话。请取消本次启动后重试。"
+                        return
                     }
-                    if resolvedPushTokenHex.isEmpty, let tokenHex = result.initialPushTokenHex {
-                        resolvedPushTokenHex = tokenHex
+                    attachedActivityID = result.activityID
+                    // A callback may run before this continuation. Keep the newer observed token.
+                    if latestToken?.sessionID != intent.id || latestToken?.activityID != result.activityID {
+                        latestToken = result.initialPushTokenHex.map {
+                            TokenUpdate(activityID: result.activityID, sessionID: intent.id, token: $0.lowercased())
+                        }
                     }
                 } catch {
-                    // Fall through to check if activity ID & push token are present
+                    guard isCurrent(context, operation) else { return }
+                    bridgeFormError = "系统实时活动无法启动，请检查系统授权。已保留创建意图，未发送假令牌。"
+                    return
                 }
             }
         }
-
-        guard !resolvedActivityID.isEmpty, !resolvedPushTokenHex.isEmpty else {
-            bridgeFormError = "缺少真实 Activity ID 或 APNs 活动 Push Token（当前环境未启用系统 Live Activity 推送令牌）。客户端拒绝生成假 Token 或创建假会话。"
-            return
-        }
-
-        let sessionUUID = pendingCreateUUID ?? UUID()
-        let registration: MonitoringRegistration
-        do {
-            let pushToken = try MonitoringPushToken(resolvedPushTokenHex)
-            registration = try MonitoringRegistration(
-                id: sessionUUID,
-                sourceID: trimmedSource,
-                accountIDs: selectedAccountIDsDraft,
-                duration: durationDraft,
-                activityID: resolvedActivityID,
-                pushToken: pushToken
-            )
-        } catch {
-            bridgeFormError = "监控注册参数校验未通过：请确认 Source ID、账号 ID (1–5个) 与十六进制偶数长度 Push Token 符合安全合同。"
-            return
-        }
-
-        pendingCreateUUID = sessionUUID
-        upsertPersistedRecord(
-            PersistedMonitoringRecord(
-                sessionID: sessionUUID,
-                bridgeBaseURLString: activeAddress.baseURL.absoluteString,
-                sourceID: trimmedSource,
-                accountIDs: selectedAccountIDsDraft,
-                durationSeconds: durationDraft.rawValue,
-                activityID: resolvedActivityID,
-                lastKnownRevision: 1,
-                stopIntentRecorded: false
-            )
-        )
-
-        await store.start(registration)
-        syncPersistedStateFromStore()
-
-        if store.state == .available {
-            pendingCreateUUID = nil
-            if let snapshot = store.session?.snapshot {
-                try? await liveActivityDriver.updateActivity(snapshot: snapshot)
+        guard let activityID = intent.activityID else { return }
+        if intent.registration == nil {
+            guard let update = latestToken, update.sessionID == intent.id, update.activityID == activityID else {
+                isWaitingForPushToken = true
+                bridgeStatusNotice = "正在等待此系统活动的推送令牌；无需再次创建活动，可随时取消本次启动。"
+                return
             }
-        } else if store.state == .uncertain {
-            bridgeStatusNotice = "创建请求结果未确认（可能超时或网络中断）。已固定保留会话 UUID (\(sessionUUID.uuidString.prefix(8))…)，点击「对账恢复 / 重试」将按同一 UUID 查询或幂等恢复，不会盲目新建 UUID。"
+            do {
+                intent.registration = try MonitoringRegistration(id: intent.id, sourceID: intent.sourceID,
+                    accountIDs: intent.accountIDs, duration: intent.duration, activityID: activityID,
+                    pushToken: MonitoringPushToken(update.token))
+                intent.submittedToken = update.token
+            } catch {
+                blockedToken = update.token
+                bridgeFormError = "注册参数或活动令牌无效；未发送注册请求。"
+                return
+            }
+        }
+        guard let registration = intent.registration else { return }
+        intent.wasSubmitted = true
+        pendingIntent = intent
+        isWaitingForPushToken = false
+        saveIntent(intent, context: context)
+        await store.start(registration)
+        guard isCurrent(context, operation) else { return }
+        captureDetachedConnections(context)
+        syncPersistedState(context)
+        if store.state == .available, sessionMatchesIntent(store.session, intent) {
+            acknowledgedToken = intent.submittedToken
+            await acceptLoadedSession(context, operation: operation)
+        } else {
+            bridgeStatusNotice = "创建结果尚未确认，原 UUID、活动和注册内容已保留。下一次先查询原会话，不盲目另建。"
+        }
+    }
+
+    public func loadPersistedRecord(_ record: PersistedMonitoringRecord) async {
+        guard pendingIntent?.wasSubmitted != false else {
+            bridgeStatusNotice = "当前正在等待原活动令牌；请先完成或取消本次本地启动，再切换历史会话。"
+            return
+        }
+        guard let context = connection, let store else {
+            bridgeURLDraft = record.bridgeBaseURLString
+            bridgeFormError = "请先重新连接此记录的原桥接。"
+            return
+        }
+        guard sameAddress(record, context) else {
+            bridgeURLDraft = record.bridgeBaseURLString
+            bridgeFormError = "此记录属于另一桥接，请连接其原地址后再查询；没有向当前桥接发送该 UUID。"
+            return
+        }
+        guard let operation = beginOperation(context) else { return }
+        defer { finishOperation(operation) }
+        var selected = record
+        if !matches(record, context) {
+            // A GET proves visibility to this credential; 404 never authorizes DELETE for an old binding.
+            do {
+                let result = try await context.client.get(id: record.sessionID)
+                guard isCurrent(context, operation) else { return }
+                guard sessionMatchesRecord(result, record) else { throw MonitoringError.invalidResponse }
+                selected = recordFor(result, context: context, existing: record)
+                replaceRecord(record, with: selected)
+            } catch {
+                guard isCurrent(context, operation) else { return }
+                bridgeFormError = "未能确认历史记录属于当前凭据；已保留原记录，不能据此发送停止或认定已停止。"
+                return
+            }
+        }
+        sourceIDDraft = selected.sourceID
+        selectedAccountIDsDraft = selected.accountIDs
+        durationDraft = MonitoringDuration(rawValue: selected.durationSeconds) ?? .fourHours
+        pendingIntent = PendingIntent(id: selected.sessionID, sourceID: selected.sourceID,
+            accountIDs: selected.accountIDs, duration: durationDraft,
+            activityID: selected.activityID.isEmpty ? nil : selected.activityID,
+            registration: nil, submittedToken: nil, wasSubmitted: true)
+        pendingCreateUUID = selected.sessionID
+        await store.load(id: selected.sessionID)
+        guard isCurrent(context, operation) else { return }
+        captureDetachedConnections(context)
+        syncPersistedState(context)
+        if store.state == .available, sessionMatchesRecord(store.session, selected) {
+            await acceptLoadedSession(context, operation: operation)
+        } else {
+            bridgeStatusNotice = "已保留原桥接、凭据标识与 UUID；当前结果仍待对账，404 不代表停止。"
         }
     }
 
     public func reconcileCurrentSession() async {
-        guard let store else { return }
-        guard let id = store.sessionID ?? pendingCreateUUID ?? persistedRecords.first?.sessionID else {
-            bridgeFormError = "当前没有待对账的监控会话 UUID。"
+        guard pendingIntent?.wasSubmitted != false else {
+            bridgeStatusNotice = "正在等待原活动的系统令牌，尚未发送注册；无需查询其他会话。"
             return
         }
+        guard let context = connection, let store else { return }
+        guard let id = store.sessionID ?? pendingCreateUUID else {
+            if let record = persistedRecords.first(where: { matches($0, context) && !isConfirmedTerminal($0) }) {
+                await loadPersistedRecord(record)
+            } else { bridgeFormError = "请从历史记录中选择属于原桥接的会话。" }
+            return
+        }
+        guard let operation = beginOperation(context) else { return }
+        defer { finishOperation(operation) }
         await store.load(id: id)
-        syncPersistedStateFromStore()
-        if let snapshot = store.session?.snapshot {
-            try? await liveActivityDriver.updateActivity(snapshot: snapshot)
-        }
-        if store.state == .available {
-            pendingCreateUUID = nil
-            bridgeStatusNotice = "会话 \(id.uuidString.prefix(8))… 对账完成（状态: \(store.session?.status.rawValue ?? "未知")，revision: \(store.session?.revision ?? 0)）。"
-        }
+        guard isCurrent(context, operation) else { return }
+        captureDetachedConnections(context)
+        syncPersistedState(context)
+        if store.state == .available { await acceptLoadedSession(context, operation: operation) }
     }
 
     public func refreshActiveMonitoringSession() async {
-        guard let store, store.sessionID != nil else { return }
+        guard pendingIntent?.wasSubmitted != false else { return }
+        guard let context = connection, let store, store.sessionID != nil,
+              let operation = beginOperation(context) else { return }
+        defer { finishOperation(operation) }
         await store.refresh()
-        syncPersistedStateFromStore()
-        if let snapshot = store.session?.snapshot {
-            try? await liveActivityDriver.updateActivity(snapshot: snapshot)
-        }
+        guard isCurrent(context, operation) else { return }
+        syncPersistedState(context)
         if store.state == .available {
-            bridgeStatusNotice = "已收到服务端刷新响应（注意：HTTP 200/202 仅代表服务端接受刷新意图或返回当前会话，不代表 APNs 已送达设备）。"
+            await updateBoundActivity(context, operation: operation)
+            if isCurrent(context, operation) { bridgeStatusNotice = "服务端已接受刷新意图；这不是设备送达回执。" }
         }
     }
 
     public func stopActiveMonitoringSession() async {
-        guard let store, let id = store.sessionID else { return }
+        guard let context = connection, let store, !isChangingBridge else { return }
+        guard let id = store.sessionID ?? pendingIntent?.id else { return }
+        tokenTask?.cancel()
+        tokenTask = nil
+        tokenWorkID = nil
+        isRotatingToken = false
+        blockedToken = latestToken?.token
+        let operation = UUID()
+        operationID = operation
+        isSessionActionInProgress = true
+        defer { finishOperation(operation) }
+
+        if let intent = pendingIntent, !intent.wasSubmitted, store.sessionID != intent.id {
+            let activityID = intent.activityID
+            removeRecord(id: intent.id, context: context)
+            clearPendingIntent()
+            if let activityID { await liveActivityDriver.endActivity(activityID: activityID, immediate: true) }
+            guard isCurrent(context, operation) else { return }
+            attachedActivityID = nil
+            bridgeStatusNotice = "已取消本次本地启动；尚未发出远端注册请求。"
+            return
+        }
+        if store.sessionID == nil {
+            await store.load(id: id)
+            guard isCurrent(context, operation) else { return }
+        }
         await store.stop()
-        syncPersistedStateFromStore()
-        if store.state == .stopIntentRecorded {
-            pendingCreateUUID = nil
-            await liveActivityDriver.endActivity(immediate: true)
-            bridgeStatusNotice = "服务端已返回 HTTP 204 持久取消墓碑回执（会话 \(id.uuidString.prefix(8))… 已记录停止意图；回执代表服务端取消约束生效，不直接代表 APNs end 已送达）。"
-        } else if let session = store.session, session.status != .active {
-            pendingCreateUUID = nil
-            await liveActivityDriver.endActivity(immediate: true)
-            bridgeStatusNotice = "监控会话已处于终态 (\(session.status.rawValue))。"
+        guard isCurrent(context, operation) else { return }
+        syncPersistedState(context)
+        if isCurrentSessionTerminal {
+            let activityID = store.session?.activityID ?? pendingIntent?.activityID ?? attachedActivityID
+            clearPendingIntent()
+            if let activityID { await liveActivityDriver.endActivity(activityID: activityID, immediate: true) }
+            guard isCurrent(context, operation) else { return }
+            attachedActivityID = nil
+            bridgeStatusNotice = "原桥接已确认终态或持久取消意图；本地绑定活动已结束。该回执不证明 APNs end 已送达。"
         } else {
-            bridgeStatusNotice = "停止请求未获得 204 确认（当前状态 uncertain，错误: \(monitoringErrorText(store.error))）。404/超时/507 均不会伪造取消回执，会话 UUID 已保留供后续对账或再次停止。"
+            bridgeStatusNotice = "停止结果未确认，已保留原 UUID；404、超时或 507 均不代表停止成功。"
         }
     }
 
     public func loadCachedQuotaForDraftSource() async {
-        bridgeFormError = nil
-        let trimmedSource = sourceIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedSource.isEmpty else {
-            bridgeFormError = "请先输入授权 Source ID 再读取缓存快照。"
-            return
-        }
-        guard let activeAddress,
-              let token = try? await credentialStore.load(for: activeAddress),
-              let client = try? clientFactory(activeAddress.baseURL, token) else {
-            bridgeFormError = "请先连接并保存有效的桥接凭据后再读取缓存快照。"
-            return
+        guard let context = connection else { bridgeFormError = "请先连接监控桥接。"; return }
+        let source = sourceIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !source.isEmpty else { bridgeFormError = "请先填写授权 Source ID。"; return }
+        guard cacheOperationID == nil else { return }
+        let readID = UUID()
+        cacheOperationID = readID
+        isLoadingCachedQuota = true
+        defer {
+            if cacheOperationID == readID { cacheOperationID = nil; isLoadingCachedQuota = false }
         }
         do {
-            let snap = try await client.cachedQuota(sourceID: trimmedSource)
-            cachedSourceSnapshot = snap
-            try? await liveActivityDriver.updateActivity(snapshot: snap)
-            bridgeStatusNotice = "已读取 Source '\(trimmedSource)' 缓存快照（seq #\(snap.sequence)，phase: \(snap.phase.rawValue)）。"
-        } catch let error as MonitoringError {
-            bridgeFormError = monitoringErrorText(error)
+            let snapshot = try await context.client.cachedQuota(sourceID: source)
+            guard isCurrent(context), source == sourceIDDraft.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+            cachedSourceSnapshot = snapshot
+            cachedSourceID = source
+            bridgeStatusNotice = "已读取来源缓存，供本页查看；它不代表所选账号的活动注册内容。"
         } catch {
-            bridgeFormError = "读取 Source 缓存快照失败。"
+            guard isCurrent(context), source == sourceIDDraft.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+            bridgeFormError = monitoringErrorText(error as? MonitoringError)
         }
     }
 
     public func handleSystemPushTokenRotation(newTokenHex: String) async {
-        guard let store,
-              let session = store.session,
-              session.status == .active else { return }
-        guard let token = try? MonitoringPushToken(newTokenHex) else { return }
-        await store.rotate(token: token, revision: session.revision)
-        syncPersistedStateFromStore()
+        guard let context = connection, let session = store?.session,
+              liveActivityDriver.activeActivityID == session.activityID else { return }
+        receiveToken(activityID: session.activityID, token: newTokenHex, sessionID: session.id, context: context)
+        await tokenTask?.value
+    }
+
+    private func tokenCallback(context: Connection, sessionID: UUID) -> @MainActor (String, String) -> Void {
+        let generation = context.generation
+        return { [weak self] activityID, token in
+            guard let self, let current = self.connection, current.generation == generation else { return }
+            self.receiveToken(activityID: activityID, token: token, sessionID: sessionID, context: current)
+        }
+    }
+
+    private func receiveToken(activityID: String, token: String, sessionID: UUID, context: Connection) {
+        guard isCurrent(context), (try? MonitoringPushToken(token)) != nil else { return }
+        if let pending = pendingIntent, pending.id == sessionID {
+            guard pending.activityID == nil || pending.activityID == activityID else { return }
+        } else {
+            guard let session = store?.session, session.id == sessionID, session.status == .active,
+                  session.activityID == activityID, attachedActivityID == activityID else { return }
+        }
+        latestToken = TokenUpdate(activityID: activityID, sessionID: sessionID, token: token.lowercased())
+        if blockedToken != token.lowercased() { blockedToken = nil }
+        scheduleTokenWork()
+    }
+
+    private func scheduleTokenWork() {
+        guard tokenTask == nil, operationID == nil, !isChangingBridge, let context = connection,
+              let update = latestToken, update.token != blockedToken else { return }
+        let create = pendingIntent.map { !$0.wasSubmitted && $0.id == update.sessionID && $0.activityID == update.activityID } ?? false
+        let rotate = store?.session.map { $0.status == .active && $0.id == update.sessionID && $0.activityID == update.activityID } ?? false
+        guard create || (rotate && acknowledgedToken != update.token) else { return }
+        let workID = UUID()
+        tokenWorkID = workID
+        tokenTask = Task { @MainActor [weak self] in
+            guard let self, !Task.isCancelled, self.isCurrent(context), self.tokenWorkID == workID else { return }
+            if create { await self.startOrReconcileMonitoringSession() }
+            else { await self.drainTokenUpdates(context) }
+            guard self.isCurrent(context), self.tokenWorkID == workID else { return }
+            self.tokenTask = nil
+            self.tokenWorkID = nil
+            self.scheduleTokenWork()
+        }
+    }
+
+    private func drainTokenUpdates(_ context: Connection) async {
+        guard let store, let operation = beginOperation(context) else { return }
+        isRotatingToken = true
+        defer {
+            if isCurrent(context, operation) { isRotatingToken = false }
+            finishOperation(operation)
+        }
+        while !Task.isCancelled, isCurrent(context, operation), let update = latestToken,
+              update.token != acknowledgedToken, update.token != blockedToken,
+              let session = store.session, session.id == update.sessionID, session.status == .active,
+              session.activityID == update.activityID, attachedActivityID == update.activityID {
+            guard let token = try? MonitoringPushToken(update.token) else { return }
+            await store.rotate(token: token, revision: session.revision)
+            guard !Task.isCancelled, isCurrent(context, operation) else { return }
+            if store.state != .available, let error = store.error,
+               [MonitoringError.conflict, .network, .serviceUnavailable].contains(error) {
+                // One reconciliation and one retry per observed token, never an unbounded retry loop.
+                await store.load(id: update.sessionID)
+                guard !Task.isCancelled, isCurrent(context, operation) else { return }
+                if store.state == .available, let fresh = store.session, fresh.status == .active {
+                    await store.rotate(token: token, revision: fresh.revision)
+                    guard !Task.isCancelled, isCurrent(context, operation) else { return }
+                }
+            }
+            syncPersistedState(context)
+            guard store.state == .available else {
+                blockedToken = update.token
+                bridgeStatusNotice = "活动令牌更新未确认；已保留最新令牌，可在查询对账后重试，未替换活动身份。"
+                return
+            }
+            acknowledgedToken = update.token
+        }
+    }
+
+    private func dismissalCallback(context: Connection) -> @MainActor (String) -> Void {
+        let generation = context.generation
+        return { [weak self] id in
+            guard let self, self.connection?.generation == generation, self.attachedActivityID == id else { return }
+            self.handleUserDismissedActivity(activityID: id)
+        }
     }
 
     public func handleUserDismissedActivity(activityID: String) {
-        bridgeStatusNotice = "用户在系统锁屏/灵动岛关闭了本地 Live Activity (\(activityID))。注意：本地关闭活动不会自动撤销服务端监控租约；如需停止服务端采集，请点击「停止监控会话 (DELETE)」。"
+        guard attachedActivityID == activityID else { return }
+        attachedActivityID = nil
+        latestToken = nil
+        tokenTask?.cancel()
+        tokenTask = nil
+        tokenWorkID = nil
+        isRotatingToken = false
+        bridgeStatusNotice = "系统活动已结束或移除；远端租约未因此自动取消，可查询并明确停止。"
     }
 
     public func reconcileDetached(handle: UUID) async {
-        guard let store else { return }
+        guard let store, let context = detachedConnections[handle], let current = connection else { return }
         do {
             let result = try await store.loadDetached(handle: handle)
-            bridgeStatusNotice = "分离会话 \(result.id.uuidString.prefix(8))… 对账状态：\(result.status.rawValue) (rev \(result.revision))。"
-        } catch let error as MonitoringError {
-            bridgeFormError = "分离会话对账未完成：\(monitoringErrorText(error))"
+            guard isCurrent(current), detachedConnections[handle]?.client === context.client else { return }
+            syncDetached(handle, context: context)
+            bridgeStatusNotice = "原桥接分离会话已查询：\(result.status.rawValue)。"
         } catch {
-            bridgeFormError = "分离会话对账失败。"
+            guard isCurrent(current) else { return }
+            bridgeFormError = "原桥接分离会话查询未确认。"
         }
     }
 
     public func stopDetached(handle: UUID) async {
-        guard let store else { return }
+        guard let store, let context = detachedConnections[handle], let current = connection else { return }
         do {
-            let result = try await store.stopDetached(handle: handle)
-            if result == nil {
-                bridgeStatusNotice = "分离会话已获得服务端 DELETE 204 持久取消回执，现在可安全从列表移除。"
-            } else {
-                bridgeStatusNotice = "分离会话停止返回状态：\(result?.status.rawValue ?? "未知")。"
+            _ = try await store.stopDetached(handle: handle)
+            guard isCurrent(current), detachedConnections[handle]?.client === context.client else { return }
+            syncDetached(handle, context: context)
+            if let item = store.detachedSessions.first(where: { $0.handle == handle }),
+               item.stopIntentRecorded || item.lastSession.map({ $0.status != .active }) == true {
+                let activityID = item.lastSession?.activityID ?? persistedRecords.first {
+                    $0.sessionID == item.id && matches($0, context)
+                }?.activityID
+                if let activityID, !activityID.isEmpty {
+                    await liveActivityDriver.endActivity(activityID: activityID, immediate: true)
+                }
+                guard isCurrent(current) else { return }
             }
-        } catch let error as MonitoringError {
-            bridgeFormError = "分离会话停止未确认：\(monitoringErrorText(error))（404/超时/507 不产生取消回执，请保留对账）。"
+            bridgeStatusNotice = "原桥接已确认分离会话终态或取消意图。"
         } catch {
-            bridgeFormError = "分离会话停止请求失败。"
+            guard isCurrent(current) else { return }
+            bridgeFormError = "分离会话停止未确认，已保留其原桥接索引。"
         }
     }
 
     public func removeDetached(handle: UUID) {
-        guard let store else { return }
+        guard let store, let context = detachedConnections[handle],
+              let item = store.detachedSessions.first(where: { $0.handle == handle }) else { return }
         do {
             try store.removeDetached(handle: handle)
-            bridgeStatusNotice = "已移除已确认结束的分离会话记录。"
-        } catch {
-            bridgeFormError = "仅在获得 DELETE 204 取消回执或确认会话处于非 active 终态后，才允许移除分离会话。"
-        }
+            removeRecord(id: item.id, context: context)
+            detachedConnections.removeValue(forKey: handle)
+        } catch { bridgeFormError = "尚未确认终态或取消意图，不能移除该记录。" }
     }
 
-    private func syncPersistedStateFromStore() {
-        guard let store, let id = store.sessionID, let activeAddress else { return }
-        let existing = persistedRecords.first { $0.sessionID == id }
-        let record = PersistedMonitoringRecord(
-            sessionID: id,
-            bridgeBaseURLString: activeAddress.baseURL.absoluteString,
-            sourceID: store.session?.sourceID ?? existing?.sourceID ?? sourceIDDraft,
-            accountIDs: store.session?.accountIDs ?? existing?.accountIDs ?? selectedAccountIDsDraft,
-            durationSeconds: existing?.durationSeconds ?? durationDraft.rawValue,
-            activityID: store.session?.activityID ?? existing?.activityID ?? manualActivityIDDraft,
-            lastKnownRevision: store.session?.revision ?? existing?.lastKnownRevision ?? 1,
-            stopIntentRecorded: store.state == .stopIntentRecorded || store.cancellationReceipt != nil
-        )
-        upsertPersistedRecord(record)
-    }
-
-    private func upsertPersistedRecord(_ record: PersistedMonitoringRecord) {
-        if let idx = persistedRecords.firstIndex(where: { $0.sessionID == record.sessionID }) {
-            persistedRecords[idx] = record
-        } else {
-            persistedRecords.insert(record, at: 0)
-        }
+    public func removePersistedRecord(_ record: PersistedMonitoringRecord) {
+        guard isConfirmedTerminal(record) else { bridgeFormError = "尚未确认终态或取消意图，不能遗忘对账记录。"; return }
+        persistedRecords.removeAll { $0.id == record.id }
         metadataStore.savePersistedRecords(persistedRecords)
     }
 
     public func removePersistedRecord(sessionID: UUID) {
-        if let store, store.sessionID == sessionID, store.state != .stopIntentRecorded, store.session?.status == .active {
-            bridgeFormError = "当前活动会话仍在运行或未获停止确认，不能直接遗忘其对账记录。"
-            return
+        let records = persistedRecords.filter { $0.sessionID == sessionID }
+        guard records.count == 1, let record = records.first else { return }
+        removePersistedRecord(record)
+    }
+
+    private func beginOperation(_ context: Connection) -> UUID? {
+        guard !Task.isCancelled, isCurrent(context), !isChangingBridge, operationID == nil else { return nil }
+        let id = UUID()
+        operationID = id
+        isSessionActionInProgress = true
+        bridgeFormError = nil
+        bridgeStatusNotice = nil
+        return id
+    }
+
+    private func finishOperation(_ id: UUID) {
+        guard operationID == id else { return }
+        operationID = nil
+        isSessionActionInProgress = false
+        scheduleTokenWork()
+    }
+
+    private func isCurrent(_ context: Connection, _ operation: UUID? = nil) -> Bool {
+        connection?.generation == context.generation && connection?.client === context.client &&
+            (operation == nil || operationID == operation)
+    }
+
+    private var isCurrentSessionTerminal: Bool {
+        store?.cancellationReceipt != nil || store?.session.map { $0.status != .active } == true
+    }
+
+    private func clearPendingIntent() {
+        pendingIntent = nil
+        pendingCreateUUID = nil
+        isWaitingForPushToken = false
+    }
+
+    private func cancelLocalWork() {
+        operationID = nil
+        isSessionActionInProgress = false
+        isRotatingToken = false
+        tokenTask?.cancel()
+        tokenTask = nil
+        tokenWorkID = nil
+        cacheOperationID = nil
+        isLoadingCachedQuota = false
+        latestToken = nil
+        acknowledgedToken = nil
+        blockedToken = nil
+        attachedActivityID = nil
+        liveActivityDriver.detachActivity()
+        clearPendingIntent()
+    }
+
+    private func acceptLoadedSession(_ context: Connection, operation: UUID) async {
+        guard isCurrent(context, operation), let session = store?.session else { return }
+        syncPersistedState(context)
+        clearPendingIntent()
+        blockedToken = nil
+        if session.status != .active {
+            await liveActivityDriver.endActivity(activityID: session.activityID, immediate: true)
+            guard isCurrent(context, operation) else { return }
+            attachedActivityID = nil
+            latestToken = nil
+        } else {
+            do {
+                let restored = try await liveActivityDriver.restoreActivity(activityID: session.activityID,
+                    sourceID: session.sourceID, onPushTokenUpdate: tokenCallback(context: context, sessionID: session.id),
+                    onSystemDismissed: dismissalCallback(context: context))
+                guard isCurrent(context, operation) else { return }
+                attachedActivityID = restored?.activityID == liveActivityDriver.activeActivityID ? restored?.activityID : nil
+                // The observer may have advanced since restore captured its return value.
+                // Read the driver's current token only after confirming the exact active ID.
+                if let activityID = attachedActivityID, let token = liveActivityDriver.latestPushTokenHex {
+                    receiveToken(activityID: activityID, token: token, sessionID: session.id, context: context)
+                }
+                await updateBoundActivity(context, operation: operation)
+            } catch {
+                guard isCurrent(context, operation) else { return }
+                bridgeFormError = "远端会话已确认，但无法恢复其原系统活动；未创建替代活动或改绑令牌。"
+            }
         }
-        persistedRecords.removeAll { $0.sessionID == sessionID }
+        guard isCurrent(context, operation) else { return }
+        bridgeStatusNotice = session.status == .active && attachedActivityID == nil
+            ? "远端会话仍在运行，但本机已无对应活动。可明确停止后新建；未自动替换活动身份。"
+            : "已与原桥接完成会话对账。"
+    }
+
+    private func updateBoundActivity(_ context: Connection, operation: UUID) async {
+        guard isCurrent(context, operation), let session = store?.session, let snapshot = session.snapshot,
+              attachedActivityID == session.activityID else { return }
+        try? await liveActivityDriver.updateActivity(activityID: session.activityID, snapshot: snapshot)
+    }
+
+    private func sameAddress(_ record: PersistedMonitoringRecord, _ context: Connection) -> Bool {
+        guard let url = URL(string: record.bridgeBaseURLString), let address = try? MonitorBridgeAddress(baseURL: url) else { return false }
+        return address == context.address
+    }
+
+    private func matches(_ record: PersistedMonitoringRecord, _ context: Connection) -> Bool {
+        sameAddress(record, context) && record.credentialBindingID == context.bindingID
+    }
+
+    private func isConfirmedTerminal(_ record: PersistedMonitoringRecord) -> Bool {
+        record.stopIntentRecorded || record.terminalStatus.map { $0 != .active } == true
+    }
+
+    private func sessionMatchesRecord(_ session: MonitoringSession?, _ record: PersistedMonitoringRecord) -> Bool {
+        guard let session else { return false }
+        return session.id == record.sessionID && session.sourceID == record.sourceID && session.accountIDs == record.accountIDs &&
+            session.activityID == record.activityID && session.revision >= record.lastKnownRevision &&
+            (!isConfirmedTerminal(record) || session.status != .active)
+    }
+
+    private func sessionMatchesIntent(_ session: MonitoringSession?, _ intent: PendingIntent) -> Bool {
+        guard let session else { return false }
+        return session.id == intent.id && session.sourceID == intent.sourceID && session.accountIDs == intent.accountIDs &&
+            session.activityID == intent.activityID
+    }
+
+    private func saveIntent(_ intent: PendingIntent, context: Connection) {
+        upsert(PersistedMonitoringRecord(sessionID: intent.id, bridgeBaseURLString: context.address.baseURL.absoluteString,
+            sourceID: intent.sourceID, accountIDs: intent.accountIDs, durationSeconds: intent.duration.rawValue,
+            activityID: intent.activityID ?? "", lastKnownRevision: 1, stopIntentRecorded: false,
+            credentialBindingID: context.bindingID))
+    }
+
+    private func recordFor(_ session: MonitoringSession, context: Connection,
+                           existing: PersistedMonitoringRecord?, cancelled: Bool = false) -> PersistedMonitoringRecord {
+        PersistedMonitoringRecord(sessionID: session.id, bridgeBaseURLString: context.address.baseURL.absoluteString,
+            sourceID: session.sourceID, accountIDs: session.accountIDs,
+            durationSeconds: existing?.durationSeconds ?? Int(session.expiresAt - session.startsAt),
+            activityID: session.activityID, lastKnownRevision: session.revision, stopIntentRecorded: cancelled,
+            credentialBindingID: context.bindingID, terminalStatus: session.status == .active ? nil : session.status)
+    }
+
+    private func syncPersistedState(_ context: Connection) {
+        guard isCurrent(context), let store, let id = store.sessionID else { return }
+        syncRecord(id: id, session: store.session, cancelled: store.cancellationReceipt != nil, context: context)
+    }
+
+    private func syncRecord(id: UUID, session: MonitoringSession?, cancelled: Bool, context: Connection) {
+        let existing = persistedRecords.first { $0.sessionID == id && matches($0, context) }
+        if let session {
+            upsert(recordFor(session, context: context, existing: existing, cancelled: cancelled))
+        } else if let existing {
+            upsert(PersistedMonitoringRecord(sessionID: id, bridgeBaseURLString: existing.bridgeBaseURLString,
+                sourceID: existing.sourceID, accountIDs: existing.accountIDs, durationSeconds: existing.durationSeconds,
+                activityID: existing.activityID, lastKnownRevision: existing.lastKnownRevision,
+                stopIntentRecorded: cancelled || existing.stopIntentRecorded, credentialBindingID: context.bindingID,
+                terminalStatus: existing.terminalStatus))
+        }
+    }
+
+    private func captureDetachedConnections(_ context: Connection) {
+        for item in store?.detachedSessions ?? [] where detachedConnections[item.handle] == nil {
+            detachedConnections[item.handle] = context
+        }
+    }
+
+    private func syncDetached(_ handle: UUID, context: Connection) {
+        guard let item = store?.detachedSessions.first(where: { $0.handle == handle }) else { return }
+        syncRecord(id: item.id, session: item.lastSession, cancelled: item.stopIntentRecorded, context: context)
+    }
+
+    private func upsert(_ record: PersistedMonitoringRecord) {
+        if let index = persistedRecords.firstIndex(where: { $0.id == record.id }) { persistedRecords[index] = record }
+        else { persistedRecords.insert(record, at: 0) }
+        metadataStore.savePersistedRecords(persistedRecords)
+    }
+
+    private func replaceRecord(_ old: PersistedMonitoringRecord, with record: PersistedMonitoringRecord) {
+        persistedRecords.removeAll { $0.id == old.id }
+        upsert(record)
+    }
+
+    private func removeRecord(id: UUID, context: Connection) {
+        persistedRecords.removeAll { $0.sessionID == id && matches($0, context) }
         metadataStore.savePersistedRecords(persistedRecords)
     }
 

@@ -62,6 +62,7 @@ def parse_macho(data):
             "platform": require_same(parsed, "platform"),
             "minimumOS": require_same(parsed, "minimumOS"),
             "sdk": require_same(parsed, "sdk"),
+            "fileType": require_same(parsed, "fileType"),
             "linkedLibraries": sorted({name for item in parsed for name in item["linkedLibraries"]}),
         }
     parsed = parse_thin_macho(data)
@@ -70,6 +71,7 @@ def parse_macho(data):
         "platform": parsed["platform"],
         "minimumOS": parsed["minimumOS"],
         "sdk": parsed["sdk"],
+        "fileType": parsed["fileType"],
         "linkedLibraries": parsed["linkedLibraries"],
     }
 
@@ -135,6 +137,7 @@ def parse_thin_macho(data):
         raise ValueError("Mach-O has no iOS platform/version load command")
     return {
         "architecture": architecture,
+        "fileType": struct.unpack_from(endian + "I", data, 12)[0],
         "platform": platform,
         "minimumOS": minimum_os,
         "sdk": sdk,
@@ -144,7 +147,7 @@ def parse_thin_macho(data):
 
 def collect_swift_hashes(source_root, manifest_path, expected_count):
     candidates = [source_root / "Package.swift"] if (source_root / "Package.swift").is_file() else []
-    for folder in (source_root / "Sources", source_root / "Tests"):
+    for folder in (source_root / "Sources", source_root / "Tests", source_root / "Apple"):
         if folder.exists():
             candidates.extend(path for path in folder.rglob("*.swift") if path.is_file())
     candidates.sort(key=lambda path: path.relative_to(source_root).as_posix())
