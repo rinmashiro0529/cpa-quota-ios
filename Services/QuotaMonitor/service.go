@@ -69,7 +69,7 @@ type Service struct {
 	tokens        map[string]principalAuth
 	ctx           context.Context
 	cancel        context.CancelFunc
-	delivery      map[string]chan struct{}
+	delivery      map[string]*deliveryGate
 	failed        bool
 	closed        bool
 	workers       sync.WaitGroup
@@ -109,6 +109,9 @@ type sessionRecord struct {
 	Pending           bool              `json:"pending"`
 	DeliveryRetryAt   int64             `json:"delivery_retry_at,omitempty"`
 	DeliveryAttempts  uint8             `json:"delivery_attempts,omitempty"`
+	// Version 2 is a durable-record version only; the HTTP contract remains v1.
+	// Older readers must fail closed instead of forgetting a token rejection.
+	TokenInvalidReason string `json:"token_invalid_reason,omitempty"`
 }
 
 type snapshotRecord struct {
@@ -172,34 +175,44 @@ func NewService(opt Options) (*Service, error) {
 			return nil, ErrUnavailable
 		}
 	}
+	if err := validateCapacity(state, opt.Config.Capacity); err != nil {
+		return nil, err
+	}
 	byID := map[string]principalAuth{}
 	for _, principal := range tokens {
 		byID[principal.id] = principal
 	}
 	changed := false
 	for id, record := range state.Sessions {
-		if id != record.ID || record.Version != 1 || record.Revision == 0 ||
+		if id != record.ID || (record.Version != 1 && record.Version != 2) || record.Revision == 0 ||
+			!validTokenFailure(record.TokenInvalidReason) || (record.TokenInvalidReason != "" && record.Version != 2) ||
 			!validRegistration(record.ID, record.SourceID, record.AccountIDs, int(record.ExpiresAt-record.StartsAt), record.ActivityID, record.PushToken) {
 			return nil, ErrUnavailable
 		}
 		principal, exists := byID[record.Principal]
 		if !exists || !principal.allows(record.SourceID, record.AccountIDs) {
-			record.Status, record.Delivery, record.NextRefresh, record.Snapshot = "stopped", "disabled", nil, nil
-			record.Pending = false
+			redacted, err := revokedSnapshot(record.Snapshot, opt.Now().Unix())
+			if err != nil {
+				return nil, err
+			}
+			if record.Status != "stopped" || record.Delivery != "disabled" || record.NextRefresh != nil || record.Pending || redacted != record.Snapshot {
+				record.Status, record.Delivery, record.NextRefresh, record.Snapshot = "stopped", "disabled", nil, redacted
+				record.Pending = false
+				if record.Revision < math.MaxUint64 {
+					record.Revision++
+				}
+				state.Sessions[id] = record
+				changed = true
+			}
+		} else if hash := sourceConfigHash(sources[record.SourceID]); hash != record.SourceConfigHash && record.Status == "active" {
+			// A session owns the semantics accepted at registration. Never restart
+			// its sequence or apply new window labels to an old observation.
+			record.Status, record.NextRefresh, record.Pending = "stopped", nil, false
+			record.Snapshot = terminalSnapshot(record.Snapshot, "stopped")
 			if record.Revision < math.MaxUint64 {
 				record.Revision++
 			}
-			state.Sessions[id] = record
-			changed = true
-		} else if hash := sourceConfigHash(sources[record.SourceID]); hash != record.SourceConfigHash {
-			record.SourceConfigHash, record.Snapshot = hash, nil
-			if record.Status == "active" {
-				if opt.Config.DryRun {
-					record.Delivery = "disabled"
-				} else {
-					record.Delivery = "pending"
-				}
-			}
+			record.Delivery = pendingDelivery(record, opt.Config.DryRun)
 			state.Sessions[id] = record
 			changed = true
 		}
@@ -210,7 +223,7 @@ func NewService(opt Options) (*Service, error) {
 	}
 	ctx, cancel := context.WithCancel(parent)
 	service := &Service{opt: opt, state: state, sources: sources, tokens: tokens, ctx: ctx, cancel: cancel,
-		delivery: map[string]chan struct{}{}, rounds: map[string]*sourceRound{}, lastRound: map[string]int64{}, notifications: map[string]bool{}}
+		delivery: map[string]*deliveryGate{}, rounds: map[string]*sourceRound{}, lastRound: map[string]int64{}, notifications: map[string]bool{}}
 	for _, record := range state.Sessions {
 		if record.Snapshot != nil && record.NextRefresh != nil {
 			started := *record.NextRefresh - int64(refreshSpacing/time.Second)
@@ -344,6 +357,10 @@ func (s *Service) sessions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid activity payload", http.StatusBadRequest)
 		return
 	}
+	if err := s.admitSessionLocked(principal.id, record); err != nil {
+		http.Error(w, "capacity exhausted", http.StatusInsufficientStorage)
+		return
+	}
 	s.state.Sessions[id] = record
 	if s.persistLocked() != nil {
 		delete(s.state.Sessions, id)
@@ -398,18 +415,36 @@ func (s *Service) readSession(w http.ResponseWriter, r *http.Request, principal 
 
 func (s *Service) lockDelivery(ctx context.Context, id string) (func(), bool) {
 	s.mu.Lock()
+	if !s.availableLocked() {
+		s.mu.Unlock()
+		return nil, false
+	}
 	gate := s.delivery[id]
 	if gate == nil {
-		gate = make(chan struct{}, 1)
+		gate = &deliveryGate{token: make(chan struct{}, 1)}
 		s.delivery[id] = gate
 	}
+	gate.users++
 	s.mu.Unlock()
+	release := func(acquired bool) {
+		if acquired {
+			<-gate.token
+		}
+		s.mu.Lock()
+		gate.users--
+		if gate.users == 0 {
+			delete(s.delivery, id)
+		}
+		s.mu.Unlock()
+	}
 	select {
-	case gate <- struct{}{}:
-		return func() { <-gate }, true
+	case gate.token <- struct{}{}:
+		return func() { release(true) }, true
 	case <-ctx.Done():
+		release(false)
 		return nil, false
 	case <-s.ctx.Done():
+		release(false)
 		return nil, false
 	}
 }
@@ -433,6 +468,11 @@ func (s *Service) deleteSession(w http.ResponseWriter, r *http.Request, principa
 		if _, tombstoned := s.state.Tombstones[key]; tombstoned {
 			s.mu.Unlock()
 			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if err := s.admitTombstoneLocked(principal.id, id); err != nil {
+			s.mu.Unlock()
+			http.Error(w, "capacity exhausted", http.StatusInsufficientStorage)
 			return
 		}
 		s.state.Tombstones[key] = principal.id
@@ -470,7 +510,8 @@ func (s *Service) deleteSession(w http.ResponseWriter, r *http.Request, principa
 	record.Revision++
 	record.NextRefresh = nil
 	record.Pending = false
-	record.Delivery = s.initialDelivery()
+	record.Snapshot = terminalSnapshot(record.Snapshot, "stopped")
+	record.Delivery = pendingDelivery(record, s.opt.Config.DryRun)
 	previous := s.state.Sessions[id]
 	s.state.Sessions[id] = record
 	if s.persistLocked() != nil {
@@ -529,8 +570,17 @@ func (s *Service) rotateToken(w http.ResponseWriter, r *http.Request, principal 
 		http.Error(w, "conflict", http.StatusConflict)
 		return
 	}
+	request.Token = strings.ToLower(request.Token)
+	if record.TokenInvalidReason != "" && strings.EqualFold(request.Token, record.PushToken) {
+		http.Error(w, "token unchanged", http.StatusConflict)
+		return
+	}
 	previous := record
 	record.PushToken = request.Token
+	if record.TokenInvalidReason != "" {
+		record.TokenInvalidReason = ""
+		record.DeliveryRetryAt, record.DeliveryAttempts = 0, 0
+	}
 	record.Revision++
 	record.Delivery = s.initialDelivery()
 	s.state.Sessions[id] = record
@@ -558,7 +608,7 @@ func (s *Service) refreshSession(w http.ResponseWriter, r *http.Request, princip
 	}
 	if record.Status == "active" {
 		record.Pending = true
-		record.Delivery = s.initialDelivery()
+		record.Delivery = pendingDelivery(record, s.opt.Config.DryRun)
 		s.state.Sessions[id] = record
 		if s.persistLocked() != nil {
 			s.mu.Unlock()
@@ -570,7 +620,7 @@ func (s *Service) refreshSession(w http.ResponseWriter, r *http.Request, princip
 	s.mu.Unlock()
 	writeJSON(w, http.StatusAccepted, view)
 	if record.Status == "active" {
-		go s.collect(context.Background(), []string{id})
+		s.startCollections([]string{id})
 	}
 }
 
@@ -588,8 +638,9 @@ func (s *Service) quota(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var newest *snapshotRecord
+	configuration := sourceConfigHash(s.sources[sourceID])
 	for _, record := range s.state.Sessions {
-		if record.Principal == principal.id && record.SourceID == sourceID && record.Snapshot != nil && (newest == nil || record.Snapshot.GeneratedAt > newest.GeneratedAt ||
+		if record.Principal == principal.id && record.SourceID == sourceID && record.SourceConfigHash == configuration && record.Snapshot != nil && (newest == nil || record.Snapshot.GeneratedAt > newest.GeneratedAt ||
 			(record.Snapshot.GeneratedAt == newest.GeneratedAt && record.Snapshot.Sequence > newest.Sequence)) {
 			newest = record.Snapshot
 		}
@@ -638,15 +689,11 @@ func (s *Service) expireLocked(record *sessionRecord) {
 		record.Status = "expired"
 		record.NextRefresh = nil
 		record.Pending = false
-		record.Delivery = s.initialDelivery()
+		record.Delivery = pendingDelivery(*record, s.opt.Config.DryRun)
 		if record.Revision < math.MaxUint64 {
 			record.Revision++
 		}
-		if record.Snapshot != nil {
-			snapshot := *record.Snapshot
-			snapshot.Phase = "expired"
-			record.Snapshot = &snapshot
-		}
+		record.Snapshot = terminalSnapshot(record.Snapshot, "expired")
 		s.state.Sessions[record.ID] = *record
 		if s.persistLocked() != nil {
 			s.state.Sessions[record.ID] = previous
@@ -804,7 +851,9 @@ func (s *Service) Schedule(ctx context.Context, interval time.Duration) {
 		case <-s.ctx.Done():
 			return
 		case <-ticker.C:
-			s.RunOnce(ctx)
+			// Collection is owned by one worker per source. The scanner never
+			// waits for that worker, so lease/retry deadlines remain independent.
+			s.startCollections(s.scanDue())
 		}
 	}
 }
@@ -812,10 +861,14 @@ func (s *Service) Schedule(ctx context.Context, interval time.Duration) {
 // RunOnce collects every active session whose lease and schedule are due.
 // Collection never changes session.revision; only a control-plane change does.
 func (s *Service) RunOnce(ctx context.Context) {
+	s.collect(ctx, s.scanDue())
+}
+
+func (s *Service) scanDue() []string {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.availableLocked() {
-		s.mu.Unlock()
-		return
+		return nil
 	}
 	var due []string
 	now := s.opt.Now()
@@ -837,8 +890,7 @@ func (s *Service) RunOnce(ctx context.Context) {
 			due = append(due, id)
 		}
 	}
-	s.mu.Unlock()
-	s.collect(ctx, due)
+	return due
 }
 
 func (s *Service) apply(source string, ids []string, readings map[string]Reading) {
@@ -862,6 +914,11 @@ func (s *Service) apply(source string, ids []string, readings map[string]Reading
 		}
 		sequence := uint64(1)
 		if record.Snapshot != nil {
+			if record.Snapshot.Sequence == math.MaxUint64 {
+				// No representable content version remains. Preserve the final
+				// observation instead of wrapping to zero; the lease still ends.
+				continue
+			}
 			sequence = record.Snapshot.Sequence + 1
 		}
 		snapshot.Sequence = sequence
@@ -874,7 +931,7 @@ func (s *Service) apply(source string, ids []string, readings map[string]Reading
 			}
 		}
 		record.Snapshot = snapshot
-		record.Delivery = s.initialDelivery()
+		record.Delivery = pendingDelivery(record, s.opt.Config.DryRun)
 		record.Pending = false
 		next := s.lastRound[source] + int64(refreshSpacing/time.Second)
 		if s.lastRound[source] == 0 {
@@ -974,7 +1031,7 @@ func (s *Service) sendNotification(record sessionRecord, event string) {
 	}
 	s.mu.Lock()
 	current, exists := s.state.Sessions[record.ID]
-	valid := s.availableLocked() && exists && current.Revision == record.Revision && current.DeliveryRetryAt <= s.opt.Now().Unix()
+	valid := s.availableLocked() && exists && current.TokenInvalidReason == "" && current.Revision == record.Revision && current.DeliveryRetryAt <= s.opt.Now().Unix()
 	if event == "update" {
 		valid = valid && current.Delivery != "sent" && current.Status == "active" && s.opt.Now().Unix() < current.ExpiresAt &&
 			current.Snapshot != nil && record.Snapshot != nil && current.Snapshot.Sequence == record.Snapshot.Sequence
@@ -1009,6 +1066,16 @@ func (s *Service) sendNotification(record sessionRecord, event string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	current, found := s.state.Sessions[record.ID]
+	// A token-specific rejection remains authoritative even when newer content
+	// or lease expiry overtook this request. Generic success/failure still needs
+	// the stricter revision/sequence check below. Never invalidate a replacement.
+	if reason := invalidTokenReason(err); found && reason != "" && strings.EqualFold(current.PushToken, record.PushToken) {
+		current.Version, current.TokenInvalidReason = 2, reason
+		current.Delivery, current.DeliveryRetryAt = "failed", 0
+		s.state.Sessions[record.ID] = current
+		_ = s.persistLocked()
+		return
+	}
 	if !found || current.Revision != record.Revision ||
 		(event == "update" && (current.Snapshot == nil || current.Snapshot.Sequence != record.Snapshot.Sequence)) {
 		return

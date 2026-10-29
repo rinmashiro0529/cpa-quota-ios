@@ -1,0 +1,98 @@
+name: Backend and contract checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go tests, race and vet
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: Services/QuotaMonitor
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.26.10'
+          check-latest: false
+          cache: false
+      - name: Check formatting and analyze
+        shell: bash
+        run: |
+          set -euo pipefail
+          go version
+          test -z "$(gofmt -l .)"
+          go vet ./...
+      - name: Run synthetic and cross-language contract tests
+        run: go test -count=1 ./...
+      - name: Run race detector
+        run: go test -race -count=1 ./...
+      - name: Build Linux and Windows service binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          go build -trimpath -o "$RUNNER_TEMP/quota-monitor" ./cmd/quota-monitor
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/quota-monitor.exe" ./cmd/quota-monitor
+
+  swift:
+    name: Swift and iOS contracts
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Verify toolchain and source membership
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun swift --version
+          python3 -I ci/validate_source_layout.py --root .
+          python3 -I ci/test_source_layout.py
+      - name: Run Swift package tests with bundled fixtures
+        run: swift test --parallel
+      - name: Run native iOS tests with bundled fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          SIMULATOR_UDID="$(xcrun simctl list devices available --json | python3 -c 'import json, sys; devices=json.load(sys.stdin).get("devices", {}); candidates=sorted((d["udid"] for runtime, group in devices.items() if runtime == "com.apple.CoreSimulator.SimRuntime.iOS-26-2" for d in group if d.get("isAvailable") and d.get("name", "").startswith("iPhone"))); sys.exit("No iOS 26.2 iPhone simulator found") if not candidates else print(candidates[0])')"
+          xcodebuild test \
+            -project Apple/CPAQuota.xcodeproj \
+            -scheme CPAQuota \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -derivedDataPath "$RUNNER_TEMP/ContractTestDerivedData" \
+            -parallel-testing-enabled NO \
+            -collect-test-diagnostics never \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=
+      - name: Build the iOS app
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild build \
+            -project Apple/CPAQuota.xcodeproj \
+            -scheme CPAQuota \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/AppDerivedData" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=

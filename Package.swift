@@ -15,7 +15,9 @@ let package = Package(
         .target(name: "CPAQuotaUI", dependencies: ["CPAQuotaKit"]),
         .executableTarget(name: "CPAQuotaProbe", dependencies: ["CPAQuotaKit"]),
         .target(name: "CPAQuotaApp", dependencies: ["CPAQuotaKit", "CPAQuotaUI"]),
-        .testTarget(name: "CPAQuotaKitTests", dependencies: ["CPAQuotaKit", "CPAQuotaUI"])
+        .testTarget(name: "CPAQuotaKitTests", dependencies: ["CPAQuotaKit", "CPAQuotaUI"],
+                    path: "Tests", sources: ["CPAQuotaKitTests"],
+                    resources: [.copy("ContractFixtures")])
     ],
     swiftLanguageModes: [.v6]
 )

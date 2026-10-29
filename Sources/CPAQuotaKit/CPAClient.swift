@@ -330,6 +330,7 @@ public actor CPAClient {
                 }
                 return nil
             }
+            if normalized.isManagementBlocking { throw normalized }
         }
         guard let entry = entries.first(where: { $0.account.id == id }) else {
             return nil

@@ -24,6 +24,7 @@ type Config struct {
 	Sources     []SourceConfig    `json:"sources"`
 	Principals  []PrincipalConfig `json:"principals"`
 	APNs        APNsConfig        `json:"apns"`
+	Capacity    CapacityLimits    `json:"capacity,omitempty"`
 }
 type SourceConfig struct {
 	ID               string          `json:"id"`
@@ -57,7 +58,6 @@ type APNsConfig struct {
 
 var ErrConfig = errors.New("invalid secure configuration")
 var envName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,127}$`)
-var selectionPattern = regexp.MustCompile(`^(primary|secondary|monthly|monthly-limit-usd|used-usd|summary:[0-9]+|bucket:[0-9]+:[0-9]+)$`)
 
 func safeText(s string) bool {
 	if s == "" || len(s) > 128 || strings.Contains(s, "@") || strings.Contains(strings.ToLower(s), "://") || strings.Contains(strings.ToLower(s), "www.") {
@@ -131,6 +131,9 @@ func DecodeConfig(r io.Reader) (Config, error) {
 }
 
 func (c *Config) Validate() error {
+	if c.Capacity.normalize() != nil {
+		return ErrConfig
+	}
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:8787"
 	}
@@ -159,7 +162,7 @@ func (c *Config) Validate() error {
 		ids := map[string]bool{}
 		aliases := map[string]bool{}
 		for _, a := range s.Accounts {
-			if !accountID(a.ID) || ids[a.ID] || !identifier(a.SafeID) || aliases[a.SafeID] || !safeText(a.Label) || !identifier(a.WindowID) || !safeText(a.WindowLabel) || (a.Unit != "" && !safeText(a.Unit)) || !selectionPattern.MatchString(a.Selection) {
+			if !accountID(a.ID) || ids[a.ID] || !identifier(a.SafeID) || aliases[a.SafeID] || !safeText(a.Label) || !identifier(a.WindowID) || !safeText(a.WindowLabel) || (a.Unit != "" && !safeText(a.Unit)) {
 				return ErrConfig
 			}
 			reader := a.Reader

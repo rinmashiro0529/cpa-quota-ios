@@ -46,16 +46,16 @@ func TestFrozenEdgeSemantics(t *testing.T) {
 
 	below := []byte(`{"groups":[{"buckets":[{"remainingFraction":-0.2}]}]}`)
 	got, err = quota.Normalize("plugin", below, "bucket:0:0")
-	if err != nil || got.Remaining == nil || *got.Remaining != 0 {
-		t.Fatalf("negative plugin remaining must clamp to zero: %+v %v", got, err)
+	if err == nil || got.Remaining != nil || got.Value != nil {
+		t.Fatalf("unidentified plugin bucket must be unsupported: %+v %v", got, err)
 	}
 	above := []byte(`{"groups":[{"buckets":[{"remainingFraction":1.5}]}]}`)
 	got, err = quota.Normalize("plugin", above, "bucket:0:0")
-	if err != nil || got.Remaining != nil {
-		t.Fatalf("plugin remaining above one must stay unknown: %+v %v", got, err)
+	if err == nil || got.Remaining != nil || got.Value != nil {
+		t.Fatalf("unidentified plugin bucket must be unsupported: %+v %v", got, err)
 	}
 	credits := []byte(`{"summary":[{"key":"credits","label":"Credits","value":3,"unit":"credits"}]}`)
-	got, err = quota.Normalize("plugin", credits, "summary:0")
+	got, err = quota.Normalize("plugin", credits, "summary-key:credits")
 	if err != nil || got.Unit != "credits" || got.Value == nil || *got.Value != 3 || got.Remaining != nil {
 		t.Fatalf("plugin unit must be preserved and not renamed: %+v %v", got, err)
 	}
@@ -86,7 +86,7 @@ func TestParityFixtures(t *testing.T) {
 					t.Fatalf("secondary: %+v %v", two, err)
 				}
 			case "plugin-summary-only-is-not-zero-percent":
-				got, err := quota.Normalize(tc.Provider, tc.Body, "summary:0")
+				got, err := quota.Normalize(tc.Provider, tc.Body, "summary-key:requests")
 				if err != nil || got.Remaining != nil || got.Value == nil || *got.Value != 123 || got.Unit != "requests" {
 					t.Fatalf("summary: %+v %v", got, err)
 				}
@@ -104,8 +104,10 @@ func TestParityFixtures(t *testing.T) {
 					t.Fatalf("used: %+v %v", used, err)
 				}
 			case "plugin-window-with-missing-ratio-is-unknown":
+				// Swift may display an unidentified bucket, but the monitor
+				// cannot bind it to a stable system window. Do not infer a value.
 				got, err := quota.Normalize(tc.Provider, tc.Body, "bucket:0:0")
-				if err != nil || got.Remaining != nil || got.Value != nil {
+				if err == nil || got.Remaining != nil || got.Value != nil {
 					t.Fatalf("bucket: %+v %v", got, err)
 				}
 			default:

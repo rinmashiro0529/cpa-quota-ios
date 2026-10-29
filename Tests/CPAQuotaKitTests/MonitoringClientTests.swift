@@ -64,8 +64,42 @@ private actor ScopedForbiddenTransport: HTTPTransport {
     }
 }
 
+private actor CapacityTransport: HTTPTransport {
+    let existingID: UUID
+    private(set) var calls = 0
+    private var stopped = false
+    init(existingID: UUID) { self.existingID = existingID }
+    func send(_ request: URLRequest) async throws -> HTTPResponse {
+        calls += 1
+        if request.httpMethod == "POST" {
+            return HTTPResponse(statusCode: 507, headers: [:], body: Data("capacity exhausted".utf8))
+        }
+        if request.httpMethod == "DELETE" { stopped = true }
+        let status = stopped ? "stopped" : "active"
+        let revision = stopped ? 2 : 1
+        let json = """
+        {"version":1,"id":"\(existingID.uuidString)","source_id":"source","account_ids":["alias"],"activity_id":"activity","starts_at":1800000000,"expires_at":1800014400,"status":"\(status)","revision":\(revision),"delivery_state":"pending"}
+        """
+        return HTTPResponse(statusCode: 200, headers: [:], body: Data(json.utf8))
+    }
+}
+
 @Suite("Monitoring client")
 struct MonitoringClientTests {
+    @Test func capacityRejectionDoesNotBlockReadsOrStoppingAnExistingSession() async throws {
+        let existingID = UUID()
+        let transport = CapacityTransport(existingID: existingID)
+        let client = try CPAMonitorClient(baseURL: #require(URL(string: "https://example.test")), token: MonitorBridgeToken("test"), transport: transport)
+        let registration = try MonitoringRegistration(id: UUID(), sourceID: "source", accountIDs: ["alias"], duration: .oneHour,
+                                                       activityID: "new-activity", pushToken: MonitoringPushToken("abcd"))
+        await #expect(throws: MonitoringError.capacityExceeded) { try await client.create(registration) }
+        #expect(await client.retryAt == nil)
+        let stopped = try await client.stop(id: existingID)
+        #expect(stopped?.status == .stopped)
+        #expect(try await client.get(id: existingID).status == .stopped)
+        #expect(await transport.calls == 3)
+    }
+
     @Test func deniedSourceDoesNotPreventStoppingAnAuthorizedSession() async throws {
         let transport = ScopedForbiddenTransport()
         let client = try CPAMonitorClient(baseURL: #require(URL(string: "https://example.test")), token: MonitorBridgeToken("test"), transport: transport)

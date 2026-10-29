@@ -17,12 +17,12 @@ func TestConfigValidation(t *testing.T) {
 			t.Errorf("rejected valid base URL case %q", value)
 		}
 	}
-	for _, a := range []Account{{ID: "a", Provider: "codex", Selection: "primary"}, {ID: "a", Provider: "codex", Selection: "secondary"}, {ID: "a", Provider: "xai", Selection: "monthly"}, {ID: "a", Provider: "xai", Selection: "used-usd"}, {ID: "a", Provider: "xai", Selection: "monthly-limit-usd"}, {ID: "a", Provider: "plugin", Selection: "summary:0"}, {ID: "a", Provider: "plugin", Selection: "bucket:0:2"}} {
+	for _, a := range []Account{{ID: "a", Provider: "codex", Selection: "primary"}, {ID: "a", Provider: "codex", Selection: "secondary"}, {ID: "a", Provider: "xai", Selection: "monthly"}, {ID: "a", Provider: "xai", Selection: "used-usd"}, {ID: "a", Provider: "xai", Selection: "monthly-limit-usd"}, {ID: "a", Provider: "plugin", Selection: "summary-key:requests"}} {
 		if err := ValidateSelection(a.Provider, a.Selection); err != nil {
 			t.Errorf("valid selection rejected: %v", a)
 		}
 	}
-	for _, a := range []Account{{ID: "a", Provider: "codex", Selection: "https://evil.test"}, {ID: "a", Provider: "xai", Selection: "primary"}, {ID: "a", Provider: "plugin", Selection: "bucket:-1:0"}, {ID: "a", Provider: "plugin", Selection: "summary:01"}, {ID: "a", Provider: "other", Selection: "primary"}} {
+	for _, a := range []Account{{ID: "a", Provider: "codex", Selection: "https://evil.test"}, {ID: "a", Provider: "xai", Selection: "primary"}, {ID: "a", Provider: "plugin", Selection: "bucket:-1:0"}, {ID: "a", Provider: "plugin", Selection: "summary:0"}, {ID: "a", Provider: "plugin", Selection: "bucket:0:2"}, {ID: "a", Provider: "plugin", Selection: "summary:01"}, {ID: "a", Provider: "plugin", Selection: "summary-key:"}, {ID: "a", Provider: "plugin", Selection: "summary-key:requests remaining"}, {ID: "a", Provider: "other", Selection: "primary"}} {
 		if ValidateSelection(a.Provider, a.Selection) == nil {
 			t.Errorf("invalid selection accepted: %v", a)
 		}

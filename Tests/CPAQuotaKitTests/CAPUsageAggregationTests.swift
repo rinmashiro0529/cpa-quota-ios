@@ -4,6 +4,33 @@ import Testing
 
 @Suite("CAP usage aggregation")
 struct CAPUsageAggregationTests {
+    @Test func tokenAccountingFollowsTheUpstreamPrecedence() throws {
+        let cases: [(String, String, Double)] = [
+            ("openai", "geminiexecutor", 50),
+            ("gemini", "openaiexecutor", 50),
+            ("gemini", "openaicompatexecutor", 30),
+            ("anthropic", "geminiexecutor", 30),
+            ("openai", "openaiexecutor", 30)
+        ]
+        for (provider, executor, expected) in cases {
+            let json = """
+            [{"provider":"\(provider)","executor_type":"\(executor)","failed":false,"output_tokens":60,"reasoning_tokens":40,"latency_ns":3000000000,"ttft_ns":1000000000}]
+            """
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            let requests = try decoder.decode([CAPUsageRequest].self, from: Data(json.utf8))
+            #expect(CAPUsageAggregation.summarize(requests).generationTPS == expected)
+        }
+    }
+
+    @Test func unknownProviderWithZeroReasoningStillHasUnambiguousSpeed() throws {
+        let json = #"[{"provider":"unknown","failed":false,"output_tokens":100,"reasoning_tokens":0,"latency_ns":3000000000,"ttft_ns":1000000000}]"#
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let requests = try decoder.decode([CAPUsageRequest].self, from: Data(json.utf8))
+        #expect(CAPUsageAggregation.summarize(requests).generationTPS == 50)
+    }
+
     @Test func modelCountersIncludePartialFailureUsageButNotItsSpeed() throws {
         let json = #"[{"model":"m","provider":"openai","failed":false,"input_tokens":10,"output_tokens":100,"reasoning_tokens":0,"latency_ns":3000000000,"ttft_ns":1000000000},{"model":"m","provider":"openai","failed":false,"input_tokens":20,"output_tokens":900,"reasoning_tokens":0,"latency_ns":31000000000,"ttft_ns":1000000000},{"model":"m","provider":"openai","failed":true,"input_tokens":3,"output_tokens":20,"latency_ns":9000000000,"ttft_ns":1000000000}]"#
         let decoder = JSONDecoder()

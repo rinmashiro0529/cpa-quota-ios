@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"icu.nahida/cpaquota/monitor/quota"
 )
 
 var (
@@ -87,26 +89,7 @@ func parseBase(value string) (*url.URL, error) {
 // ValidateSelection accepts only the fixed selections understood by quota.Normalize.
 // The argument is the reader (codex, xai or plugin), never the inventory provider.
 func ValidateSelection(reader, selection string) error {
-	switch strings.ToLower(reader) {
-	case "codex":
-		if selection == "primary" || selection == "secondary" {
-			return nil
-		}
-	case "xai":
-		if selection == "monthly" || selection == "monthly-limit-usd" || selection == "used-usd" {
-			return nil
-		}
-	case "plugin":
-		parts := strings.Split(selection, ":")
-		if !(len(parts) == 2 && parts[0] == "summary" || len(parts) == 3 && parts[0] == "bucket") {
-			return ErrSelection
-		}
-		for _, p := range parts[1:] {
-			n, e := strconv.Atoi(p)
-			if e != nil || n < 0 || strconv.Itoa(n) != p {
-				return ErrSelection
-			}
-		}
+	if quota.ValidateSelection(reader, selection) == nil {
 		return nil
 	}
 	return ErrSelection

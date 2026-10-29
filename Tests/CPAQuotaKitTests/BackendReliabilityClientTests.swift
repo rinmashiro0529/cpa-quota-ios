@@ -18,8 +18,43 @@ private actor ReliabilityConcurrency {
     func maximum() -> Int { peak }
 }
 
+private actor ReliabilityUpdates {
+    private var records: [QuotaRecord] = []
+    func record(_ record: QuotaRecord) { records.append(record) }
+    func successes() -> Int { records.filter { $0.error == nil }.count }
+}
+
 @Suite("Backend management request reliability")
 struct BackendReliabilityClientTests {
+    @Test(arguments: [401, 403, 429])
+    func batchRefreshPropagatesSharedPreflightFailureWithoutSuccessCallbacks(status: Int) async throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let coordinator = CPAManagementRequestCoordinator(clock: { now })
+        let transport = try ScenarioTransport(accounts: [FixtureAccount("a"), FixtureAccount("b")])
+        let client = CPAClient(server: try CPAServer(baseURL: "https://cpa.example"),
+                               managementKey: try ManagementKey("fixture-key"), transport: transport,
+                               clock: { now }, coordinator: coordinator)
+        _ = try await client.refreshAll(force: true)
+        let previousRequestCount = await transport.quotaRequestCount()
+        let kind: CPAError.Kind = status == 401 ? .managementUnauthorized : status == 403 ? .managementForbidden : .rateLimited
+        do {
+            _ = try await coordinator.withPermit { () -> Int in
+                throw CPAError(kind, layer: .management, statusCode: status)
+            }
+        } catch {
+            #expect(CPAError.normalize(error).kind == kind)
+        }
+        let updates = ReliabilityUpdates()
+        do {
+            _ = try await client.refreshAll(force: true) { await updates.record($0) }
+            Issue.record("A shared management block must fail the batch")
+        } catch {
+            #expect(CPAError.normalize(error).kind == kind)
+        }
+        #expect(await updates.successes() == 0)
+        #expect(await transport.quotaRequestCount() == previousRequestCount)
+    }
+
     @Test func waitingCallerDoesNotExecuteAfterManagementRejection() async throws {
         let coordinator = CPAManagementRequestCoordinator(limit: 1)
         let held = TestGate()

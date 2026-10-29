@@ -1,17 +1,118 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import Testing
 @testable import CPAQuotaKit
+
+private final class ContractFixtureBundleMarker: NSObject {}
+
+enum ContractFixtures {
+    static var bundle: Bundle {
+        #if SWIFT_PACKAGE
+        Bundle.module
+        #else
+        Bundle(for: ContractFixtureBundleMarker.self)
+        #endif
+    }
+
+    static func url(_ name: String) throws -> URL {
+        guard let url = bundle.url(forResource: name, withExtension: nil, subdirectory: "ContractFixtures") else {
+            throw NSError(domain: "ContractFixtures", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Missing bundled contract fixture: \(name)"])
+        }
+        return url
+    }
+
+    static func data(_ name: String) throws -> Data { try Data(contentsOf: url(name)) }
+}
+
+private actor ContractSequenceTransport: HTTPTransport {
+    private var responses: [Data]
+    init(_ responses: [Data]) { self.responses = responses }
+    func send(_ request: URLRequest) async throws -> HTTPResponse {
+        guard !responses.isEmpty else { throw URLError(.badServerResponse) }
+        return HTTPResponse(statusCode: 200, headers: [:], body: responses.removeFirst())
+    }
+}
 
 @Suite("Monitoring v1 shared contract")
 struct MonitoringContractTests {
     private func sharedFixture(_ name: String) throws -> Data {
-        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-            .deletingLastPathComponent().appendingPathComponent("ContractFixtures").appendingPathComponent(name)
-        return try Data(contentsOf: url)
+        try ContractFixtures.data(name)
     }
 
     private var fixture: String {
         get throws { String(decoding: try sharedFixture("monitoring-v1-session.json"), as: UTF8.self) }
+    }
+
+    @Test func sharedFixturesAreBundledRatherThanReadFromTheSourceTree() throws {
+        let resourceRoot = try #require(ContractFixtures.bundle.resourceURL)
+        for name in ["monitoring-v1-session.json", "quota-parity-v1.json"] {
+            let url = try ContractFixtures.url(name)
+            #expect(url.path.hasPrefix(resourceRoot.path + "/"))
+            #expect(try Data(contentsOf: url).isEmpty == false)
+        }
+    }
+
+    @Test func sharedCPAEnvelopeVectorsMatchNativeUnwrapping() throws {
+        let vectors = try #require(JSONSerialization.jsonObject(with: sharedFixture("cpa-envelope-v1.json")) as? [[String: Any]])
+        #expect(!vectors.isEmpty)
+        for vector in vectors {
+            let name = try #require(vector["name"] as? String)
+            let expected = try #require(vector["expected"] as? [String: Any])
+            let valid = try #require(expected["valid"] as? Bool)
+            let status = try #require(expected["status"] as? Int)
+            let now = Date(timeIntervalSince1970: try #require(vector["now"] as? Double))
+            let body = try JSONSerialization.data(withJSONObject: #require(vector["envelope"]))
+            do {
+                let result = try PayloadDecoder.unwrapAPICall(body, now: now)
+                #expect(valid && (200..<300).contains(status), "Unexpected successful envelope: \(name)")
+                #expect(!result.isEmpty)
+            } catch let error as CPAError {
+                if !valid {
+                    #expect(error.kind == .invalidResponse, "Invalid envelope: \(name)")
+                } else {
+                    #expect(!(200..<300).contains(status), "Unexpected rejected envelope: \(name)")
+                    #expect(error.layer == .upstream)
+                    #expect(error.statusCode == status)
+                    if status == 429 { #expect(error.kind == .rateLimited) }
+                    let expectedRetry = (expected["retry_after_seconds"] as? Double).map { now.addingTimeInterval($0) }
+                    #expect(error.retryAfter == expectedRetry, "Retry-After contract: \(name)")
+                }
+            }
+        }
+    }
+
+    @Test @MainActor func serviceLifecycleSequencesAreAcceptedWithoutWeakeningStaleResponseProtection() async throws {
+        let root = try #require(JSONSerialization.jsonObject(with: sharedFixture("monitoring-lifecycle-v1.json")) as? [String: Any])
+        #expect(root["version"] as? Int == 1)
+        let cases = try #require(root["cases"] as? [[String: Any]])
+        #expect(!cases.isEmpty)
+        for testCase in cases {
+            let name = try #require(testCase["name"] as? String)
+            let values = try #require(testCase["sessions"] as? [[String: Any]])
+            let inputs = try values.map { try JSONSerialization.data(withJSONObject: $0) }
+            #expect(inputs.count >= 2)
+            let first = try #require(inputs.first)
+            let transport = ContractSequenceTransport(inputs + [first])
+            let client = try CPAMonitorClient(baseURL: #require(URL(string: "https://contract.example.test")),
+                                             token: MonitorBridgeToken("synthetic-contract-token"), transport: transport)
+            let store = MonitoringStore(client: client)
+            var last: MonitoringSession?
+            for data in inputs {
+                let expected = try JSONDecoder().decode(MonitoringSession.self, from: data)
+                await store.load(id: expected.id)
+                #expect(store.error == nil, "Service transition: \(name)")
+                #expect(store.session == expected, "Service transition: \(name)")
+                last = expected
+            }
+            let terminal = try #require(last)
+            #expect(terminal.status != .active)
+            await store.load(id: terminal.id)
+            #expect(store.error == .invalidResponse, "Late active response: \(name)")
+            #expect(store.session == terminal)
+        }
     }
 
     @Test func sharedSessionDecodesAndSnapshotRoundTrips() throws {

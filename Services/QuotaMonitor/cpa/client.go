@@ -459,7 +459,13 @@ func (o *Origin) originReading() Reading {
 }
 
 func (o *Origin) deadline(header http.Header) time.Time {
-	return o.now().Add(retryAfter(header.Get("Retry-After"), o.now()))
+	now := o.now()
+	for _, value := range header.Values("Retry-After") {
+		if delay, ok := retryAfter(value, now); ok {
+			return now.Add(delay)
+		}
+	}
+	return now.Add(defaultCooldown)
 }
 
 func (o *Origin) cool(id string, header http.Header) Reading {
@@ -474,24 +480,37 @@ func (o *Origin) cool(id string, header http.Header) Reading {
 	return Reading{Status: "cooling_down", ExpiresAt: until.Unix()}
 }
 
-func retryAfter(value string, now time.Time) time.Duration {
+func retryAfter(value string, now time.Time) (time.Duration, bool) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return defaultCooldown
+		return 0, false
 	}
 	if seconds, err := strconv.ParseFloat(trimmed, 64); err == nil && seconds >= 0 && !math.IsNaN(seconds) && !math.IsInf(seconds, 0) {
 		if seconds < 1 {
-			return time.Second
+			return time.Second, true
 		}
-		if seconds > float64(math.MaxInt64)/float64(time.Second) {
-			return defaultCooldown
+		// Float64(MaxInt64) rounds up; accepting that boundary would overflow
+		// time.Duration and turn a long cooldown into a deadline in the past.
+		if seconds >= float64(math.MaxInt64)/float64(time.Second) {
+			return 0, false
 		}
-		return time.Duration(seconds * float64(time.Second))
+		return time.Duration(seconds * float64(time.Second)), true
 	}
-	if when, ok := httpDate(trimmed); ok && when.After(now) {
-		return when.Sub(now)
+	when, ok := httpDate(trimmed)
+	if !ok && strings.Contains(trimmed, "T") {
+		var err error
+		when, err = time.Parse(time.RFC3339Nano, trimmed)
+		ok = err == nil && when.Year() >= 1 && when.Year() <= 9999
 	}
-	return defaultCooldown
+	if ok {
+		if when.After(now) {
+			return when.Sub(now), true
+		}
+		// A syntactically valid but elapsed server date still uses the local
+		// minimum cooldown, rather than selecting a later array element.
+		return defaultCooldown, true
+	}
+	return 0, false
 }
 
 func httpDate(value string) (time.Time, bool) {
@@ -619,38 +638,6 @@ func pluginObserved(body []byte) int64 {
 		}
 	}
 	return 0
-}
-
-func unwrap(body []byte) ([]byte, int, http.Header, bool) {
-	var root map[string]any
-	if json.Unmarshal(body, &root) != nil {
-		return nil, 0, nil, false
-	}
-	status, ok := numberValue(root["status_code"])
-	if !ok {
-		status, ok = numberValue(root["statusCode"])
-	}
-	if !ok {
-		return nil, 0, nil, false
-	}
-	header := http.Header{}
-	if values, _ := root["header"].(map[string]any); values != nil {
-		if retry, _ := values["Retry-After"].(string); retry != "" {
-			header.Set("Retry-After", retry)
-		}
-	}
-	if int(status) < 200 || int(status) >= 300 {
-		return nil, int(status), header, true
-	}
-	switch payload := root["body"].(type) {
-	case string:
-		return []byte(payload), int(status), header, json.Valid([]byte(payload))
-	case map[string]any, []any:
-		encoded, err := json.Marshal(payload)
-		return encoded, int(status), header, err == nil
-	default:
-		return nil, int(status), header, false
-	}
 }
 
 func numberValue(value any) (float64, bool) {

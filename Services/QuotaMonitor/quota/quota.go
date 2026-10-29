@@ -63,19 +63,10 @@ func num(v any) *float64 {
 	}
 	return &n
 }
-func item(v any, n int) object {
-	a, ok := v.([]any)
-	if !ok || n < 0 || n >= len(a) {
-		return nil
-	}
-	return obj(a[n])
-}
-func index(s string) (int, bool) {
-	n, e := strconv.Atoi(s)
-	return n, e == nil && n >= 0 && strconv.Itoa(n) == s
-}
-
 func Normalize(provider string, body []byte, selection string) (Result, error) {
+	if ValidateSelection(provider, selection) != nil {
+		return Result{}, ErrInvalid
+	}
 	d := json.NewDecoder(bytes.NewReader(body))
 	d.UseNumber()
 	var raw any
@@ -142,43 +133,30 @@ func Normalize(provider string, body []byte, selection string) (Result, error) {
 			return Result{}, ErrInvalid
 		}
 	case "plugin":
-		parts := strings.Split(selection, ":")
-		if len(parts) == 2 && parts[0] == "summary" {
-			i, ok := index(parts[1])
-			if !ok {
-				return Result{}, ErrInvalid
-			}
-			metric := item(field(root, "summary"), i)
-			if metric == nil {
-				return Result{}, ErrInvalid
-			}
-			unit, _ := field(metric, "unit").(string)
-			return Result{Value: num(field(metric, "value", "val")), Unit: unit}, nil
+		key := strings.TrimPrefix(selection, "summary-key:")
+		summary, ok := field(root, "summary").([]any)
+		if !ok {
+			return Result{}, ErrInvalid
 		}
-		if len(parts) == 3 && parts[0] == "bucket" {
-			i, ok := index(parts[1])
-			if !ok {
+		var selected object
+		for _, item := range summary {
+			metric := obj(item)
+			candidate, _ := field(metric, "key").(string)
+			if candidate != key {
+				continue
+			}
+			if selected != nil {
+				// Duplicate keys do not identify one metric, even when their
+				// values or units happen to agree in this response.
 				return Result{}, ErrInvalid
 			}
-			j, ok := index(parts[2])
-			if !ok {
-				return Result{}, ErrInvalid
-			}
-			group := item(field(root, "groups"), i)
-			bucket := item(field(group, "buckets"), j)
-			if bucket == nil {
-				return Result{}, ErrInvalid
-			}
-			remaining := num(field(bucket, "remainingFraction", "remaining_fraction"))
-			if remaining == nil || *remaining > 1 {
-				return Result{}, nil
-			}
-			if *remaining < 0 {
-				zero := 0.0
-				return Result{Remaining: &zero}, nil
-			}
-			return Result{Remaining: remaining}, nil
+			selected = metric
 		}
+		if selected == nil {
+			return Result{}, ErrInvalid
+		}
+		unit, _ := field(selected, "unit").(string)
+		return Result{Value: num(field(selected, "value", "val")), Unit: unit}, nil
 	}
 	return Result{}, ErrInvalid
 }
