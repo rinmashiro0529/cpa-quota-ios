@@ -204,6 +204,8 @@ PR #1、#2 已在 main，保留其已验证的共享协议、Go CAS/取消与故
 
 完整 Swift 6.2.4/Linux + warnings-as-errors 已执行通过：**288 tests / 42 suites**，包含新增监控专项的 15 个测试。原生测试源接线为 **36/36**，Swift 源清单 **87** 项，无遗漏/重复/悬空引用。Apple 验证以本 PR 当前 head 的 GitHub Actions Checks 与 PR 描述为准；本地执行记录见 [验证清单](verification/frontend-pr3-20261029.json)，不把 Linux 通过外推为 Apple 通过。所有本地日志仅含合成测试数据。
 
+本修复首轮 [CI 40902368779](https://github.com/rinmashiro0529/cpa-quota-ios/actions/runs/40902368779) 的 macOS SwiftPM 实际通过 **286 tests / 42 suites**；iOS SDK 编译另外发现 `Activity` 非 Sendable 对象跨 MainActor 调用非隔离 async API 的问题。后续修复把精确 ID 的查找、序号检查和 SDK 操作放在同一个非隔离 helper 内，仅传递 Sendable 值类型，没有降低 strict concurrency 或添加 unchecked Sendable。原生执行结果继续按最新提交的 Checks 记录。
+
 | 风险场景 | 验证方式 | 仍不能据此证明 |
 | --- | --- | --- |
 | A/B/C 连接交错 | Observation + gated transport | 真机 UI 连续点击体验 |

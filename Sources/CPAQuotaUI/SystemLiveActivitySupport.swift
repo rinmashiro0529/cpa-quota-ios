@@ -110,8 +110,27 @@ public final class DefaultSystemLiveActivityDriver: SystemLiveActivityDriver {
     public func updateActivity(activityID: String, snapshot: MonitoringSnapshot) async throws {
         #if canImport(ActivityKit) && os(iOS)
         try Task.checkCancellation()
-        guard activeActivityID == activityID,
-              let activity = Activity<CPAQuotaActivityAttributes>.activities.first(where: { $0.id == activityID }),
+        guard activeActivityID == activityID else { return }
+        try await Self.updateSystemActivity(activityID: activityID, snapshot: snapshot)
+        #endif
+    }
+
+    public func endActivity(activityID: String, immediate: Bool) async {
+        // Invalidate this activity's observers before suspension. A new activity
+        // started during end() must keep its own binding and token.
+        if activeActivityID == activityID { detachActivity() }
+        #if canImport(ActivityKit) && os(iOS)
+        await Self.endSystemActivity(activityID: activityID, immediate: immediate)
+        #endif
+    }
+
+    #if canImport(ActivityKit) && os(iOS)
+    // ActivityKit's Activity is non-Sendable and its async mutation APIs are
+    // nonisolated. Pass only value types across the actor boundary, and obtain
+    // the framework object inside the same nonisolated operation that uses it.
+    nonisolated private static func updateSystemActivity(activityID: String, snapshot: MonitoringSnapshot) async throws {
+        try Task.checkCancellation()
+        guard let activity = Activity<CPAQuotaActivityAttributes>.activities.first(where: { $0.id == activityID }),
               activity.activityState == .active || activity.activityState == .stale,
               activity.content.state.accepts(snapshot) else { return }
         let state = try CPAQuotaLiveActivityState(snapshot: snapshot)
@@ -123,16 +142,10 @@ public final class DefaultSystemLiveActivityDriver: SystemLiveActivityDriver {
             await activity.update(ActivityContent(state: state, staleDate: snapshot.expiresAt),
                                   alertConfiguration: nil, timestamp: snapshot.generatedAt)
         }
-        #endif
     }
 
-    public func endActivity(activityID: String, immediate: Bool) async {
-        #if canImport(ActivityKit) && os(iOS)
-        // Capture the exact object and invalidate its observers before suspension.
-        // A new activity started during end() must keep its own binding and token.
-        let activity = Activity<CPAQuotaActivityAttributes>.activities.first { $0.id == activityID }
-        if activeActivityID == activityID { detachActivity() }
-        guard let activity else { return }
+    nonisolated private static func endSystemActivity(activityID: String, immediate: Bool) async {
+        guard let activity = Activity<CPAQuotaActivityAttributes>.activities.first(where: { $0.id == activityID }) else { return }
         let previous = activity.content.state.snapshot
         let terminal = try? MonitoringSnapshot(
             sequence: previous.sequence, phase: previous.phase == .expired ? .expired : .stopped,
@@ -141,10 +154,8 @@ public final class DefaultSystemLiveActivityDriver: SystemLiveActivityDriver {
         let state = terminal.flatMap { try? CPAQuotaLiveActivityState(snapshot: $0) } ?? activity.content.state
         await activity.end(ActivityContent(state: state, staleDate: .distantPast),
                            dismissalPolicy: immediate ? .immediate : .default)
-        #else
-        if activeActivityID == activityID { detachActivity() }
-        #endif
     }
+    #endif
 
     /// Stop observing, without pretending to cancel a backend lease or another activity.
     public func detachActivity() {
