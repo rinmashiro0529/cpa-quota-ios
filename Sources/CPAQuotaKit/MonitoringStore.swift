@@ -1,17 +1,35 @@
 import Foundation
 import Observation
 
+/// The bridge acknowledged a durable cancellation tombstone for this identity.
+/// This does not acknowledge APNs delivery or the removal of a device activity.
+public struct MonitoringCancellationReceipt: Sendable {
+    public let id: UUID
+    public let client: CPAMonitorClient
+
+    fileprivate init(id: UUID, client: CPAMonitorClient) {
+        self.id = id
+        self.client = client
+    }
+
+    fileprivate func matches(_ id: UUID, client: CPAMonitorClient) -> Bool {
+        self.id == id && self.client === client
+    }
+}
+
 public struct DetachedMonitoringSession: Sendable {
     public let handle: UUID
     public let id: UUID
     public let client: CPAMonitorClient
     public let lastSession: MonitoringSession?
-    public let stopIntentRecorded: Bool
+    public let cancellationReceipt: MonitoringCancellationReceipt?
+    public var stopIntentRecorded: Bool { cancellationReceipt != nil }
 
     fileprivate init(handle: UUID = UUID(), id: UUID, client: CPAMonitorClient,
-                     lastSession: MonitoringSession?, stopIntentRecorded: Bool = false) {
+                     lastSession: MonitoringSession?, cancellationReceipt: MonitoringCancellationReceipt? = nil) {
         self.handle = handle; self.id = id; self.client = client
-        self.lastSession = lastSession; self.stopIntentRecorded = stopIntentRecorded
+        self.lastSession = lastSession
+        self.cancellationReceipt = cancellationReceipt?.matches(id, client: client) == true ? cancellationReceipt : nil
     }
 }
 
@@ -23,6 +41,7 @@ public final class MonitoringStore {
     }
     public private(set) var sessionID: UUID?
     public private(set) var session: MonitoringSession?
+    public private(set) var cancellationReceipt: MonitoringCancellationReceipt?
     public private(set) var state: State = .idle
     public private(set) var error: MonitoringError?
     public private(set) var detachedSessions: [DetachedMonitoringSession] = []
@@ -34,10 +53,11 @@ public final class MonitoringStore {
     public func replaceClient(_ client: CPAMonitorClient) {
         generation &+= 1
         if let sessionID {
-            detachedSessions.append(DetachedMonitoringSession(id: sessionID, client: self.client, lastSession: session))
+            detachedSessions.append(DetachedMonitoringSession(id: sessionID, client: self.client,
+                                                             lastSession: session, cancellationReceipt: cancellationReceipt))
         }
         self.client = client
-        sessionID = nil; session = nil; error = nil; state = .idle
+        sessionID = nil; session = nil; cancellationReceipt = nil; error = nil; state = .idle
     }
 
     public func cancelPending() async {
@@ -45,15 +65,25 @@ public final class MonitoringStore {
     }
 
     public func start(_ registration: MonitoringRegistration) async {
+        if receipt(for: registration.id) != nil {
+            error = .conflict
+            return
+        }
         if let existing = sessionID, existing != registration.id {
-            guard let session, session.id == existing, session.status != .active else {
-                error = .conflict
-                return
-            }
-            if session.deliveryState != .ended && session.deliveryState != .disabled {
-                detachedSessions.append(DetachedMonitoringSession(id: existing, client: client, lastSession: session))
+            if cancellationReceipt?.matches(existing, client: client) == true {
+                detachedSessions.append(DetachedMonitoringSession(id: existing, client: client,
+                                                                 lastSession: session, cancellationReceipt: cancellationReceipt))
+            } else {
+                guard let session, session.id == existing, session.status != .active else {
+                    error = .conflict
+                    return
+                }
+                if session.deliveryState != .ended && session.deliveryState != .disabled {
+                    detachedSessions.append(DetachedMonitoringSession(id: existing, client: client, lastSession: session))
+                }
             }
             self.session = nil
+            cancellationReceipt = nil
         }
         generation &+= 1
         let current = generation
@@ -74,9 +104,12 @@ public final class MonitoringStore {
         generation &+= 1
         let current = generation
         if let oldID = sessionID, oldID != id {
-            detachedSessions.append(DetachedMonitoringSession(id: oldID, client: client, lastSession: session))
+            detachedSessions.append(DetachedMonitoringSession(id: oldID, client: client,
+                                                             lastSession: session, cancellationReceipt: cancellationReceipt))
             session = nil
+            cancellationReceipt = nil
         }
+        cancellationReceipt = receipt(for: id)
         sessionID = id; state = .working; error = nil
         do {
             let result = try await client.get(id: id)
@@ -134,7 +167,10 @@ public final class MonitoringStore {
             guard current == generation else { return }
             try Task.checkCancellation()
             if let result { try accept(result); state = .available }
-            else { state = .stopIntentRecorded }
+            else {
+                cancellationReceipt = MonitoringCancellationReceipt(id: id, client: client)
+                state = .stopIntentRecorded
+            }
         } catch {
             guard current == generation else { return }
             self.error = Self.normalize(error); state = .uncertain
@@ -155,17 +191,26 @@ public final class MonitoringStore {
 
     private func accept(_ result: MonitoringSession) throws {
         guard result.id == sessionID else { throw MonitoringError.invalidResponse }
+        if cancellationReceipt?.matches(result.id, client: client) == true, result.status == .active {
+            throw MonitoringError.invalidResponse
+        }
         try Self.checkProgress(result, from: session)
         session = result
+    }
+
+    private func receipt(for id: UUID) -> MonitoringCancellationReceipt? {
+        if cancellationReceipt?.matches(id, client: client) == true { return cancellationReceipt }
+        return detachedSessions.compactMap(\.cancellationReceipt).first { $0.matches(id, client: client) }
     }
 
     public func loadDetached(handle: UUID) async throws -> MonitoringSession {
         guard let item = detachedSessions.first(where: { $0.handle == handle }) else { throw MonitoringError.notFound }
         let result = try await item.client.get(id: item.id)
         guard let index = detachedSessions.firstIndex(where: { $0.handle == handle }) else { throw MonitoringError.notFound }
+        if detachedSessions[index].stopIntentRecorded, result.status == .active { throw MonitoringError.invalidResponse }
         try Self.checkProgress(result, from: detachedSessions[index].lastSession)
         detachedSessions[index] = DetachedMonitoringSession(handle: handle, id: item.id, client: item.client,
-                                                             lastSession: result, stopIntentRecorded: detachedSessions[index].stopIntentRecorded)
+                                                             lastSession: result, cancellationReceipt: detachedSessions[index].cancellationReceipt)
         return result
     }
 
@@ -176,13 +221,16 @@ public final class MonitoringStore {
         if let result { try Self.checkProgress(result, from: detachedSessions[index].lastSession) }
         detachedSessions[index] = DetachedMonitoringSession(handle: handle, id: item.id, client: item.client,
                                                              lastSession: result ?? detachedSessions[index].lastSession,
-                                                             stopIntentRecorded: result == nil || detachedSessions[index].stopIntentRecorded)
+                                                             cancellationReceipt: result == nil
+                                                                 ? MonitoringCancellationReceipt(id: item.id, client: item.client)
+                                                                 : detachedSessions[index].cancellationReceipt)
         return result
     }
 
     public func removeDetached(handle: UUID) throws {
         guard let index = detachedSessions.firstIndex(where: { $0.handle == handle }),
-              let last = detachedSessions[index].lastSession, last.status != .active else {
+              detachedSessions[index].stopIntentRecorded ||
+                (detachedSessions[index].lastSession.map { $0.status != .active } ?? false) else {
             throw MonitoringError.conflict
         }
         detachedSessions.remove(at: index)

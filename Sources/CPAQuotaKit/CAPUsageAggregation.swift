@@ -101,15 +101,20 @@ public enum CAPUsageAggregation {
             let combined = provider + " " + executor
             let included = executor == "openaicompatexecutor" || provider == "openai-compatibility" ||
                 provider.hasPrefix("openai-compatible-") || combined.contains("claude") || combined.contains("anthropic")
-            let separate = !included && ["gemini", "aistudio", "antigravity", "vertex", "interaction"]
+            let separate = ["gemini", "aistudio", "antigravity", "vertex", "interaction"]
                 .contains { combined.contains($0) }
-            let knownIncluded = included || ["openai", "codex", "xai", "grok", "kimi", "qwen", "deepseek", "openrouter"]
+            let knownIncluded = ["openai", "codex", "xai", "grok", "kimi", "qwen", "deepseek", "openrouter"]
                 .contains { combined.contains($0) }
             let effective: Double
-            if knownIncluded {
+            // Match the upstream precedence: explicit included, separate reasoning,
+            // then generic included providers. Provider and executor may disagree.
+            if included {
                 effective = Double(output)
-            } else if let reasoning = request.reasoningTokens, separate || reasoning == 0 {
-                effective = Double(output) + (separate ? Double(reasoning) : 0)
+            } else if separate {
+                guard let reasoning = request.reasoningTokens else { continue }
+                effective = Double(output) + Double(reasoning)
+            } else if knownIncluded || request.reasoningTokens == 0 {
+                effective = Double(output)
             } else {
                 continue
             }

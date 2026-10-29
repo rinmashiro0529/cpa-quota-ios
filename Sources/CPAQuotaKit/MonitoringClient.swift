@@ -17,7 +17,7 @@ public struct MonitorBridgeToken: Sendable, CustomStringConvertible, CustomDebug
 }
 
 public enum MonitoringError: Error, Sendable, Equatable {
-    case invalidConfiguration, network, invalidResponse, unauthorized, forbidden, rateLimited, rejected, redirectRefused, conflict, notFound, serviceUnavailable
+    case invalidConfiguration, network, invalidResponse, unauthorized, forbidden, rateLimited, rejected, redirectRefused, conflict, notFound, capacityExceeded, serviceUnavailable
 }
 
 public actor CPAMonitorClient {
@@ -138,6 +138,7 @@ public actor CPAMonitorClient {
         case 403: throw MonitoringError.forbidden
         case 404: throw MonitoringError.notFound
         case 409: throw MonitoringError.conflict
+        case 507: throw MonitoringError.capacityExceeded
         case 500..<600: throw MonitoringError.serviceUnavailable
         case 429:
             let now = clock()

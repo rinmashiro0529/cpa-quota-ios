@@ -17,6 +17,11 @@ private actor LateRegistrationTransport: HTTPTransport {
     init(id: UUID) { self.id = id }
     func send(_ request: URLRequest) async throws -> HTTPResponse {
         if request.httpMethod == "DELETE" { return HTTPResponse(statusCode: 204, headers: [:], body: Data()) }
+        if request.httpMethod == "POST", let body = request.httpBody,
+           let object = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+           let text = object["id"] as? String, let requestedID = UUID(uuidString: text), requestedID != id {
+            return sessionResponse(requestedID)
+        }
         hasEntered = true
         entered?.resume(); entered = nil
         return try await withCheckedThrowingContinuation { response = $0 }
@@ -36,8 +41,11 @@ private actor LateRegistrationTransport: HTTPTransport {
 
 private actor QueueTransport: HTTPTransport {
     var responses: [HTTPResponse]
+    private var requestCount = 0
     init(_ responses: [HTTPResponse]) { self.responses = responses }
+    func count() -> Int { requestCount }
     func send(_ request: URLRequest) async throws -> HTTPResponse {
+        requestCount += 1
         guard !responses.isEmpty else { throw URLError(.cannotConnectToHost) }
         return responses.removeFirst()
     }
@@ -197,5 +205,158 @@ struct MonitoringStoreTests {
         #expect(store.sessionID == id)
         #expect(store.state == .uncertain)
         #expect(store.error == .network)
+        await store.start(try self.registration(UUID()))
+        #expect(store.sessionID == id)
+        #expect(store.error == .conflict)
+    }
+
+    @Test func cancellationReceiptAllowsNewIdentityAndIgnoresLateCreate() async throws {
+        let first = UUID(), second = UUID()
+        let transport = LateRegistrationTransport(id: first)
+        let client = try CPAMonitorClient(baseURL: #require(URL(string: "https://example.test")), token: MonitorBridgeToken("test"), transport: transport)
+        let store = MonitoringStore(client: client)
+        let firstRegistration = try registration(first)
+        let start = Task { await store.start(firstRegistration) }
+        await transport.waitForPost()
+        await store.cancelPending()
+        #expect(store.cancellationReceipt?.id == first)
+        #expect(store.cancellationReceipt?.client === client)
+        await store.start(try registration(second))
+        await transport.releasePost()
+        await start.value
+        #expect(store.sessionID == second)
+        #expect(store.session?.id == second)
+        #expect(store.state == .available)
+        let detached = try #require(store.detachedSessions.first)
+        #expect(detached.id == first)
+        #expect(detached.client === client)
+        #expect(detached.lastSession == nil)
+        #expect(detached.stopIntentRecorded)
+        try store.removeDetached(handle: detached.handle)
+        #expect(store.sessionID == second)
+        #expect(store.session?.id == second)
+        #expect(store.detachedSessions.isEmpty)
+    }
+
+    @Test func cancellationReceiptSurvivesClientReplacementWithoutChangingIdentity() async throws {
+        let id = UUID()
+        let transport = QueueTransport([
+            HTTPResponse(statusCode: 404, headers: [:], body: Data()),
+            HTTPResponse(statusCode: 204, headers: [:], body: Data())
+        ])
+        let client = try CPAMonitorClient(baseURL: #require(URL(string: "https://a.example.test")), token: MonitorBridgeToken("first"), transport: transport)
+        let other = try CPAMonitorClient(baseURL: #require(URL(string: "https://b.example.test")), token: MonitorBridgeToken("second"), transport: FailureTransport())
+        let store = MonitoringStore(client: client)
+        await store.load(id: id)
+        await store.stop()
+        store.replaceClient(other)
+        let detached = try #require(store.detachedSessions.first)
+        #expect(detached.id == id)
+        #expect(detached.client === client)
+        #expect(detached.stopIntentRecorded)
+        await store.load(id: id)
+        #expect(store.cancellationReceipt?.id == nil)
+        await store.start(try registration(UUID()))
+        #expect(store.sessionID == id)
+        #expect(store.error == .conflict)
+        try store.removeDetached(handle: detached.handle)
+    }
+
+    @Test func reloadingDetachedCancelledIdentityCannotAcceptActiveState() async throws {
+        let first = UUID(), second = UUID()
+        let transport = QueueTransport([
+            HTTPResponse(statusCode: 404, headers: [:], body: Data()),
+            HTTPResponse(statusCode: 204, headers: [:], body: Data()),
+            sessionResponse(second), sessionResponse(first)
+        ])
+        let client = try CPAMonitorClient(baseURL: #require(URL(string: "https://example.test")), token: MonitorBridgeToken("test"), transport: transport)
+        let store = MonitoringStore(client: client)
+        await store.load(id: first)
+        await store.stop()
+        await store.start(try registration(second))
+        await store.load(id: first)
+        #expect(store.error == .invalidResponse)
+        #expect(store.session == nil)
+        #expect(store.cancellationReceipt?.id == first)
+    }
+
+    @Test func cancellationReceiptRejectsActiveRepliesAndSurvivesFailedReconciliation() async throws {
+        let first = UUID(), second = UUID()
+        let transport = QueueTransport([
+            HTTPResponse(statusCode: 404, headers: [:], body: Data()),
+            HTTPResponse(statusCode: 204, headers: [:], body: Data()),
+            sessionResponse(first),
+            sessionResponse(second)
+        ])
+        let client = try CPAMonitorClient(baseURL: #require(URL(string: "https://example.test")), token: MonitorBridgeToken("test"), transport: transport)
+        let store = MonitoringStore(client: client)
+        await store.load(id: first)
+        await store.stop()
+        await store.load(id: first)
+        #expect(store.error == .invalidResponse)
+        #expect(store.session == nil)
+        await store.start(try registration(second))
+        #expect(store.session?.id == second)
+        #expect(store.state == .available)
+    }
+
+    @Test(arguments: [404, 409, 503, 507])
+    func failedStopDoesNotCreateCancellationProof(status: Int) async throws {
+        let first = UUID(), second = UUID()
+        let transport = QueueTransport([
+            HTTPResponse(statusCode: 404, headers: [:], body: Data()),
+            HTTPResponse(statusCode: status, headers: [:], body: Data()),
+            sessionResponse(second)
+        ])
+        let client = try CPAMonitorClient(baseURL: #require(URL(string: "https://example.test")), token: MonitorBridgeToken("test"), transport: transport)
+        let store = MonitoringStore(client: client)
+        await store.load(id: first)
+        await store.stop()
+        #expect(store.state == .uncertain)
+        #expect(store.cancellationReceipt?.id == nil)
+        if status == 507 { #expect(store.error == .capacityExceeded) }
+        await store.start(try registration(second))
+        #expect(store.sessionID == first)
+        #expect(store.error == .conflict)
+        #expect(await transport.count() == 2)
+    }
+
+    @Test(arguments: [404, 503])
+    func failedLookupDoesNotEraseAnAcknowledgedCancellation(status: Int) async throws {
+        let first = UUID(), second = UUID()
+        let transport = QueueTransport([
+            HTTPResponse(statusCode: 404, headers: [:], body: Data()),
+            HTTPResponse(statusCode: 204, headers: [:], body: Data()),
+            HTTPResponse(statusCode: status, headers: [:], body: Data()),
+            sessionResponse(second)
+        ])
+        let client = try CPAMonitorClient(baseURL: #require(URL(string: "https://example.test")), token: MonitorBridgeToken("test"), transport: transport)
+        let store = MonitoringStore(client: client)
+        await store.load(id: first)
+        await store.stop()
+        await store.load(id: first)
+        #expect(store.state == .uncertain)
+        #expect(store.session == nil)
+        #expect(store.cancellationReceipt?.id == first)
+        await store.start(try registration(second))
+        #expect(store.session?.id == second)
+        #expect(store.state == .available)
+    }
+
+    @Test func detachedUnknownSessionCanBeRemovedOnlyAfterAcknowledgedStop() async throws {
+        let id = UUID()
+        let transport = QueueTransport([
+            HTTPResponse(statusCode: 404, headers: [:], body: Data()),
+            HTTPResponse(statusCode: 204, headers: [:], body: Data())
+        ])
+        let client = try CPAMonitorClient(baseURL: #require(URL(string: "https://example.test")), token: MonitorBridgeToken("test"), transport: transport)
+        let store = MonitoringStore(client: client)
+        await store.load(id: id)
+        store.replaceClient(client)
+        let handle = try #require(store.detachedSessions.first?.handle)
+        #expect(throws: MonitoringError.conflict) { try store.removeDetached(handle: handle) }
+        #expect(try await store.stopDetached(handle: handle) == nil)
+        try store.removeDetached(handle: handle)
+        #expect(store.detachedSessions.isEmpty)
     }
 }
