@@ -1,124 +1,99 @@
-name: iOS unsigned archive
+name: Final main unsigned IPA
 
 on:
-  push:
-    branches:
-      - ci/macos-build-20261026
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ios-archive-${{ github.ref }}
-  cancel-in-progress: true
+  group: final-main-ipa-20261030-0039
+  cancel-in-progress: false
 
 jobs:
   archive:
-    if: github.repository == 'rinmashiro0529/cpa-quota-ios' && github.ref == 'refs/heads/ci/macos-build-20261026'
-    permissions:
-      contents: write
+    if: github.repository == 'rinmashiro0529/cpa-quota-ios' && github.ref == 'refs/heads/ci/final-main-ipa-20261030-0039'
     runs-on: macos-15
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+      SOURCE_SHA: d6d18dce184b8b611c831a0c065ca1365ea0392b
+      SOURCE_TREE: 6772e5d1fa754336649e61179863a2ebbbca5047
     steps:
-      - name: Check out source
+      - name: Check out exact final main source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          ref: d6d18dce184b8b611c831a0c065ca1365ea0392b
           persist-credentials: false
 
-      - name: Report toolchain versions
+      - name: Verify frozen source and toolchain
         shell: bash
         run: |
           set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$SOURCE_TREE"
+          test -z "$(git status --porcelain)"
+          mkdir -p "$RUNNER_TEMP/final-ipa-output"
           xcodebuild -version
           xcrun swift --version
-          SDK_VERSION="$(xcrun --sdk iphoneos --show-sdk-version)"
-          printf 'iOS SDK: %s\n' "$SDK_VERSION"
-          python3 -c 'import sys; v=tuple(map(int, sys.argv[1].split("."))); sys.exit(0 if v >= (26, 0) else "iOS SDK 26.0 or newer is required")' "$SDK_VERSION"
+          python3 -I -B ci/validate_source_layout.py --root .
 
-      - name: Run iOS simulator tests
+      - name: Archive final main for physical iOS without signing
         shell: bash
         run: |
           set -euo pipefail
-          SIMULATOR_UDID="$(xcrun simctl list devices available --json | python3 -c 'import json, sys; devices=json.load(sys.stdin).get("devices", {}); candidates=[device for runtime, group in devices.items() if runtime.startswith("com.apple.CoreSimulator.SimRuntime.iOS-") for device in group if device.get("isAvailable") and device.get("name", "").startswith("iPhone")]; sys.exit("No available iPhone simulator was found") if not candidates else print(candidates[0]["udid"])')"
-          test -n "$SIMULATOR_UDID"
-          xcodebuild test \
-            -project Apple/CPAQuota.xcodeproj \
-            -scheme CPAQuota \
-            -configuration Debug \
-            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
-            -derivedDataPath "$RUNNER_TEMP/TestDerivedData" \
-            -parallel-testing-enabled NO \
-            -collect-test-diagnostics never \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY= \
-            2>&1 | tee "$RUNNER_TEMP/swift-test.log"
-
-      - name: Create unsigned archive
-        shell: bash
-        run: |
-          set -euo pipefail
-          ARCHIVE_PATH="$RUNNER_TEMP/CPAQuota.xcarchive"
-          LOG_PATH="$RUNNER_TEMP/xcodebuild-archive.log"
+          OUT="$RUNNER_TEMP/final-ipa-output"
           xcodebuild archive \
             -project Apple/CPAQuota.xcodeproj \
             -scheme CPAQuota \
             -configuration Release \
             -destination 'generic/platform=iOS' \
-            -archivePath "$ARCHIVE_PATH" \
-            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY= \
-            2>&1 | tee "$LOG_PATH"
+            -archivePath "$RUNNER_TEMP/CPAQuota.xcarchive" \
+            -derivedDataPath "$RUNNER_TEMP/FinalMainDerivedData" \
+            ONLY_ACTIVE_ARCH=NO APS_ENVIRONMENT=development \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= \
+            2>&1 | tee "$OUT/xcodebuild-archive.log"
 
-      - name: Validate archive and hash Swift sources
+      - name: Validate archive and real embedded device extension
         shell: bash
         run: |
           set -euo pipefail
-          python3 -I ci/validate_archive.py \
+          OUT="$RUNNER_TEMP/final-ipa-output"
+          python3 -I -B ci/validate_archive.py \
             --archive "$RUNNER_TEMP/CPAQuota.xcarchive" \
             --source-root . \
-            --report "$RUNNER_TEMP/archive-validation.json" \
-            --sha-manifest "$RUNNER_TEMP/swift-sources.sha256" \
-            --expected-swift-count "$(python3 -I ci/validate_source_layout.py --root . --emit-count)"
-          python3 -I ci/validate_activity_extension.py \
+            --report "$OUT/archive-validation.json" \
+            --sha-manifest "$OUT/swift-sources.sha256" \
+            --expected-swift-count "$(python3 -I -B ci/validate_source_layout.py --root . --emit-count)"
+          python3 -I -B ci/validate_activity_extension.py \
             --app "$RUNNER_TEMP/CPAQuota.xcarchive/Products/Applications/CPAQuota.app" \
-            --platform ios
+            --platform ios | tee "$OUT/activity-extension-validation.json"
+          git diff --exit-code HEAD
 
-      - name: Package unsigned archive
+      - name: Package unsigned IPA and archive with provenance
         shell: bash
         run: |
           set -euo pipefail
-          tar -czf "$RUNNER_TEMP/CPAQuota-unsigned.xcarchive.tar.gz" \
+          OUT="$RUNNER_TEMP/final-ipa-output"
+          mkdir -p "$RUNNER_TEMP/final-ipa-stage/Payload"
+          /usr/bin/ditto "$RUNNER_TEMP/CPAQuota.xcarchive/Products/Applications/CPAQuota.app" \
+            "$RUNNER_TEMP/final-ipa-stage/Payload/CPAQuota.app"
+          /usr/bin/ditto -c -k --norsrc --keepParent \
+            "$RUNNER_TEMP/final-ipa-stage/Payload" "$OUT/CPAQuota-final-main-unsigned.ipa"
+          tar -czf "$OUT/CPAQuota-final-main-unsigned.xcarchive.tar.gz" \
             -C "$RUNNER_TEMP" CPAQuota.xcarchive
-          cd "$RUNNER_TEMP"
-          shasum -a 256 CPAQuota-unsigned.xcarchive.tar.gz archive-validation.json \
-            swift-sources.sha256 xcodebuild-archive.log swift-test.log > SHA256SUMS
+          python3 -I -c 'import json,os,sys; from pathlib import Path; record={"source_commit":os.environ["SOURCE_SHA"],"source_tree":os.environ["SOURCE_TREE"],"workflow_commit":os.environ["GITHUB_SHA"],"workflow_ref":os.environ["GITHUB_REF"],"run_id":os.environ["GITHUB_RUN_ID"],"configuration":"Release","platform":"ios","aps_environment_build_setting":"development","archive_and_embedded_extension_validated":True,"signed":False,"installed":False,"testflight_uploaded":False}; Path(sys.argv[1]).write_text(json.dumps(record,sort_keys=True,indent=2)+"\n",encoding="utf-8")' "$OUT/build-provenance.json"
+          cd "$OUT"
+          shasum -a 256 CPAQuota-final-main-unsigned.ipa \
+            CPAQuota-final-main-unsigned.xcarchive.tar.gz archive-validation.json \
+            activity-extension-validation.json swift-sources.sha256 \
+            build-provenance.json xcodebuild-archive.log > SHA256SUMS.txt
 
-      - name: Save unsigned archive to private draft release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ci-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
-        run: |
-          set -euo pipefail
-          test "$(gh repo view "$GH_REPO" --json isPrivate --jq '.isPrivate')" = true
-          gh release create "$RELEASE_TAG" \
-            "$RUNNER_TEMP/CPAQuota-unsigned.xcarchive.tar.gz" \
-            "$RUNNER_TEMP/archive-validation.json" \
-            "$RUNNER_TEMP/swift-sources.sha256" \
-            "$RUNNER_TEMP/xcodebuild-archive.log" \
-            "$RUNNER_TEMP/swift-test.log" \
-            "$RUNNER_TEMP/SHA256SUMS" \
-            --repo "$GH_REPO" \
-            --target "$GITHUB_SHA" \
-            --draft \
-            --title "CPA Quota unsigned CI $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT" \
-            --notes "Private CI build verification archive. Includes xcodebuild iOS Simulator test results. Unsigned; not uploaded to TestFlight. Source commit: $GITHUB_SHA. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID."
-          gh release view "$RELEASE_TAG" --repo "$GH_REPO" \
-            --json isDraft,tagName,targetCommitish,assets,url
+      - name: Upload private build evidence and unsigned products
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: CPAQuota-final-main-d6d18dce184b-unsigned
+          path: ${{ runner.temp }}/final-ipa-output/*
+          retention-days: 7
+          if-no-files-found: error
