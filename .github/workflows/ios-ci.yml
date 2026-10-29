@@ -14,6 +14,8 @@ jobs:
   archive:
     if: github.repository == 'rinmashiro0529/cpa-quota-ios' && github.ref == 'refs/heads/ci/final-main-ipa-20261030-0039'
     runs-on: macos-15
+    permissions:
+      contents: write
     timeout-minutes: 20
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
@@ -89,11 +91,26 @@ jobs:
             activity-extension-validation.json swift-sources.sha256 \
             build-provenance.json xcodebuild-archive.log > SHA256SUMS.txt
 
-      - name: Upload private build evidence and unsigned products
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: CPAQuota-final-main-d6d18dce184b-unsigned
-          path: ${{ runner.temp }}/final-ipa-output/*
-          retention-days: 7
-          if-no-files-found: error
+      - name: Transfer unsigned products through a private draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          test "$(gh repo view "$GH_REPO" --json isPrivate --jq '.isPrivate')" = true
+          OUT="$RUNNER_TEMP/final-ipa-output"
+          TAG="final-main-unsigned-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          gh release create "$TAG" \
+            "$OUT/CPAQuota-final-main-unsigned.ipa" \
+            "$OUT/CPAQuota-final-main-unsigned.xcarchive.tar.gz" \
+            "$OUT/archive-validation.json" \
+            "$OUT/activity-extension-validation.json" \
+            "$OUT/swift-sources.sha256" \
+            "$OUT/build-provenance.json" \
+            "$OUT/xcodebuild-archive.log" \
+            "$OUT/SHA256SUMS.txt" \
+            --repo "$GH_REPO" --target "$SOURCE_SHA" --draft \
+            --title "Private unsigned final-main build $GITHUB_RUN_ID" \
+            --notes "Private draft used only to transfer unsigned build outputs after Actions artifact quota was exhausted. Source: $SOURCE_SHA. Not signed, not installed, not a public release and not uploaded to TestFlight. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID."
+          gh release view "$TAG" --repo "$GH_REPO" --json isDraft,tagName,targetCommitish,assets,url
