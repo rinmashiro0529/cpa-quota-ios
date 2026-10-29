@@ -4,7 +4,7 @@ enum WireJSON: Sendable, Equatable {
     case object([String: WireJSON])
     case array([WireJSON])
     case string(String)
-    case number(Double)
+    case number(Double, exactIdentity: String?)
     case bool(Bool)
     case null
 
@@ -41,12 +41,23 @@ enum WireJSON: Sendable, Equatable {
             if String(cString: number.objCType) == "c" {
                 return .bool(number.boolValue)
             }
-            return .number(number.doubleValue)
+            return .number(number.doubleValue, exactIdentity: exactIntegerIdentity(number))
         }
         if let flag = any as? Bool {
             return .bool(flag)
         }
         return .null
+    }
+
+    private static func exactIntegerIdentity(_ number: NSNumber) -> String? {
+        // Preserve the integer representation before any binary64 conversion.
+        // Floating-point and decimal NSNumber values may already be rounded;
+        // checking Double.rounded() or Int64(exactly:) cannot recover that fact.
+        let integerTypes = ["s", "i", "l", "q", "S", "I", "L", "Q"]
+        guard integerTypes.contains(String(cString: number.objCType)),
+              let value = Int64(number.stringValue),
+              (-9_007_199_254_740_991...9_007_199_254_740_991).contains(value) else { return nil }
+        return String(value)
     }
 
     var objectEntries: [String: WireJSON]? {
@@ -61,7 +72,7 @@ enum WireJSON: Sendable, Equatable {
 
     var integerValue: Int? {
         switch self {
-        case .number(let value):
+        case .number(let value, _):
             guard value.isFinite else { return nil }
             return Int(exactly: value)
         case .string(let text):
@@ -102,6 +113,20 @@ enum WireJSON: Sendable, Equatable {
         WireJSON.scalarString(lookup(keys))
     }
 
+    /// Identity fields use the preserved integral representation, never Double.
+    /// Larger or floating-point identifiers must be supplied as strings.
+    func identityAt(_ keys: String...) throws -> String? {
+        guard let value = lookup(keys) else { return nil }
+        switch value {
+        case .string(let text): return text
+        case .number(_, let exactIdentity):
+            guard let exactIdentity else { throw CPAError(.invalidResponse) }
+            return exactIdentity
+        case .null: return nil
+        default: throw CPAError(.invalidResponse)
+        }
+    }
+
     func numberAt(_ keys: String...) -> Double? {
         WireJSON.scalarNumber(lookup(keys))
     }
@@ -119,7 +144,7 @@ enum WireJSON: Sendable, Equatable {
         switch value {
         case .string(let text):
             return text
-        case .number(let number):
+        case .number(let number, _):
             return formatNumber(number)
         case .bool(let flag):
             return flag ? "true" : "false"
@@ -131,7 +156,7 @@ enum WireJSON: Sendable, Equatable {
     static func scalarNumber(_ value: WireJSON?) -> Double? {
         guard let value else { return nil }
         switch value {
-        case .number(let number):
+        case .number(let number, _):
             return number.isFinite ? number : nil
         case .string(let text):
             guard let number = Double(text.trimmingCharacters(in: .whitespacesAndNewlines)),
@@ -149,7 +174,7 @@ enum WireJSON: Sendable, Equatable {
         switch value {
         case .bool(let flag):
             return flag
-        case .number(let number):
+        case .number(let number, _):
             if number == 1 { return true }
             if number == 0 { return false }
             return nil
@@ -167,7 +192,7 @@ enum WireJSON: Sendable, Equatable {
     static func scalarDate(_ value: WireJSON?) -> Date? {
         guard let value else { return nil }
         switch value {
-        case .number(let number):
+        case .number(let number, _):
             return WireDate.epochDate(number)
         case .string(let text):
             return WireDate.parse(text)
@@ -189,7 +214,7 @@ enum WireJSON: Sendable, Equatable {
             return items.map { $0.foundationObject }
         case .string(let text):
             return text
-        case .number(let number):
+        case .number(let number, _):
             return number
         case .bool(let flag):
             return flag
@@ -496,7 +521,7 @@ enum PayloadDecoder {
         let root = try WireJSON.decode(data)
         guard case .object = root,
               let statusValue = root.lookup(["status_code", "statusCode"]),
-              let status = statusValue.integerValue else {
+              let status = statusValue.integerValue, (100...599).contains(status) else {
             throw CPAError(.invalidResponse)
         }
 
@@ -558,9 +583,9 @@ enum PayloadDecoder {
     private static func makeEntry(from file: WireJSON, now: Date) throws -> AccountEntry {
         guard case .object = file else { throw CPAError(.invalidResponse) }
 
-        let authIndex = nonEmptyWireString(file.stringAt("auth_index", "authIndex", "AuthIndex"))
-        let name = nonEmptyWireString(file.stringAt("name"))
-        let rawID = nonEmptyWireString(file.stringAt("id"))
+        let authIndex = nonEmptyWireString(try file.identityAt("auth_index", "authIndex", "AuthIndex"))
+        let name = nonEmptyWireString(try file.identityAt("name"))
+        let rawID = nonEmptyWireString(try file.identityAt("id"))
         guard let identifier = rawID ?? name ?? authIndex else { throw CPAError(.invalidResponse) }
 
         let provider = nonEmptyWireString(file.stringAt("provider", "type")) ?? "unknown"
@@ -575,7 +600,7 @@ enum PayloadDecoder {
             ?? (nonEmptyWireString(file.stringAt("quota_provider", "quotaProvider")) != nil)
 
         let identity = identityObject(for: file)
-        let codexAccountID = nonEmptyWireString(identity?.stringAt("chatgpt_account_id", "chatgptAccountId"))
+        let codexAccountID = nonEmptyWireString(try identity?.identityAt("chatgpt_account_id", "chatgptAccountId"))
         let plan = nonEmptyWireString(identity?.stringAt("plan_type", "planType"))
 
         let account = CPAAccount(

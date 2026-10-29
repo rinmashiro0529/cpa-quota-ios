@@ -6,6 +6,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C10000000000000000000001 /* ContractFixtures in Resources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000001 /* ContractFixtures */; };
 		A10000000000000000000001 /* CPAQuotaiOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* CPAQuotaiOSApp.swift */; };
 		A10000000000000000000002 /* CPAQuotaKit in Frameworks */ = {isa = PBXBuildFile; productRef = A70000000000000000000001 /* CPAQuotaKit */; };
 		A10000000000000000000003 /* CPAQuotaUI in Frameworks */ = {isa = PBXBuildFile; productRef = A70000000000000000000002 /* CPAQuotaUI */; };
@@ -25,9 +26,30 @@
 		A10000000000000000000011 /* ScenarioTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* ScenarioTransport.swift */; };
 		A10000000000000000000012 /* CPAQuotaKit in Frameworks */ = {isa = PBXBuildFile; productRef = A70000000000000000000003 /* CPAQuotaKit */; };
 		A10000000000000000000013 /* CPAQuotaUI in Frameworks */ = {isa = PBXBuildFile; productRef = A70000000000000000000004 /* CPAQuotaUI */; };
+		B10000000000000000000001 /* BackendReliabilityClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* BackendReliabilityClientTests.swift */; };
+		B10000000000000000000002 /* BackendReliabilityIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* BackendReliabilityIdentityTests.swift */; };
+		B10000000000000000000003 /* BackendReliabilitySessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* BackendReliabilitySessionTests.swift */; };
+		B10000000000000000000004 /* BackendReliabilityStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* BackendReliabilityStoreTests.swift */; };
+		B10000000000000000000005 /* CAPUsageAggregationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* CAPUsageAggregationTests.swift */; };
+		B10000000000000000000006 /* CAPUsageClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000006 /* CAPUsageClientTests.swift */; };
+		B10000000000000000000007 /* CAPUsageStatsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000007 /* CAPUsageStatsTests.swift */; };
+		B10000000000000000000008 /* CAPUsageWindowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000008 /* CAPUsageWindowTests.swift */; };
+		B10000000000000000000009 /* MonitoringClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000009 /* MonitoringClientTests.swift */; };
+		B1000000000000000000000A /* MonitoringContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000A /* MonitoringContractTests.swift */; };
+		B1000000000000000000000B /* MonitoringSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000B /* MonitoringSnapshotTests.swift */; };
+		B1000000000000000000000C /* MonitoringStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000C /* MonitoringStoreTests.swift */; };
+			B1000000000000000000000D /* MonitoringBridgeCredentialTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000D /* MonitoringBridgeCredentialTests.swift */; };
+			B1000000000000000000000E /* BackendReliabilityHealthTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000E /* BackendReliabilityHealthTests.swift */; };
+			B1000000000000000000000F /* CAPUsageAnalyticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000F /* CAPUsageAnalyticsTests.swift */; };
+			B10000000000000000000010 /* CAPUsageCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000010 /* CAPUsageCoordinatorTests.swift */; };
+			B10000000000000000000011 /* CAPUsageCostTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000011 /* CAPUsageCostTests.swift */; };
+			B10000000000000000000012 /* CAPUsageRequestPageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000012 /* CAPUsageRequestPageTests.swift */; };
+			B10000000000000000000013 /* CAPUsageResourceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000013 /* CAPUsageResourceTests.swift */; };
+			B10000000000000000000014 /* CAPUsageStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000014 /* CAPUsageStoreTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		C20000000000000000000001 /* ContractFixtures */ = {isa = PBXFileReference; lastKnownFileType = folder; path = ../Tests/ContractFixtures; sourceTree = "<group>"; };
 		A20000000000000000000001 /* CPAQuotaiOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Sources/CPAQuotaApp/CPAQuotaiOSApp.swift; sourceTree = "<group>"; };
 		A20000000000000000000002 /* CPAQuota.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CPAQuota.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A20000000000000000000003 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -46,6 +68,26 @@
 		A20000000000000000000010 /* ReviewRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/ReviewRegressionTests.swift; sourceTree = "<group>"; };
 		A20000000000000000000011 /* ScenarioTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/ScenarioTransport.swift; sourceTree = "<group>"; };
 		A20000000000000000000018 /* CPAQuotaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CPAQuotaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B20000000000000000000001 /* BackendReliabilityClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/BackendReliabilityClientTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000002 /* BackendReliabilityIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/BackendReliabilityIdentityTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000003 /* BackendReliabilitySessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/BackendReliabilitySessionTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000004 /* BackendReliabilityStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/BackendReliabilityStoreTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000005 /* CAPUsageAggregationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/CAPUsageAggregationTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000006 /* CAPUsageClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/CAPUsageClientTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000007 /* CAPUsageStatsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/CAPUsageStatsTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000008 /* CAPUsageWindowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/CAPUsageWindowTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000009 /* MonitoringClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/MonitoringClientTests.swift; sourceTree = "<group>"; };
+		B2000000000000000000000A /* MonitoringContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/MonitoringContractTests.swift; sourceTree = "<group>"; };
+		B2000000000000000000000B /* MonitoringSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/MonitoringSnapshotTests.swift; sourceTree = "<group>"; };
+		B2000000000000000000000C /* MonitoringStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/MonitoringStoreTests.swift; sourceTree = "<group>"; };
+			B2000000000000000000000D /* MonitoringBridgeCredentialTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/MonitoringBridgeCredentialTests.swift; sourceTree = "<group>"; };
+			B2000000000000000000000E /* BackendReliabilityHealthTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/BackendReliabilityHealthTests.swift; sourceTree = "<group>"; };
+			B2000000000000000000000F /* CAPUsageAnalyticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/CAPUsageAnalyticsTests.swift; sourceTree = "<group>"; };
+			B20000000000000000000010 /* CAPUsageCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/CAPUsageCoordinatorTests.swift; sourceTree = "<group>"; };
+			B20000000000000000000011 /* CAPUsageCostTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/CAPUsageCostTests.swift; sourceTree = "<group>"; };
+			B20000000000000000000012 /* CAPUsageRequestPageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/CAPUsageRequestPageTests.swift; sourceTree = "<group>"; };
+			B20000000000000000000013 /* CAPUsageResourceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/CAPUsageResourceTests.swift; sourceTree = "<group>"; };
+			B20000000000000000000014 /* CAPUsageStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/CAPUsageStoreTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -73,6 +115,7 @@
 		A40000000000000000000001 = {
 			isa = PBXGroup;
 			children = (
+				C20000000000000000000001 /* ContractFixtures */,
 				A20000000000000000000001 /* CPAQuotaiOSApp.swift */,
 				A20000000000000000000003 /* Assets.xcassets */,
 				A20000000000000000000004 /* Info.plist */,
@@ -89,6 +132,26 @@
 				A2000000000000000000000F /* QuotaParsingTests.swift */,
 				A20000000000000000000010 /* ReviewRegressionTests.swift */,
 				A20000000000000000000011 /* ScenarioTransport.swift */,
+				B20000000000000000000001 /* BackendReliabilityClientTests.swift */,
+				B20000000000000000000002 /* BackendReliabilityIdentityTests.swift */,
+				B20000000000000000000003 /* BackendReliabilitySessionTests.swift */,
+				B20000000000000000000004 /* BackendReliabilityStoreTests.swift */,
+				B20000000000000000000005 /* CAPUsageAggregationTests.swift */,
+				B20000000000000000000006 /* CAPUsageClientTests.swift */,
+				B20000000000000000000007 /* CAPUsageStatsTests.swift */,
+				B20000000000000000000008 /* CAPUsageWindowTests.swift */,
+				B20000000000000000000009 /* MonitoringClientTests.swift */,
+				B2000000000000000000000A /* MonitoringContractTests.swift */,
+				B2000000000000000000000B /* MonitoringSnapshotTests.swift */,
+				B2000000000000000000000C /* MonitoringStoreTests.swift */,
+				B2000000000000000000000D /* MonitoringBridgeCredentialTests.swift */,
+				B2000000000000000000000E /* BackendReliabilityHealthTests.swift */,
+				B2000000000000000000000F /* CAPUsageAnalyticsTests.swift */,
+				B20000000000000000000010 /* CAPUsageCoordinatorTests.swift */,
+				B20000000000000000000011 /* CAPUsageCostTests.swift */,
+				B20000000000000000000012 /* CAPUsageRequestPageTests.swift */,
+				B20000000000000000000013 /* CAPUsageResourceTests.swift */,
+				B20000000000000000000014 /* CAPUsageStoreTests.swift */,
 				A40000000000000000000002 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -200,6 +263,26 @@
 				A1000000000000000000000F /* QuotaParsingTests.swift in Sources */,
 				A10000000000000000000010 /* ReviewRegressionTests.swift in Sources */,
 				A10000000000000000000011 /* ScenarioTransport.swift in Sources */,
+				B10000000000000000000001 /* BackendReliabilityClientTests.swift in Sources */,
+				B10000000000000000000002 /* BackendReliabilityIdentityTests.swift in Sources */,
+				B10000000000000000000003 /* BackendReliabilitySessionTests.swift in Sources */,
+				B10000000000000000000004 /* BackendReliabilityStoreTests.swift in Sources */,
+				B10000000000000000000005 /* CAPUsageAggregationTests.swift in Sources */,
+				B10000000000000000000006 /* CAPUsageClientTests.swift in Sources */,
+				B10000000000000000000007 /* CAPUsageStatsTests.swift in Sources */,
+				B10000000000000000000008 /* CAPUsageWindowTests.swift in Sources */,
+				B10000000000000000000009 /* MonitoringClientTests.swift in Sources */,
+				B1000000000000000000000A /* MonitoringContractTests.swift in Sources */,
+				B1000000000000000000000B /* MonitoringSnapshotTests.swift in Sources */,
+				B1000000000000000000000C /* MonitoringStoreTests.swift in Sources */,
+				B1000000000000000000000D /* MonitoringBridgeCredentialTests.swift in Sources */,
+				B1000000000000000000000E /* BackendReliabilityHealthTests.swift in Sources */,
+				B1000000000000000000000F /* CAPUsageAnalyticsTests.swift in Sources */,
+				B10000000000000000000010 /* CAPUsageCoordinatorTests.swift in Sources */,
+				B10000000000000000000011 /* CAPUsageCostTests.swift in Sources */,
+				B10000000000000000000012 /* CAPUsageRequestPageTests.swift in Sources */,
+				B10000000000000000000013 /* CAPUsageResourceTests.swift in Sources */,
+				B10000000000000000000014 /* CAPUsageStoreTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -218,7 +301,9 @@
 		A30000000000000000000006 /* CPAQuotaTests Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
-			files = ();
+			files = (
+				C10000000000000000000001 /* ContractFixtures in Resources */,
+			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */

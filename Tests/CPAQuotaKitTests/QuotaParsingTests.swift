@@ -99,6 +99,35 @@ struct WireDateParsingTests {
 
 @Suite("Inventory")
 struct InventoryTests {
+    @Test(arguments: ["9007199254740992", "9007199254740993", "-9007199254740992", "9223372036854775807", "18446744073709551615", "9007199254740993.0", "9007199254740991.1", "-9007199254740991.1", "1.000000000000000000001", "42.0", "4.2e1", "1.5", "true"])
+    func rejectsUnsafeNumericIdentityWithoutFallingBackToAnotherField(value: String) {
+        for field in ["id", "auth_index", "name"] {
+            let fallback = field == "id" ? "\"name\":\"fallback\"," : "\"id\":\"fallback\","
+            let json = "{\"files\":[{\"provider\":\"codex\",\"label\":\"Fixture\",\(fallback)\"\(field)\":\(value)}]}"
+            let error = captureCPAError { _ = try PayloadDecoder.inventory(payload(json), now: fixedNow) }
+            #expect(error?.kind == .invalidResponse)
+        }
+        let nested = "{\"files\":[{\"id\":\"fixture\",\"auth_index\":\"index\",\"provider\":\"codex\",\"id_token\":{\"chatgpt_account_id\":\(value)}}]}"
+        let error = captureCPAError { _ = try PayloadDecoder.inventory(payload(nested), now: fixedNow) }
+        #expect(error?.kind == .invalidResponse)
+    }
+
+    @Test(arguments: ["0", "1", "42", "9007199254740991", "-9007199254740991"])
+    func safeNumericIdentitiesRemainExact(value: String) throws {
+        let json = "{\"files\":[{\"id\":\(value),\"auth_index\":\(value),\"provider\":\"codex\"}]}"
+        let entry = try #require(PayloadDecoder.inventory(payload(json), now: fixedNow).entries.first)
+        #expect(entry.account.id == value)
+        #expect(entry.account.authIndex == value)
+    }
+
+    @Test func largeStringIdentitiesRemainExact() throws {
+        let json = #"{"files":[{"id":"9007199254740993","auth_index":"18446744073709551615","provider":"codex","id_token":{"chatgpt_account_id":"9223372036854775807"}}]}"#
+        let entry = try #require(PayloadDecoder.inventory(payload(json), now: fixedNow).entries.first)
+        #expect(entry.account.id == "9007199254740993")
+        #expect(entry.account.authIndex == "18446744073709551615")
+        #expect(entry.codexAccountID == "9223372036854775807")
+    }
+
     @Test("decodes identities, status, and per-entry passive snapshots")
     func decodesInventory() throws {
         let json = #"""

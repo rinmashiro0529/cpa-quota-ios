@@ -766,7 +766,9 @@ struct IntegrationSessionRegressionTests {
             rememberInKeychain: true
         )
 
-        #expect(session.authState == .unconfigured)
+        #expect(session.authState == .connected(server: serverB, isRememberedInKeychain: true))
+        #expect(session.currentServer == serverB)
+        #expect(session.connectionFormError?.kind == .managementUnauthorized)
         #expect(session.savedServer == serverB)
         #expect(preferences.loadSavedServerIdentifier() == serverB.identifier)
         #expect(await credentials.storedKey(for: serverA) == nil)
@@ -837,7 +839,8 @@ struct IntegrationSessionRegressionTests {
         await removalGate.open()
         await switchTask.value
 
-        #expect(session.authState == .unconfigured)
+        #expect(session.authState == .connected(server: serverA, isRememberedInKeychain: true))
+        #expect(session.currentServer == serverA)
         #expect(session.savedServer == serverA)
         #expect(await credentials.storedKey(for: serverA)?.value == "management-key-a")
         #expect(await credentials.storedKey(for: serverB) == nil)

@@ -13,7 +13,7 @@ private func reviewClient(_ transport: ScenarioTransport) throws -> CPAClient {
 
 @Suite("Review regressions: client orchestration", .timeLimit(.minutes(1)))
 struct ReviewClientRegressionTests {
-    @Test func successfulReloadRecoversFromCachedManagementError() async throws {
+    @Test func successfulReloadDoesNotRecoverFromCachedManagementError() async throws {
         let transport = try ScenarioTransport(accounts: [FixtureAccount("a")])
         let client = try reviewClient(transport)
         _ = try await client.loadAccounts()
@@ -28,13 +28,15 @@ struct ReviewClientRegressionTests {
         }
 
         await transport.setReply(FixtureReply(), for: "index-a")
-        _ = try await client.loadAccounts()
-
-        let records = try await client.refreshAll(force: false)
-        let record = try #require(records.first { $0.id == "a" })
-        #expect(record.error == nil)
+        do {
+            _ = try await client.loadAccounts()
+            Issue.record("Expected retained management authorization block")
+        } catch {
+            #expect(CPAError.normalize(error).kind == .managementUnauthorized)
+        }
+        let record = try #require(await client.currentRecords().first { $0.id == "a" })
         #expect(record.snapshot?.windows.count == 2)
-        #expect(await transport.quotaRequestCount() == 3)
+        #expect(await transport.quotaRequestCount() == 2)
     }
 
     @Test func providerDiscoveryServerErrorStillReturnsAccounts() async throws {
@@ -156,9 +158,8 @@ struct ReviewClientRegressionTests {
         }
 
         await transport.setReply(FixtureReply(), for: "index-a")
-        _ = try await client.loadAccounts()
         do {
-            _ = try await client.refreshQuota(for: "a", force: true)
+            _ = try await client.loadAccounts()
             Issue.record("Expected retained management rate limit")
         } catch {
             #expect(CPAError.normalize(error).kind == .rateLimited)
@@ -182,10 +183,9 @@ struct ReviewClientRegressionTests {
             #expect(CPAError.normalize(error).kind == .rateLimited)
         }
 
-        _ = try await client.loadAccounts()
         do {
-            _ = try await client.refreshQuota(for: "b", force: true)
-            Issue.record("Expected global management retry-after to block b")
+            _ = try await client.loadAccounts()
+            Issue.record("Expected retained management rate limit")
         } catch {
             let error = CPAError.normalize(error)
             #expect(error.kind == .rateLimited)

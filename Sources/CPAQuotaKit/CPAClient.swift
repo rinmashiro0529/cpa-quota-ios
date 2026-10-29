@@ -3,6 +3,12 @@ import Foundation
 import FoundationNetworking
 #endif
 
+public enum QuotaRetryEligibility: Sendable, Equatable {
+    case eligible
+    case coolingDown(until: Date)
+    case blocked(CPAError)
+}
+
 public actor CPAClient {
     public let server: CPAServer
     public private(set) var serverVersion: String?
@@ -12,7 +18,7 @@ public actor CPAClient {
     private let transport: any HTTPTransport
     private let clock: @Sendable () -> Date
     private let cacheLifetime: TimeInterval
-    private let limiter = QuotaRequestLimiter(limit: 3)
+    private let limiter: CPAManagementRequestCoordinator
     private var entries: [AccountEntry] = []
     private var records: [String: QuotaRecord] = [:]
     private var pluginProviders: Set<String> = []
@@ -72,21 +78,30 @@ public actor CPAClient {
         case proxy = "api-call"
     }
 
-    public init(server: CPAServer, managementKey: ManagementKey) {
+    public init(server: CPAServer, managementKey: ManagementKey,
+                coordinator: CPAManagementRequestCoordinator? = nil) {
         self.server = server
         self.key = managementKey
         self.transport = URLSessionTransport()
         self.clock = { Date() }
         self.cacheLifetime = 60
+        self.limiter = coordinator ?? CPAManagementRequestCoordinator()
     }
 
     init(server: CPAServer, managementKey: ManagementKey, transport: any HTTPTransport,
-         cacheLifetime: TimeInterval = 60, clock: @escaping @Sendable () -> Date = { Date() }) {
+         cacheLifetime: TimeInterval = 60, clock: @escaping @Sendable () -> Date = { Date() },
+         coordinator: CPAManagementRequestCoordinator? = nil) {
         self.server = server
         self.key = managementKey
         self.transport = transport
         self.clock = clock
         self.cacheLifetime = cacheLifetime
+        self.limiter = coordinator ?? CPAManagementRequestCoordinator(clock: clock)
+    }
+
+    public func makeCAPUsageClient() -> CAPUsageClient {
+        CAPUsageClient(server: server, managementKey: key, transport: transport,
+                       coordinator: limiter, clock: clock)
     }
 
     public func loadAccounts() async throws -> [CPAAccount] {
@@ -95,13 +110,13 @@ public actor CPAClient {
         if let existing = inventoryFlight, !existing.task.isCancelled {
             flight = existing
         } else {
-            let task = Task { [server, key, transport, clock] in
-                let response = try await Self.perform(.accounts, server: server, key: key, transport: transport, clock: clock)
+            let task = Task { [server, key, transport, clock, limiter] in
+                let response = try await Self.perform(.accounts, server: server, key: key, transport: transport, clock: clock, limiter: limiter)
                 let inventory = try PayloadDecoder.inventory(response.body, now: clock())
                 let providers: Set<String>
                 let warning: CPAError?
                 do {
-                    let capabilityResponse = try await Self.perform(.providers, server: server, key: key, transport: transport, clock: clock)
+                    let capabilityResponse = try await Self.perform(.providers, server: server, key: key, transport: transport, clock: clock, limiter: limiter)
                     providers = try PayloadDecoder.providers(capabilityResponse.body)
                     warning = nil
                 } catch let error as CPAError where error.kind == .endpointUnavailable {
@@ -132,14 +147,23 @@ public actor CPAClient {
             if inventoryFlight?.token == flight.token {
                 applyInventory(result)
                 inventoryFlight = nil
-                await limiter.reset(at: clock())
-                guard epoch == flight.epoch else { throw CancellationError() }
             }
             return entries.map(\.account)
         } catch {
             if inventoryFlight?.token == flight.token { inventoryFlight = nil }
             throw CPAError.normalize(error)
         }
+    }
+
+    public func retryEligibility(for accountID: String? = nil) async -> QuotaRetryEligibility {
+        let now = clock()
+        let managementEligibility = await limiter.retryEligibility()
+        if managementEligibility != .eligible { return managementEligibility }
+        if let accountID, let failure = records[accountID]?.error,
+           failure.kind == .rateLimited, let deadline = failure.retryAfter, deadline > now {
+            return .coolingDown(until: deadline)
+        }
+        return .eligible
     }
 
     public func currentRecords() -> [QuotaRecord] {
@@ -178,6 +202,7 @@ public actor CPAClient {
             throw error
         }
         let now = clock()
+        try await limiter.check()
         let existingError = records[accountID]?.error
         if let error = existingError, error.kind == .rateLimited,
            let retryAfter = error.retryAfter, retryAfter > now {
@@ -197,9 +222,7 @@ public actor CPAClient {
         } else {
             let usePlugin = entry.account.supportsPluginQuota || pluginProviders.contains(entry.account.provider.lowercased())
             let task = Task { [server, key, transport, clock, limiter] in
-                try await limiter.withPermit {
-                    try await Self.fetch(entry, usePlugin: usePlugin, server: server, key: key, transport: transport, clock: clock)
-                }
+                try await Self.fetch(entry, usePlugin: usePlugin, server: server, key: key, transport: transport, clock: clock, limiter: limiter)
             }
             flight = QuotaFlight(token: UUID(), task: task)
             flights[accountID] = flight
@@ -223,7 +246,11 @@ public actor CPAClient {
             }
             return snapshot
         } catch {
-            let normalized = CPAError.normalize(error)
+            let original = CPAError.normalize(error)
+            let normalized = original.kind == .rateLimited && original.retryAfter == nil
+                ? CPAError(.rateLimited, layer: original.layer, statusCode: original.statusCode,
+                           retryAfter: clock().addingTimeInterval(60))
+                : original
             if flights[accountID]?.token == flight.token {
                 flights[accountID] = nil
                 if epoch == requestEpoch, normalized.kind != .cancelled,
@@ -303,6 +330,7 @@ public actor CPAClient {
                 }
                 return nil
             }
+            if normalized.isManagementBlocking { throw normalized }
         }
         guard let entry = entries.first(where: { $0.account.id == id }) else {
             return nil
@@ -362,13 +390,13 @@ public actor CPAClient {
 
     private static func fetch(
         _ entry: AccountEntry, usePlugin: Bool, server: CPAServer, key: ManagementKey,
-        transport: any HTTPTransport, clock: @Sendable () -> Date
+        transport: any HTTPTransport, clock: @Sendable () -> Date, limiter: CPAManagementRequestCoordinator
     ) async throws -> QuotaSnapshot {
         guard let index = entry.account.authIndex else { throw CPAError(.accountNotFound) }
         if usePlugin {
             let body = try JSONEncoder().encode(IndexRequest(auth_index: index))
             do {
-                let response = try await perform(.pluginQuota, body: body, server: server, key: key, transport: transport, clock: clock)
+                let response = try await perform(.pluginQuota, body: body, server: server, key: key, transport: transport, clock: clock, limiter: limiter)
                 return try PayloadDecoder.pluginQuota(response.body, account: entry.account, now: clock())
             } catch let error as CPAError where error.statusCode == 501 {
                 throw CPAError(.unsupportedProvider)
@@ -388,7 +416,7 @@ public actor CPAClient {
             throw CPAError(.unsupportedProvider)
         }
         let body = try JSONEncoder().encode(ProxyRequest(auth_index: index, url: url, header: headers))
-        let response = try await perform(.proxy, body: body, server: server, key: key, transport: transport, clock: clock)
+        let response = try await perform(.proxy, body: body, server: server, key: key, transport: transport, clock: clock, limiter: limiter)
         let now = clock()
         let upstream = try PayloadDecoder.unwrapAPICall(response.body, now: now)
         if entry.account.provider.lowercased() == "codex" {
@@ -399,6 +427,16 @@ public actor CPAClient {
 
     private static func perform(
         _ endpoint: Endpoint, body: Data? = nil, server: CPAServer,
+        key: ManagementKey, transport: any HTTPTransport, clock: @Sendable () -> Date,
+        limiter: CPAManagementRequestCoordinator
+    ) async throws -> HTTPResponse {
+        try await limiter.withPermit {
+            try await performRequest(endpoint, body: body, server: server, key: key, transport: transport, clock: clock)
+        }
+    }
+
+    private static func performRequest(
+        _ endpoint: Endpoint, body: Data?, server: CPAServer,
         key: ManagementKey, transport: any HTTPTransport, clock: @Sendable () -> Date
     ) async throws -> HTTPResponse {
         try Task.checkCancellation()
@@ -422,8 +460,9 @@ public actor CPAClient {
             case 429: .rateLimited
             default: .requestRejected
             }
+            let retryAfter = WireDate.retryAfter(response.header("Retry-After"), now: clock())
             throw CPAError(kind, layer: .management, statusCode: status,
-                           retryAfter: WireDate.retryAfter(response.header("Retry-After"), now: clock()))
+                           retryAfter: status == 429 ? (retryAfter ?? clock().addingTimeInterval(60)) : retryAfter)
         }
         return response
     }
