@@ -68,7 +68,9 @@ public struct LoginOnboardingView: View {
                         .foregroundStyle(palette.textSecondary)
 
                     TextField("https://cpa.example.com", text: $session.serverAddressDraft)
+                        #if os(iOS)
                         .textInputAutocapitalization(.never)
+                        #endif
                         .autocorrectionDisabled()
                         .font(.system(size: 13, design: .monospaced))
                         .foregroundStyle(palette.textPrimary)
@@ -99,7 +101,9 @@ public struct LoginOnboardingView: View {
                     }
 
                     SecureField("输入 CPA 管理 Bearer 密钥", text: $session.managementKeyDraft)
+                        #if os(iOS)
                         .textInputAutocapitalization(.never)
+                        #endif
                         .autocorrectionDisabled()
                         .font(.system(size: 13, design: .monospaced))
                         .foregroundStyle(palette.textPrimary)

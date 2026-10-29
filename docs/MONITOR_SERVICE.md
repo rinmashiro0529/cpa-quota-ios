@@ -125,6 +125,6 @@ Rin，`SIGINT`/`SIGTERM` 会取消来源、等待本服务工作并关闭 HTTP�
 python -I -X utf8 -B tools/test_monitor_backend.py --project <project>
 ```
 
-Rin，工具只运行合成测试、`gofmt -l`、`go vet`、`go test -race`、Windows/当前平台构建、Linux amd64 交叉构建和无配置帮助命令，将源码清单、哈希、逐项退出码、测试计数及二进制哈希保存到新的 `artifacts/backend-verification/*-go/`。缓存、真实配置、加密状态与二进制不进入源码清单；未部署或向真实 APNs 发请求。准确的最终结果和失败历史见 `BACKEND_VERIFICATION.md`，不能仅凭本说明认定已通过。
+Rin，工具只运行合成测试、`gofmt -l`、`go vet`、`go test -race`、Windows/当前平台构建、Linux amd64 交叉构建和无配置帮助命令，将源码清单、哈希、逐项退出码、测试计数及二进制哈希保存到新的 `artifacts/backend-verification/*-go/`。缓存、真实配置、加密状态与二进制不进入源码清单；未部署或向真实 APNs 发请求。`BACKEND_VERIFICATION.md` 保留 PR #1 的历史结果。本次整改的执行范围与回执见 `BACKEND_RELIABILITY_PR.md`、`verification/backend-reliability-20261029.json` 和当前 PR Checks，不能仅凭本说明认定已通过。
 
 Rin，真实接入尚需另外授权和验收：确认用户 CPA/插件协议及鉴权、选定稳定账号/窗口与非敏感别名、服务器 TLS/ACL/备份、APNs 身份/主题/环境、设备 token 与活动扩展，以及后台/锁屏/常亮/强退/离线/过期/轮播。Linux 交叉编译不等于 Linux 实机运行，更不等于 Apple 真机验收。原有 App 安装、main、共享证书和团队资源均不因本地后端源码交付而改变。

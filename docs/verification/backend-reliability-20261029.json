@@ -203,5 +203,13 @@
     "ci/test_source_layout.py": "b7aa76b0233b00eb0fd1622995d980abdfc264f0b4c2533a34c2e8172e570e10",
     "ci/validate_archive.py": "aea7d6faabeb2664894fa1b9c144ba34589e939c13046d1bef12e396269bc5da",
     "ci/validate_source_layout.py": "8579f03886db40b162a179e455f3501a7cd20ef3e2e2fb55dde08457ed5f3b95"
+  },
+  "source_snapshot_commit": "83a6d1a00d5ce4adff1b625e1ca556cb19ab2c4f",
+  "ci_follow_up": {
+    "first_run": "https://github.com/rinmashiro0529/cpa-quota-ios/actions/runs/40831960571",
+    "macos_result": "failed before tests: iOS-only textInputAutocapitalization used on macOS",
+    "minimal_platform_fix": "Sources/CPAQuotaUI/LoginOnboardingView.swift",
+    "updated_file_sha256": "44c9a0c26e28826aafb9fd387b63d6cc0e07fd2bf584d99ca9abf844791bef1e",
+    "validation": "Current PR Checks; preceding local result and source_sha256 remain pinned to source_snapshot_commit"
   }
 }

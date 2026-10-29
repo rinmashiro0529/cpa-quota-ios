@@ -1,6 +1,6 @@
 # Rin，Swift 监控后端
 
-Rin，当前实现是监控客户端与纯 Swift 快照模型，不代表真实 APNs、WidgetKit、Live Activity、服务部署或设备推送已经验证。服务端持久墓碑、授权和调度的最终验证以 `BACKEND_VERIFICATION.md` 为准；完成源码与合成测试不等于可以直接开启生产监控。
+Rin，当前实现是监控客户端与纯 Swift 快照模型，不代表真实 APNs、WidgetKit、Live Activity、服务部署或设备推送已经验证。本次持久墓碑、授权和调度的验证见 `BACKEND_RELIABILITY_PR.md` 与当前 PR Checks；`BACKEND_VERIFICATION.md` 仅是 PR #1 的历史回执，完成源码与合成测试不等于可以直接开启生产监控。
 
 ## Rin，客户端与状态
 
@@ -34,4 +34,4 @@ Go handler 实际响应生成的 `Tests/ContractFixtures/monitoring-lifecycle-v1
 
 ## Rin，验证边界
 
-Rin，本地合成测试覆盖 DTO 向量、Unix 秒、安全文本、4KiB分配策略、令牌脱敏、地址/路径、CAS、401与请求级403、429、202、错误保留、迟到响应和 detached 操作。最终完整 Swift 与 iOS 交叉编译的源码身份、计数和回执见 `BACKEND_VERIFICATION.md`。没有访问真实 CPA、Keychain、APNs 或 Apple 账号，也没有修改签名能力或安装 App。
+Rin，本地合成测试覆盖 DTO 向量、Unix 秒、安全文本、4KiB分配策略、令牌脱敏、地址/路径、CAS、401与请求级403、429、202、错误保留、迟到响应和 detached 操作。当前源码的本地验证及其范围见 `BACKEND_RELIABILITY_PR.md` 与 `verification/backend-reliability-20261029.json`；Apple 平台以当前 PR Checks 为准。`BACKEND_VERIFICATION.md` 中的 Swift/iOS 交叉编译是 PR #1 的历史结果，不覆盖本次改动。没有访问真实 CPA、Keychain、APNs 或 Apple 账号，也没有修改签名能力或安装 App。

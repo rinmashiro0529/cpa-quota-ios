@@ -57,6 +57,12 @@ python3 -I ci/test_source_layout.py
 
 生命周期 fixture 只有在审查过合同变化后才重新生成：`UPDATE_MONITORING_FIXTURES=1 go test -run '^TestMonitoringLifecycleFixtureMatchesServiceResponses$' .`（在 Go 模块目录）。普通测试从实际 handler 重新计算结果并比较已提交 fixture，不重写它。
 
+## 首次自动 CI 的平台反馈
+
+初始三个提交的 head 为 `83a6d1a00d5ce4adff1b625e1ca556cb19ab2c4f`，上面的本地验证和源码哈希对应这一实现快照。[首次自动运行](https://github.com/rinmashiro0529/cpa-quota-ios/actions/runs/40831960571) 实际选择 Xcode 26.2 / Apple Swift 6.2.3，通过源码成员检查后，在 macOS SwiftPM 编译登录页时发现 iOS 专用 `textInputAutocapitalization` 未受平台保护。该次 macOS job 失败，未执行后续 native tests，不能当作 Apple 验证通过。
+
+后续最小补丁为两个输入框的这一 modifier 增加 `#if os(iOS)`，保持 iOS 行为。此 Apple 分支修复以当前 head 的实际 CI 为验收依据；没有为此新增无法覆盖该平台的 Linux 测试。历史 PR #1 的交叉编译回执不覆盖新源码。
+
 ## 升级条件
 
 1. 将插件位置选择器迁移为 `summary-key:<key>`。缺少稳定 key 或只有 bucket 的上游目前不支持监控；不要机械地把数组下标拼成 key。
