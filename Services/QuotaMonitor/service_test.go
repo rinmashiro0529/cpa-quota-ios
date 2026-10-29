@@ -663,10 +663,12 @@ func TestRestorationCannotKeepRevokedAccountLeaseActive(t *testing.T) {
 	second.ID, second.SafeID = "second-account", "account-2"
 	options.Config.Sources[0].Accounts = append(options.Config.Sources[0].Accounts, second)
 	options.Config.Principals[0].SourceAccounts = map[string][]string{"personal": {"second-account"}}
+	service.Close()
 	restored, err := NewService(options)
 	if err != nil {
-		return
+		t.Fatal(err)
 	}
+	defer restored.Close()
 	clock.Advance(10 * time.Minute)
 	before := upstream.Calls()
 	restored.RunOnce(context.Background())
@@ -691,11 +693,13 @@ func TestRestorationDoesNotRelabelCachedDataAfterWindowConfigurationChanges(t *t
 	}
 	defer restored.Close()
 	got := decodeSession(t, restored.call(t, http.MethodGet, "/v1/monitoring/sessions/"+sessionID, "bridge", nil))
-	if got["snapshot"] != nil {
-		t.Fatal("changed source/window configuration reused cached data")
+	snapshot, ok := got["snapshot"].(map[string]any)
+	if !ok || snapshot["phase"] != "stopped" || snapshot["sequence"] != float64(2) ||
+		snapshot["accounts"].([]any)[0].(map[string]any)["window_id"] != "primary" {
+		t.Fatal("changed source/window configuration lost or relabeled the last snapshot")
 	}
-	if got["status"] != "active" || got["revision"] != float64(1) {
-		t.Fatal("cache invalidation changed control intent")
+	if got["status"] != "stopped" || got["revision"] != float64(2) || got["next_refresh_at"] != nil {
+		t.Fatal("configuration change must end the previous semantic session")
 	}
 }
 

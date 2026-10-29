@@ -55,7 +55,7 @@ func TestPluginDirectFetchDistinguishesReaderFromProvider(t *testing.T) {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 			http.NotFound(w, r)
 		}
-	}, []Account{{ID: "claude-account", Provider: "claude", Selection: "summary:0", Reader: "plugin"}})
+	}, []Account{{ID: "claude-account", Provider: "claude", Selection: "summary-key:requests", Reader: "plugin"}})
 
 	got := client.Collect(context.Background())["claude-account"]
 	if !sawProviders.Load() {
@@ -79,13 +79,13 @@ func TestPluginCapability404StillHonorsExplicitReader(t *testing.T) {
 		case "/v0/management/quota/providers":
 			http.NotFound(w, r)
 		case "/v0/management/quota/fetch":
-			writeJSON(w, `{"groups":[{"display_name":"Daily","buckets":[{"remaining_fraction":"0.25"}]}]}`)
+			writeJSON(w, `{"summary":[{"key":"requests","value":25,"unit":"requests"}]}`)
 		default:
 			http.NotFound(w, r)
 		}
-	}, []Account{{ID: "p", Provider: "freetier", Selection: "bucket:0:0", Reader: "plugin"}})
+	}, []Account{{ID: "p", Provider: "freetier", Selection: "summary-key:requests", Reader: "plugin"}})
 	got := client.Collect(context.Background())["p"]
-	if got.Status != "ok" || got.Result.Remaining == nil || math.Abs(*got.Result.Remaining-0.25) > 1e-9 {
+	if got.Status != "ok" || got.Result.Value == nil || *got.Result.Value != 25 || got.Result.Unit != "requests" {
 		t.Fatalf("explicit plugin reader did not survive a missing capability endpoint: %+v", got)
 	}
 }

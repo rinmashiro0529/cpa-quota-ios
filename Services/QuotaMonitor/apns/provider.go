@@ -29,6 +29,8 @@ var ErrPayloadTooLarge = errors.New("APNs payload exceeds reserved budget")
 type HTTPError struct {
 	Status     int
 	RetryAfter string
+	// Reason is a recognized APNs reason only, never an arbitrary response body.
+	Reason string
 }
 
 func (e *HTTPError) Error() string { return fmt.Sprintf("APNs rejected request: HTTP %d", e.Status) }
@@ -176,12 +178,40 @@ func (p *Provider) Send(ctx context.Context, token, event string, state any, tim
 		return errors.New("APNs transport failed")
 	}
 	defer response.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+	responseBody, readErr := io.ReadAll(io.LimitReader(response.Body, 4097))
 	if response.ProtoMajor != 2 {
 		return errors.New("APNs requires HTTP/2")
 	}
 	if response.StatusCode != http.StatusOK {
-		return &HTTPError{Status: response.StatusCode, RetryAfter: response.Header.Get("Retry-After")}
+		reason := ""
+		if readErr == nil && len(responseBody) <= 4096 {
+			var failure struct {
+				Reason string `json:"reason"`
+			}
+			if json.Unmarshal(responseBody, &failure) == nil {
+				reason = safeReason(failure.Reason)
+			}
+		}
+		if response.StatusCode == http.StatusForbidden && reason == "ExpiredProviderToken" {
+			p.mu.Lock()
+			if p.token == jwt {
+				p.token = ""
+			}
+			p.mu.Unlock()
+		}
+		return &HTTPError{Status: response.StatusCode, RetryAfter: response.Header.Get("Retry-After"), Reason: reason}
 	}
 	return nil
+}
+
+func safeReason(reason string) string {
+	switch reason {
+	case "Unregistered", "BadDeviceToken", "DeviceTokenNotForTopic",
+		"ExpiredProviderToken", "InvalidProviderToken", "MissingProviderToken",
+		"BadTopic", "TopicDisallowed", "Forbidden", "BadCertificate", "BadCertificateEnvironment",
+		"TooManyRequests", "TooManyProviderTokenUpdates", "InternalServerError", "ServiceUnavailable", "Shutdown":
+		return reason
+	default:
+		return ""
+	}
 }

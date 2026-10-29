@@ -12,13 +12,28 @@ type sourceRound struct {
 }
 
 func (s *Service) collect(parent context.Context, ids []string) {
+	for _, done := range s.startCollections(ids) {
+		select {
+		case <-done:
+		case <-parent.Done():
+			return
+		case <-s.ctx.Done():
+			return
+		}
+	}
+}
+
+// startCollections starts at most one worker per configured source and returns
+// its completion channels. Only explicit RunOnce callers wait on those channels;
+// the periodic scanner and accepted refresh requests do not create waiter tasks.
+func (s *Service) startCollections(ids []string) []<-chan struct{} {
 	if s.opt.CPA == nil || len(ids) == 0 {
-		return
+		return nil
 	}
 	s.mu.Lock()
 	if !s.availableLocked() {
 		s.mu.Unlock()
-		return
+		return nil
 	}
 	sources := map[string]bool{}
 	now := s.opt.Now().Unix()
@@ -62,15 +77,7 @@ func (s *Service) collect(parent context.Context, ids []string) {
 		go s.runRound(ctx, source, round, targets, accounts)
 	}
 	s.mu.Unlock()
-	for _, done := range waiting {
-		select {
-		case <-done:
-		case <-parent.Done():
-			return
-		case <-s.ctx.Done():
-			return
-		}
-	}
+	return waiting
 }
 
 func (s *Service) runRound(ctx context.Context, source string, round *sourceRound, targets, accounts []string) {
@@ -102,7 +109,7 @@ func (s *Service) cancelUnusedSourceLocked(source string) {
 
 func (s *Service) queueNotificationLocked(record sessionRecord, event string) {
 	key := record.ID + "\x00" + event
-	if !s.availableLocked() || s.opt.Config.DryRun || s.notifications[key] {
+	if !s.availableLocked() || s.opt.Config.DryRun || record.TokenInvalidReason != "" || s.notifications[key] {
 		return
 	}
 	s.notifications[key] = true

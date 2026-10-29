@@ -3,6 +3,11 @@
   "state_path": ".state/state.enc",
   "state_key_env": "QUOTA_MONITOR_STATE_KEY",
   "dry_run": true,
+  "capacity": {
+    "max_sessions": 1024,
+    "max_tombstones": 4096,
+    "max_principal_intents": 256
+  },
   "sources": [
     {
       "id": "personal",
