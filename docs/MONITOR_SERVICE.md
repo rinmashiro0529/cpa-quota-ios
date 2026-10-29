@@ -28,6 +28,7 @@ Rin，示例为 `Services/QuotaMonitor/config.example.json`。复制到由操作
 | `state_path` | 加密状态文件；建议专用 `.state/` 目录 |
 | `state_key_env` | AES 密钥所在环境变量的名字 |
 | `dry_run` | 为 true 时禁 APNs，但不禁有活动时的 CPA 采集 |
+| `capacity` | 有界的历史意图配额；省略时使用下面的默认值 |
 | `tls_cert_file` / `tls_key_file` | 可选完整配对；非 loopback 必填 |
 | `sources` | 固定来源、管理密钥环境变量名和账号白名单 |
 | `principals` | 桥接身份及允许的 source/account 范围 |
@@ -46,9 +47,17 @@ Rin，桥接 token 不能复用管理密钥或活动 push token。每个 princip
 
 Rin，持久化使用 AES-256-GCM、随机 nonce、认证头 `QMON1`、临时文件、文件同步、原子替换和单写者 OS 锁；单个状态文件上限 32 MiB。Unix 状态目录不得 group/world 可写，文件按 0600 创建并同步目录。Windows 使用独占锁和 write-through 替换，但程序不替操作者配置目录 ACL，须预先确保仅服务身份可访问。不要将状态放入共享可写目录、公开同步盘或仓库。底层落盘出现不确定结果时，服务停止采集并返回 503，包括 `/healthz`，需要检查存储后恢复，不能继续假报健康。
 
+### 容量和历史意图
+
+`capacity.max_sessions` 默认 1024（上限 16384），`max_tombstones` 默认 4096（上限 65536），`max_principal_intents` 默认 256（上限 65536）。0 表示默认值，负数或超过上限的配置拒绝启动。每个 principal 的意图数包含其会话和取消墓碑；已停止、已过期会话仍计数。注册时还按最大 push token、快照、身份指纹和投递状态预留未来序列化空间，避免已接受会话的正常更新把文件推过 32 MiB 限制。
+
+达到条数或空间预算时，仅拒绝新 UUID 注册或新墓碑，返回 `507 capacity exhausted`，不提供虚假的 Retry-After。既有会话 GET、DELETE、token 更新、幂等 POST 和已有墓碑的重复 DELETE 继续按原合同工作，健康检查仍可用。507 不表示磁盘写入结果不明；真实存储故障仍按 503 停止服务。
+
+这是有界准入，尚未实现无限期历史回收。v1 注册没有可验证的重放截止时间，不能简单给墓碑或终态会话设置 TTL，否则迟到的旧 POST 会重新启动监控。达到容量需评估配额和存储预算，后续安全回收需要版本化重放期限与迁移合同；不要通过删除状态文件来腾出空间。恢复时若现有状态已超过新配额或预留空间预算，启动失败且不重写原文件；升级前应检查现有状态规模并配置足够的兼容配额。
+
 ## Rin，来源、身份、窗口和单位
 
-Rin，`sources[].base_url` 必须是安全 HTTPS URL，可含反代前缀，也接受末尾 `/v0/management` 的规范形式；禁止 URL 内凭据、查询、片段、点路径和编码路径。一个进程的配置不允许重复 canonical HTTPS origin，以免同一服务绕过共享冷却。调用方不能提交 URL、管理密钥、provider 或任意上游请求，来源仅使用服务端配置。管理请求最多三路，同来源采集合并；HTTP 单响应最多 4 MiB，单次 HTTP 上限 75 秒，采集轮次 240 秒。
+Rin，`sources[].base_url` 必须是安全 HTTPS URL，可含反代前缀，也接受末尾 `/v0/management` 的规范形式；禁止 URL 内凭据、查询、片段、点路径和编码路径。一个进程的配置不允许重复 canonical HTTPS origin，以免同一服务绕过共享冷却。调用方不能提交 URL、管理密钥、provider 或任意上游请求，来源仅使用服务端配置。每个 canonical origin 的管理请求最多三路，同来源采集合并；HTTP 单响应最多 4 MiB，单次 HTTP 上限 75 秒，采集 context 超时为 240 秒（不承诺整个轮次包括落盘、锁等待在内的总耗时）。
 
 Rin，`accounts[].id` 是真实 inventory 账号标识，按 CPA 合同的 id/name/auth_index 选择，不按邮箱、昵称或 Source 强配。`safe_id` 与 `label` 是另行配置的非敏感系统显示别名；真实 id 可以用于授权控制，但不进入 APNs 快照。每轮重新核对 inventory 的 provider、禁用状态和身份映射；不可用账号不能从服务层的旧快照重新拿回旧值。auth_index/owner等身份变化通过不含原始身份内容的指纹贯穿读数和加密状态，即使恢复后新读取失败，也不能跨身份回填旧值；该指纹不进入公开HTTP或APNs快照。
 
@@ -62,11 +71,13 @@ Rin，`accounts[].id` 是真实 inventory 账号标识，按 CPA 合同的 id/na
 
 Rin，Codex reader 支持 `primary`、`secondary`，经管理 `api-call` 读取固定额度路由，并在可用时带经 inventory 核对的 `Chatgpt-Account-Id`。xAI reader 支持 `monthly`、`monthly-limit-usd`、`used-usd`，USD 与 cents 的归一化由纯函数和共享向量验证。插件 reader 通过 `quota/fetch` 直接读取，不套 Codex envelope；实际 provider 不能为了使用插件读取而改写成 `plugin`。
 
-Rin，插件选择支持 `summary:N` 与 `bucket:I:J`。这些数字是返回数组中的位置，不是强稳定窗口身份；操作者必须先核对真实响应并固定配置，上游重排后应停止监控并重新核对，而不是继续声称是同一窗口。本轮未连接用户实例，因此未证明其 provider、窗口顺序、插件版本或返回结构。
+插件 reader 仅支持 `summary-key:<key>`，例如 `summary-key:requests_left`。key 为 1–128 个 ASCII 字母、数字、`_` 或 `-`；每次响应必须恰好有一个 `summary[].key` 精确匹配。数组重排或插入其他指标不改变选择，缺少或重复 key 不产生新成功读数。旧的 `summary:N` / `bucket:I:J` 在配置阶段拒绝，升级前必须迁移；没有稳定 key 的插件或 bucket 指标目前不支持，不能用标签、单位或数组位置猜测身份。真实部署是否提供稳定 key 仍需操作者核对。
 
 Rin，比例与值是不同合同：无明确上限的 summary 指标不造百分比，已超额的来源不通过跨窗口相加掩盖；系统 `remaining_fraction` 是限幅后的剩余图形，不能代替 App 内原始超额语义。实际单位缺失时不靠配置补造，`credits` 不会被改叫 `requests`；有值但单位未知/不符则标不可用。普通临时失败保留旧成功值及原 `observed_at`，不以清单读取、桥接读取或重新推送时间冒充源观察时间。
 
 Rin，管理层 401/403 熔断整个来源，直到受控进程重启并修复凭据，不会一小时后自动开路。管理外层 429 阻断整个来源，尊重秒数或 HTTP-date `Retry-After`；代理返回的上游 429 仅作用于对应账号。冷却到期只表示可再次尝试，不代表数据已恢复。匿名 CAP Usage 资源读取是 Swift 端另一条显式鉴权合同，不由本服务代替。
+
+Codex `api-call` envelope 的 `header` / `headers` 均可读取，字段名大小写不敏感，Retry-After 支持标量或数组（取首个可解析项）。`status_code` 仅接受 100–599 的整值数值或整数字符串，拒绝布尔、非整值和溢出；数值 `200.0` / `2e2` 按 200 处理，字符串 `"200.0"` 不作为整数字符串接受。Go 和 Swift 共享解析向量；Go 对过期日期仍回退 60 秒、对极短有效等待仍至少等 1 秒，这些本地保护策略不意味着两端所有冷却策略完全相同。
 
 ## Rin，HTTP v1
 
@@ -74,11 +85,11 @@ Rin，除最小 `/healthz` 外，所有路由都需要 `Authorization: Bearer <b
 
 | 路由 | 成功与关键失败语义 |
 | --- | --- |
-| `POST /v1/monitoring/sessions` | 201；等价规范化请求幂等，不同意图 409；无权限 403；已写墓碑拒绝迟到创建 |
+| `POST /v1/monitoring/sessions` | 201；等价规范化请求幂等，不同意图 409；无权限 403；已写墓碑拒绝迟到创建；新意图容量不足 507 |
 | `GET /v1/monitoring/sessions/{id}` | 200 当前会话；其他 owner 或未知 ID 返回 404 |
 | `PUT .../{id}/token` | `push_token` 与 expected-current `revision`；成功加一，旧版本/溢出 409 |
 | `POST .../{id}/refresh` | 202 当前会话，只表示意图已接受；合并来源采集并守节拍，不表示采集/推送完成 |
-| `DELETE .../{id}` | 已知会话 200，停止版本递增且落盘后发送 end；未知 UUID 在当前 principal 下持久墓碑并 204 |
+| `DELETE .../{id}` | 已知会话 200，停止版本递增且落盘后发送 end；未知 UUID 在当前 principal 下持久墓碑并 204；无法接纳新墓碑时 507，不确认取消 |
 | `GET /v1/sources/{sourceID}/quota` | 200 授权缓存；无缓存 404，不触发网络；不跨 session 直接用 sequence 选新旧 |
 | `GET /healthz` | 200 最小健康；存储不确定或服务停止时 503 |
 
@@ -90,13 +101,21 @@ Rin，session `revision` 只随控制变更递增；采集增加 `snapshot.seque
 
 ## Rin，调度、取消和推送失败
 
-Rin，服务每秒扫描到期，但同来源采集目标间隔为 600 秒，以轮次开始时间计算，不是每秒采集。首次自动采集在注册后约 600 秒；第一次手动刷新可立即启动，之后不得绕过来源节拍或 CPA 冷却。并发活动共享一次来源读取，取有效活动授权账号的并集；错过的轮次不补发全套历史采集。没有有效租约时停止来源采集，最后一个订阅停止会取消来源作业；其他仍有效订阅不被一并取消。
+Rin，服务每秒扫描到期，但同来源采集目标间隔为 600 秒，以轮次开始时间计算，不是每秒采集。扫描不等待上游采集完成，每个配置来源最多一个采集 worker；慢来源不阻塞其他租约到期和投递重试扫描。显式 `RunOnce` 调用仍可等待其参与的轮次完成，`Schedule` 和已接受的 refresh 不创建等待任务。首次自动采集在注册后约 600 秒；第一次手动刷新可立即启动，之后不得绕过来源节拍或 CPA 冷却。并发活动共享一次来源读取，取有效活动授权账号的并集；错过的轮次不补发全套历史采集。没有有效租约时停止来源采集，最后一个订阅停止会取消来源作业；其他仍有效订阅不被一并取消。
 
-Rin，update、token 轮换、end 按活动串行化；发送前后复核控制版本、数据序号与租约，旧回调不能给新快照标记 sent。停止或过期后不发布迟到 ready 结果，先落盘终止意图再发 end；即便还没采过快照，也能发安全的终止内容。服务重启不延长租约，恢复时重新核对当前授权；来源或账号窗口配置的指纹变化时清除旧快照，而不是将旧值重新贴上新窗口/单位标签。
+Rin，update、token 轮换、end 按活动串行化；发送前后复核控制版本、数据序号与租约，旧回调不能给新快照标记 sent。串行门锁在最后一个发送者或等待者离开后回收，不永久保留所有传入的 UUID。停止或过期后不发布迟到 ready 结果，先落盘终止意图再发 end；已有快照切换终态时 sequence 单调递增，保留原始 observed_at，未采过快照时也能发安全终止内容。
+
+重启不延长租约。来源配置指纹变化时终止旧活动，保留它原有窗口/单位的终态快照；新配置必须用新 UUID 注册，旧配置快照不进入当前 source cache。授权撤销时终止并禁用投递，将已存在快照替换为序号递增的固定 unavailable 占位内容，清除旧显示名、值和观察时间。恢复同一终态不重复增加版本；序号不能表示下一版本时不回绕，无法安全表达撤权脱敏时拒绝启动。
 
 Rin，APNs 使用 PKCS8 P-256/ES256 JWT，缓存 50 分钟；按服务器固定 sandbox/production 和 `<main-bundle>.push-type.liveactivity` 主题，经 HTTP/2 以 priority 5 发送 update/end。动态 content-state 最多 3584 字节，为静态属性留 512 字节；整个 APNs body 还受 4096 字节约束。end 带即时 `dismissal-date`，但 APNs 200 仍仅表示接受，不证明设备展示或移除。
 
-Rin，推送状态独立于采集状态：`disabled` 表示 dry-run，`pending` 表示当前快照尚未确认接受，`sent`/`ended` 表示 APNs 接受，`failed` 表示发送失败。新快照不会继承上一次 sent。传输错误和 APNs 429/5xx 使用按活动持久化的 60/120/240/480/600 秒退避，显式 `Retry-After` 更晚时优先采用；重复 DELETE 和进程恢复不能缩短该期限。到期扫描可重发仍有效活动的最新快照，或已停止/过期活动的 end，不为重发另采一次 CPA。永久 4xx 不自动高频重试，修复配置或活动 token 后由控制操作对账。此退避是按活动的，不是经负载验证的全团队限流器。
+Rin，推送状态独立于采集状态：`disabled` 表示 dry-run 或授权撤销后的禁用投递，`pending` 表示当前快照尚未确认接受，`sent`/`ended` 表示 APNs 接受，`failed` 表示发送失败。新快照不会继承上一次 sent。传输错误和 APNs 429/5xx 使用按活动持久化的 60/120/240/480/600 秒退避，显式 `Retry-After` 更晚时优先采用；重复 DELETE 和进程恢复不能缩短该期限。到期扫描可重发仍有效活动的最新快照，或已停止/过期活动的 end，不为重发另采一次 CPA。永久 4xx 不自动高频重试，修复配置或活动 token 后由控制操作对账。此退避是按活动的，不是经负载验证的全团队限流器。
+
+`410`、`400 BadDeviceToken` 与 `400 DeviceTokenNotForTopic` 属于活动 token 失效：只持久化允许列表中的固定原因，停止对该 token 发送 update/end，刷新数据或重启不清除这一标记。只有匹配 revision 的不同有效 token 才能解除；对已标记失效的相同 token 进行轮换返回 409，未失效 token 的原有 CAS 语义保持不变。`403 ExpiredProviderToken` 属于 provider JWT，清除缓存并遵守退避重试，不把活动 token 错判失效，也不立即循环重试。
+
+### 持久化升级与回退
+
+HTTP DTO 仍是 v1。仅出现活动 token 失效的持久记录升级为 record v2；新服务读取 v1/v2，旧服务遇到 v2 必须拒绝启动，避免回退后忘记失效状态并继续推送。轮换 token 后记录仍为 v2。升级前做受保护的一致性备份，之后优先前向修复或使用理解 v2 的回退版本；不得把旧二进制直接指向已升级状态，也不能通过恢复陈旧备份丢弃其后已确认的取消墓碑。此 PR 没有进行部署或实际数据迁移。
 
 Rin，`SIGINT`/`SIGTERM` 会取消来源、等待本服务工作并关闭 HTTP；不 killall、不重启共享容器。正常退出不等于所有设备活动已结束，未终止的租约按加密状态恢复，终止的 pending/可重试失败由到期扫描继续对账。设备离线、强退、系统预算、网络延迟与 APNs 限流都可能造成延迟；600 秒不是设备必达 SLA，活动最长持续时间也仍受 ActivityKit 平台规则约束。
 

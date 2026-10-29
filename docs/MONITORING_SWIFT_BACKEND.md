@@ -12,6 +12,8 @@ Rin，`rotate` 的 revision 为 expected-current，成功响应必须加一；�
 
 Rin，401表示桥接凭据失效，会阻断该客户端后续请求；403可能只是来源/账号授权不足，只拒绝这一请求，不应阻止发送原本有权停止的会话 DELETE。此规则不同于 CPA 管理连接的共享401/403熔断：管理侧原合同不变。404、409、5xx、重定向和429有独立安全错误类别；429的截止时间可通过 `await client.retryAt` 读取。不得记录原始认证头、请求体、令牌或完整会话上下文。
 
+507 单独映射为 `MonitoringError.capacityExceeded`，表示服务没有接纳新的持久意图，不设置共享冷却或凭据熔断。可继续查询和停止已接受的会话；未知 UUID 的 DELETE 收到 507 时必须保留 uncertain，不能生成取消回执。
+
 ## Rin，共享 DTO 与内容预算
 
 Rin，`MonitoringSnapshot` 和 `MonitoringAccount` 提供验证式公开构造器，可在取得 push token 前构造初始内容，也可用作不依赖 ActivityKit/WidgetKit 的 Codable 模型。时间按 Unix 秒数字编码，允许合法小数；缺失 observed_at 保持 nil，snapshot.expires_at 是数据过期时间，可早于 generated_at，与监控租约 session.expires_at 不同。没有原观察时间时不能用一次列表或桥接读取时间伪造新观察。
@@ -24,9 +26,11 @@ Rin，控制接口 account_ids 允许 `_ - @ .`、1–128个UTF-8字节，与系
 
 Rin，Store 拒绝旧 revision/sequence 覆盖较新状态；同 UUID 重试失败保留已知快照，切换 UUID 不会错绑旧会话。停止后可以创建新 UUID；无法确认 end 投递的旧会话可保留在 detachedSessions，而不是静默遗忘。
 
-Rin，配置切换将旧会话 UUID、旧客户端和最后已知会话放入 detachedSessions，按唯一 handle 调用 loadDetached/stopDetached，确认不再活跃后可调用 removeDetached。204只记录停止意图，未知会话仍需对账。`cancelPending()` 会异步发起停止，不只是隐藏迟到响应；阻止迟到POST重新激活最终依赖服务端同 principal 的持久墓碑。
+Rin，配置切换将旧会话 UUID、旧客户端和最后已知会话放入 detachedSessions，按唯一 handle 调用 loadDetached/stopDetached。可信服务的 DELETE 204 表示同 principal 的取消墓碑已持久化；Store 记录绑定原 CPAMonitorClient 和 UUID 的 `MonitoringCancellationReceipt`，随后可创建新 UUID，也可移除尚无 lastSession 的 detached 项，不再要求一个永远只会 404 的会话变成可读取状态。404、超时、507 和普通网络错误均不能生成这份回执。已取得回执的 UUID 拒绝迟到 active 结果；回执仅证明服务端取消约束，不证明 APNs end 或设备移除。`cancelPending()` 会异步发起停止，不只是隐藏迟到响应；阻止迟到 POST 重新激活仍依赖服务端同 principal 的持久墓碑。
 
 Rin，以上跟踪是进程内状态。调用方必须持久保存所需的连接标识与 UUID，重启后结合原桥接凭据和服务端租约对账；不能为恢复方便把敏感 token 写进 UserDefaults。用户只在本机忘记凭据时，不能声称服务器监控已经结束，也不能未经同意继续保留或使用该凭据。
+
+Go handler 实际响应生成的 `Tests/ContractFixtures/monitoring-lifecycle-v1.json` 由 Swift Store 顺序消费，覆盖显式停止、到期、配置改变、授权撤销、首次快照前到期及其重启重复读取。共享 fixtures 通过 SwiftPM resource bundle 和原生测试 target 的资源阶段加载，不依赖构建机器的源码绝对路径。
 
 ## Rin，验证边界
 

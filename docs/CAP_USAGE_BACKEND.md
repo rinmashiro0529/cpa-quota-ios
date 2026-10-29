@@ -40,6 +40,10 @@ Rin，`CAPUsageWindow(now:)` 生成 `[floor(now/60)*60-1800, floor(now/60)*60)`�
 
 Rin，生成 TPS 仅计算已知成功、输出口径可判定、TTFT>0 且 latency>TTFT 的样本。缺 TTFT 不能把插件兼容回退冒充生成时长；端到端速度单列。OpenAI-compatible/Anthropic 等已含 reasoning 的 output 不重复加 reasoning，也不要求无关的 reasoning 字段存在；Gemini 等独立计量需要 reasoning 数据。未知口径保守排除并显示样本覆盖，不猜测。不同 provider、model 以及 stream 值分别分组；同名模型不跨 provider 合并。
 
+输出口径按明确优先级判断：兼容接口或 Anthropic 的已包含语义优先，其次为 Gemini 的独立 reasoning，最后才考虑通用 executor/provider。这样不会因 executor 与 provider 同时命中不同类别而重复加 reasoning。reasoning 为 0 或已知 executor 可证明口径的样本仍可计算，不把所有未知元数据一律排除；无法证明的样本继续排除。
+
+身份字段优先使用字符串。数字身份仅接受可证明无损的安全整数；小数、布尔值、浮点来源及超出 ±(2^53−1) 的数值身份拒绝，不通过 Double 舍入后制造另一个 ID。大整数必须由上游以字符串传输。度量值仍按其原有数值合同解析，此限制不会把用量、金额等字段整体改为字符串。
+
 Rin，100 Token/2秒和900 Token/30秒的已知向量结果为31.25 Token/s，不是单请求速率的算术平均40，也不是1000/1800的窗口吞吐。`average_latency_ns` 与 `average_ttft_ns` 的样本集合可能不同，不能相减推导生成时长。失败请求的部分用量仍属于用量数据，但不纳入成功生成 TPS。
 
 ## Rin，分页与保守完整性
