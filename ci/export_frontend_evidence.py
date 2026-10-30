@@ -9,7 +9,38 @@ from pathlib import Path
 parser = argparse.ArgumentParser()
 parser.add_argument("--evidence", type=Path, required=True)
 parser.add_argument("--log-previews", action="store_true")
+parser.add_argument("--restore-log", type=Path,
+                    help="Recover checksum-verified review JPEGs from a downloaded GitHub job log")
 args = parser.parse_args()
+if args.restore_log:
+    args.evidence.mkdir(parents=True, exist_ok=True)
+    metadata = None
+    chunks = []
+    restored = []
+    for line in args.restore_log.read_text().splitlines():
+        if "FRONTEND_SCREENSHOT_BEGIN " in line:
+            metadata = json.loads(line.split("FRONTEND_SCREENSHOT_BEGIN ", 1)[1])
+            chunks = []
+        elif metadata is not None and "FRONTEND_SCREENSHOT_DATA " in line:
+            chunks.append(line.split("FRONTEND_SCREENSHOT_DATA ", 1)[1].strip())
+            if sum(map(len, chunks)) > 2_000_000:
+                raise SystemExit("Screenshot log entry exceeds the declared evidence limit")
+        elif metadata is not None and "FRONTEND_SCREENSHOT_END" in line:
+            filename = metadata["file"]
+            if Path(filename).name != filename or not filename.endswith(".jpg"):
+                raise SystemExit("Invalid review filename")
+            payload = base64.b64decode("".join(chunks), validate=True)
+            if len(payload) != metadata["bytes"] or hashlib.sha256(payload).hexdigest() != metadata["previewSHA256"]:
+                raise SystemExit("Screenshot integrity check failed")
+            (args.evidence / filename).write_bytes(payload)
+            restored.append(metadata)
+            metadata = None
+    if metadata is not None:
+        raise SystemExit("Incomplete screenshot in the downloaded log")
+    (args.evidence / "review-manifest.json").write_text(json.dumps(restored, indent=2) + "\n")
+    print(json.dumps({"restoredReviewPreviews": len(restored), "originalResultBundle": False}))
+    raise SystemExit(0)
+
 result = args.evidence / "NativeTests.xcresult"
 if not result.exists():
     print("No native xcresult exists for this run; no native test or screenshot pass is claimed.")

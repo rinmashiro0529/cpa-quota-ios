@@ -114,6 +114,15 @@ CI 同时编译 Xcode 26.2 与 27.2，运行 SPM、native unit、XCUITest，再�
 
 ## 仍需签名设备完成的验收
 
+如果附件上传因 GitHub 存储配额失败，可从对应 job 日志恢复带校验和的截图审阅副本：
+
+~~~sh
+gh run view <run-id> --job <job-id> --log > native-job.log
+python3 -I ci/export_frontend_evidence.py --restore-log native-job.log --evidence ./review-previews
+~~~
+
+脚本只恢复该次日志中的实际截图副本，并校验长度、SHA256 和文件路径；不能恢复未上传的完整 xcresult。
+
 以下项目必须保留独立记录，不与模拟器 / 合成测试合并为“已验证”：
 
 1. 正式 iOS 27 SDK / Release 工具链及对应真实设备安装。
