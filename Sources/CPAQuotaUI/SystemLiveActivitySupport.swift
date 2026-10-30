@@ -23,12 +23,17 @@ public final class DefaultSystemLiveActivityDriver: SystemLiveActivityDriver {
     private var observationID = UUID()
     private var tokenObservationTask: Task<Void, Never>?
     private var stateObservationTask: Task<Void, Never>?
+    private var contentObservationTask: Task<Void, Never>?
+    private var authorizationObservationTask: Task<Void, Never>?
+    private var contentUpdateHandler: (@MainActor (String, MonitoringSnapshot) -> Void)?
 
     public init() {}
 
     deinit {
         tokenObservationTask?.cancel()
         stateObservationTask?.cancel()
+        contentObservationTask?.cancel()
+        authorizationObservationTask?.cancel()
     }
 
     public var isSupportedOnCurrentPlatform: Bool {
@@ -45,6 +50,50 @@ public final class DefaultSystemLiveActivityDriver: SystemLiveActivityDriver {
         #else
         return false
         #endif
+    }
+
+    public var currentSnapshot: MonitoringSnapshot? {
+        #if canImport(ActivityKit) && os(iOS)
+        guard let activeActivityID else { return nil }
+        return Activity<CPAQuotaActivityAttributes>.activities.first {
+            $0.id == activeActivityID && ($0.activityState == .active || $0.activityState == .stale)
+        }?.content.state.snapshot
+        #else
+        return nil
+        #endif
+    }
+
+    public func currentActivities() -> [LocalLiveActivityDescriptor] {
+        #if canImport(ActivityKit) && os(iOS)
+        return Activity<CPAQuotaActivityAttributes>.activities.compactMap {
+            guard $0.activityState == .active || $0.activityState == .stale else { return nil }
+            return LocalLiveActivityDescriptor(id: $0.id, sourceID: $0.attributes.sourceID)
+        }
+        #else
+        return []
+        #endif
+    }
+
+    public func observeAuthorizationChanges(_ onChange: @escaping @MainActor (Bool) -> Void) {
+        stopObservingAuthorizationChanges()
+        onChange(areActivitiesEnabled)
+        #if canImport(ActivityKit) && os(iOS)
+        authorizationObservationTask = Task {
+            for await enabled in ActivityAuthorizationInfo().activityEnablementUpdates {
+                guard !Task.isCancelled else { return }
+                onChange(enabled)
+            }
+        }
+        #endif
+    }
+
+    public func stopObservingAuthorizationChanges() {
+        authorizationObservationTask?.cancel()
+        authorizationObservationTask = nil
+    }
+
+    public func setContentUpdateHandler(_ onChange: @escaping @MainActor (String, MonitoringSnapshot) -> Void) {
+        contentUpdateHandler = onChange
     }
 
     public func startActivity(
@@ -121,6 +170,9 @@ public final class DefaultSystemLiveActivityDriver: SystemLiveActivityDriver {
         if activeActivityID == activityID { detachActivity() }
         #if canImport(ActivityKit) && os(iOS)
         await Self.endSystemActivity(activityID: activityID, immediate: immediate)
+        // Reconciliation may have reattached this exact activity while the
+        // system end was suspended. Never detach a different, newly started ID.
+        if activeActivityID == activityID { detachActivity() }
         #endif
     }
 
@@ -164,6 +216,8 @@ public final class DefaultSystemLiveActivityDriver: SystemLiveActivityDriver {
         tokenObservationTask = nil
         stateObservationTask?.cancel()
         stateObservationTask = nil
+        contentObservationTask?.cancel()
+        contentObservationTask = nil
         activeActivityID = nil
         latestPushTokenHex = nil
     }
@@ -198,6 +252,13 @@ public final class DefaultSystemLiveActivityDriver: SystemLiveActivityDriver {
                 }
             }
         }
+        contentObservationTask = Task { [weak self] in
+            for await content in activity.contentUpdates {
+                guard !Task.isCancelled, let self,
+                      self.observationID == generation, self.activeActivityID == activity.id else { return }
+                self.contentUpdateHandler?(activity.id, content.state.snapshot)
+            }
+        }
     }
 
     private static func tokenHex(_ data: Data) -> String? {
@@ -212,7 +273,9 @@ public final class DefaultSystemLiveActivityDriver: SystemLiveActivityDriver {
 @MainActor
 public final class SyntheticLiveActivityDriver: SystemLiveActivityDriver {
     public var isSupportedOnCurrentPlatform: Bool
-    public var areActivitiesEnabled: Bool
+    public var areActivitiesEnabled: Bool {
+        didSet { authorizationCallback?(areActivitiesEnabled) }
+    }
     public private(set) var activeActivityID: String?
     public private(set) var latestPushTokenHex: String?
     public var selectedRotationIndex: Int = 0
@@ -229,6 +292,8 @@ public final class SyntheticLiveActivityDriver: SystemLiveActivityDriver {
     private var records: [String: Record] = [:]
     private var pushTokenCallback: (@MainActor (String, String) -> Void)?
     private var dismissCallback: (@MainActor (String) -> Void)?
+    private var authorizationCallback: (@MainActor (Bool) -> Void)?
+    private var contentUpdateHandler: (@MainActor (String, MonitoringSnapshot) -> Void)?
     private let simulatedActivityID: String
     private let simulatedPushTokenHex: String?
 
@@ -282,6 +347,28 @@ public final class SyntheticLiveActivityDriver: SystemLiveActivityDriver {
         try CPAQuotaActivityAttributes(sourceID: record.sourceID).validateContent(CPAQuotaLiveActivityState(snapshot: snapshot))
         records[activityID]?.snapshot = snapshot
         lastUpdatedSnapshot = snapshot
+        contentUpdateHandler?(activityID, snapshot)
+    }
+
+    public var currentSnapshot: MonitoringSnapshot? {
+        guard let activeActivityID else { return nil }
+        return records[activeActivityID]?.snapshot
+    }
+
+    public func currentActivities() -> [LocalLiveActivityDescriptor] {
+        records.map { LocalLiveActivityDescriptor(id: $0.key, sourceID: $0.value.sourceID) }
+            .sorted { $0.id < $1.id }
+    }
+
+    public func observeAuthorizationChanges(_ onChange: @escaping @MainActor (Bool) -> Void) {
+        authorizationCallback = onChange
+        onChange(areActivitiesEnabled)
+    }
+
+    public func stopObservingAuthorizationChanges() { authorizationCallback = nil }
+
+    public func setContentUpdateHandler(_ onChange: @escaping @MainActor (String, MonitoringSnapshot) -> Void) {
+        contentUpdateHandler = onChange
     }
 
     public func endActivity(activityID: String, immediate: Bool) async {
@@ -329,18 +416,16 @@ public final class SyntheticLiveActivityDriver: SystemLiveActivityDriver {
 }
 
 #if canImport(SwiftUI)
+/// An in-app diagnostic presentation of the safe payload. It is not a system
+/// island mock-up and does not claim that APNs has reached this device.
 public struct SystemLiveActivityPreviewCard: View {
     public let sourceID: String
     public let snapshot: MonitoringSnapshot
     @Binding public var focusedIndex: Int
-    public let palette: LiquidGlassPalette
+    public let palette: BrandPalette
 
-    public init(
-        sourceID: String,
-        snapshot: MonitoringSnapshot,
-        focusedIndex: Binding<Int>,
-        palette: LiquidGlassPalette
-    ) {
+    public init(sourceID: String, snapshot: MonitoringSnapshot,
+                focusedIndex: Binding<Int>, palette: BrandPalette) {
         self.sourceID = sourceID
         self.snapshot = snapshot
         self._focusedIndex = focusedIndex
@@ -348,95 +433,44 @@ public struct SystemLiveActivityPreviewCard: View {
     }
 
     public var body: some View {
-        let accounts = snapshot.accounts
-        let safeIndex = CPAQuotaLiveActivityState.normalizedIndex(focusedIndex, count: accounts.count)
-        let currentAccount = accounts.isEmpty ? nil : accounts[safeIndex]
-
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label("系统活动安全载荷视图 (MonitoringSnapshot)", systemImage: "platter.filled.top.iphone")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(palette.textPrimary)
-                Spacer()
-                Text("seq #\(snapshot.sequence) · \(snapshot.phase.rawValue)")
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(palette.accent)
-            }
-
-            if let currentAccount {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text(currentAccount.label)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(palette.textPrimary)
-                        Text(currentAccount.provider.uppercased())
-                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(palette.accent)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(palette.accentSoft))
-                        Spacer()
-                        Text("状态: \(currentAccount.status.rawValue)")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(palette.textSecondary)
+        let index = CPAQuotaLiveActivityState.normalizedIndex(focusedIndex, count: snapshot.accounts.count)
+        let account = snapshot.accounts.isEmpty ? nil : snapshot.accounts[index]
+        VStack(alignment: .leading, spacing: 12) {
+            Label("系统活动数据检查", systemImage: "doc.text.magnifyingglass")
+                .font(.headline)
+            if let account {
+                Text(account.label).font(.headline)
+                QuotaLabeledValue(title: account.windowLabel, value: CPAQuotaActivityPresentation.value(account))
+                Text(CPAQuotaActivityPresentation.status(snapshot: snapshot, account: account,
+                                                        isStale: Date() >= snapshot.expiresAt))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Text("观察于 \(QuotaFormatter.exactTimestampString(account.observedAt))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if snapshot.accounts.count > 1 {
+                    Button("查看下一个账号（\(index + 1) / \(snapshot.accounts.count)）") {
+                        focusedIndex = (index + 1) % snapshot.accounts.count
                     }
-
-                    HStack {
-                        Text("\(currentAccount.windowLabel) (\(currentAccount.windowID))")
-                            .font(.system(size: 11))
-                            .foregroundStyle(palette.textSecondary)
-                        Spacer()
-                        if let rem = currentAccount.remainingFraction {
-                            Text(String(format: "%.0f%% 剩余", (rem * 100).rounded()))
-                                .font(.system(size: 12, weight: .bold, design: .monospaced))
-                                .foregroundStyle(palette.statusOK)
-                        } else if let val = currentAccount.value {
-                            Text("\(String(format: "%.2f", val)) \(currentAccount.unit ?? "")")
-                                .font(.system(size: 12, weight: .bold, design: .monospaced))
-                                .foregroundStyle(palette.textPrimary)
-                        } else {
-                            Text("读数未知 (nil)")
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(palette.statusWarn)
-                        }
-                    }
-
-                    HStack {
-                        Text("观察时间: \(QuotaFormatter.exactTimestampString(currentAccount.observedAt))")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(palette.textMuted)
-                        Spacer()
-                        if accounts.count > 1 {
-                            Button {
-                                focusedIndex = (safeIndex + 1) % accounts.count
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "arrow.triangle.2.circlepath")
-                                    Text("切换展示账号 (\(safeIndex + 1)/\(accounts.count))")
-                                }
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(palette.accent)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
+                    .quotaSecondaryButtonStyle()
                 }
-                .padding(10)
-                .liquidGlassPill(cornerRadius: 14)
             } else {
-                Text("当前监控快照暂无可显示的授权安全账号别名。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(palette.textSecondary)
+                Text("暂无安全读数").foregroundStyle(.secondary)
             }
-
-            if let payloadBytes = try? snapshot.activityContentData().count {
-                Text("动态载荷体积: \(payloadBytes) / 3584 Bytes 预算上限 · 不含原始邮箱/管理密钥/URL")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(palette.textMuted)
+            DisclosureGroup("载荷详情") {
+                QuotaLabeledValue(title: "来源", value: sourceID)
+                QuotaLabeledValue(title: "Sequence", value: String(snapshot.sequence))
+                if let bytes = try? snapshot.activityContentData().count {
+                    QuotaLabeledValue(title: "动态内容字节", value: "\(bytes) / 3584")
+                }
+                Text("这是应用内的数据检查，不是设备送达或系统呈现回执。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
         }
-        .padding(14)
-        .liquidGlassCard(cornerRadius: 20)
+        .foregroundStyle(palette.textPrimary)
+        .padding()
+        .quotaContentSurface()
     }
 }
 #endif

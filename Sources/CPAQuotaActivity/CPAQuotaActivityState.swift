@@ -125,6 +125,10 @@ public enum CPAQuotaActivityPresentation {
             return String(format: "%.0f%%", (fraction * 100).rounded())
         }
         if let value = account.value {
+            if abs(value) >= 1_000_000 || (value != 0 && abs(value) < 0.005) {
+                return value.formatted(.number.notation(.scientific).precision(.significantDigits(1...6)))
+                    + (account.unit.map { " " + $0 } ?? "")
+            }
             return String(format: "%.2f", value) + (account.unit.map { " " + $0 } ?? "")
         }
         return "未知"

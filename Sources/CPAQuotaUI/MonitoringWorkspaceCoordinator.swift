@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import CPAQuotaKit
+import CPAQuotaActivity
 
 public struct PersistedMonitoringRecord: Codable, Equatable, Sendable, Identifiable {
     public let sessionID: UUID
@@ -155,6 +156,18 @@ public enum LocalLiveActivityError: Error, Sendable, Equatable {
     case startFailed
 }
 
+/// System-owned activities are identified only by their exact ID and safe source
+/// alias. An unassociated activity must never be adopted by guessing a bridge.
+public struct LocalLiveActivityDescriptor: Equatable, Sendable, Identifiable {
+    public let id: String
+    public let sourceID: String
+
+    public init(id: String, sourceID: String) {
+        self.id = id
+        self.sourceID = sourceID
+    }
+}
+
 @MainActor
 public protocol SystemLiveActivityDriver: AnyObject {
     var isSupportedOnCurrentPlatform: Bool { get }
@@ -162,6 +175,7 @@ public protocol SystemLiveActivityDriver: AnyObject {
     var activeActivityID: String? { get }
     var latestPushTokenHex: String? { get }
     var selectedRotationIndex: Int { get set }
+    var currentSnapshot: MonitoringSnapshot? { get }
 
     func startActivity(
         sourceID: String,
@@ -180,6 +194,21 @@ public protocol SystemLiveActivityDriver: AnyObject {
     func updateActivity(activityID: String, snapshot: MonitoringSnapshot) async throws
     func endActivity(activityID: String, immediate: Bool) async
     func detachActivity()
+    func currentActivities() -> [LocalLiveActivityDescriptor]
+    func observeAuthorizationChanges(_ onChange: @escaping @MainActor (Bool) -> Void)
+    func setContentUpdateHandler(_ onChange: @escaping @MainActor (String, MonitoringSnapshot) -> Void)
+    func stopObservingAuthorizationChanges()
+}
+
+/// Defaults preserve the injectable driver contract used by existing test clients.
+public extension SystemLiveActivityDriver {
+    var currentSnapshot: MonitoringSnapshot? { nil }
+    func currentActivities() -> [LocalLiveActivityDescriptor] { [] }
+    func observeAuthorizationChanges(_ onChange: @escaping @MainActor (Bool) -> Void) {
+        onChange(areActivitiesEnabled)
+    }
+    func setContentUpdateHandler(_ onChange: @escaping @MainActor (String, MonitoringSnapshot) -> Void) {}
+    func stopObservingAuthorizationChanges() {}
 }
 
 @MainActor
@@ -206,7 +235,15 @@ public final class MonitoringWorkspaceCoordinator {
     public private(set) var isSessionActionInProgress = false
     public private(set) var isRotatingToken = false
     public private(set) var isLoadingCachedQuota = false
+    public private(set) var activitiesEnabled = false
+    public private(set) var localActivitySnapshot: MonitoringSnapshot?
+    public private(set) var localActivities: [LocalLiveActivityDescriptor] = []
+    public private(set) var unassociatedActivities: [LocalLiveActivityDescriptor] = []
+    public private(set) var isEndingLocalActivity = false
+    public private(set) var isReconcilingSystemState = false
     public var isBusy: Bool { isChangingBridge || isSessionActionInProgress || isRotatingToken || isLoadingCachedQuota }
+    public var localActivityID: String? { attachedActivityID }
+    public var isSystemActivitySupported: Bool { liveActivityDriver.isSupportedOnCurrentPlatform }
 
     public var bridgeURLDraft = ""
     public var bridgeTokenDraft = ""
@@ -267,7 +304,8 @@ public final class MonitoringWorkspaceCoordinator {
     @ObservationIgnored private var latestToken: TokenUpdate?
     @ObservationIgnored private var acknowledgedToken: String?
     @ObservationIgnored private var blockedToken: String?
-    @ObservationIgnored private var attachedActivityID: String?
+    private var attachedActivityID: String?
+    @ObservationIgnored private var isObservingSystemChanges = false
     @ObservationIgnored private var detachedConnections: [UUID: Connection] = [:]
 
     public init(
@@ -282,11 +320,152 @@ public final class MonitoringWorkspaceCoordinator {
         self.metadataStore = metadataStore
         self.clientFactory = clientFactory
         self.liveActivityDriver = liveActivityDriver ?? DefaultSystemLiveActivityDriver()
+        self.activitiesEnabled = self.liveActivityDriver.areActivitiesEnabled
         persistedRecords = metadataStore.loadPersistedRecords()
         bridgeURLDraft = metadataStore.loadSavedBridgeAddress() ?? ""
     }
 
+    /// Install once at app bootstrap, independently of the selected tab.
+    public func beginSystemActivityObservation() {
+        activitiesEnabled = liveActivityDriver.areActivitiesEnabled
+        guard !isObservingSystemChanges else { return }
+        isObservingSystemChanges = true
+        liveActivityDriver.observeAuthorizationChanges { [weak self] enabled in
+            self?.activitiesEnabled = enabled
+        }
+        liveActivityDriver.setContentUpdateHandler { [weak self] activityID, snapshot in
+            guard let self, self.attachedActivityID == activityID else { return }
+            // APNs content is a display snapshot, not an HTTP session/revision
+            // receipt. Do not mutate MonitoringStore or its cancellation state.
+            if let previous = self.localActivitySnapshot, snapshot.sequence < previous.sequence { return }
+            self.localActivitySnapshot = snapshot
+        }
+    }
+
+    /// Call when the application scene becomes active. Coalesces overlapping
+    /// activations and never starts a replacement Activity or guesses ownership.
+    public func handleSceneActivation() async {
+        beginSystemActivityObservation()
+        guard !isReconcilingSystemState else { return }
+        isReconcilingSystemState = true
+        defer {
+            refreshLocalActivityInventory()
+            isReconcilingSystemState = false
+        }
+        if connection == nil {
+            await restoreBridgeIfAvailable()
+        } else if !isBusy {
+            if store?.sessionID != nil || pendingIntent?.wasSubmitted == true {
+                await reconcileCurrentSession()
+            } else if pendingIntent == nil {
+                await restoreMatchingRecord()
+            }
+        }
+        if let id = attachedActivityID, liveActivityDriver.activeActivityID == id {
+            localActivitySnapshot = liveActivityDriver.currentSnapshot
+        }
+    }
+
+    public func applicationDidBecomeActive() async {
+        await handleSceneActivation()
+    }
+
+    /// The link contains only a safe source alias, not a credential or remote
+    /// session ID. It can select a record only when ownership is unambiguous.
+    public func openSourceFromDeepLink(_ sourceID: String) async {
+        guard (try? CPAQuotaActivityAttributes(sourceID: sourceID)) != nil else {
+            bridgeFormError = "无法识别此监控链接。"
+            return
+        }
+        guard pendingIntent == nil, !isBusy else {
+            bridgeStatusNotice = "请先完成或取消当前操作，再从恢复记录选择此来源。"
+            return
+        }
+        let sourceRecords = persistedRecords.filter { $0.sourceID == sourceID && !isConfirmedTerminal($0) }
+        guard let context = connection, sourceRecords.count == 1,
+              let record = sourceRecords.first, matches(record, context) else {
+            bridgeStatusNotice = "请在监控恢复记录中选择原服务与会话。此链接只标识来源，未自动绑定凭据或启动监控。"
+            return
+        }
+        await loadPersistedRecord(record)
+    }
+
+    public func refreshLocalActivityInventory() {
+        activitiesEnabled = liveActivityDriver.areActivitiesEnabled
+        let activities = liveActivityDriver.currentActivities()
+        localActivities = activities
+        unassociatedActivities = activities.filter { activity in
+            activity.id != attachedActivityID && !persistedRecords.contains {
+                $0.activityID == activity.id && $0.sourceID == activity.sourceID
+            }
+        }
+        // Known records on a different bridge stay in recovery history. Their
+        // presence is not permission to bind them to the current credential.
+    }
+
+    /// End only this device's system presentation. Remote cancellation is a
+    /// separate action and remains available even when the bridge is offline.
+    public func stopLocalActivityDisplay() async {
+        guard !isEndingLocalActivity,
+              let activityID = attachedActivityID ?? liveActivityDriver.activeActivityID else { return }
+        let expectedConnectionGeneration = connectionGeneration
+        let expectedConfigurationGeneration = configurationGeneration
+        isEndingLocalActivity = true
+        defer { isEndingLocalActivity = false; refreshLocalActivityInventory() }
+        if let intent = pendingIntent, !intent.wasSubmitted, intent.activityID == activityID,
+           let context = connection {
+            removeRecord(id: intent.id, context: context)
+            clearPendingIntent()
+        }
+        latestToken = nil
+        blockedToken = nil
+        tokenTask?.cancel()
+        tokenTask = nil
+        tokenWorkID = nil
+        isRotatingToken = false
+        if attachedActivityID == activityID {
+            attachedActivityID = nil
+            localActivitySnapshot = nil
+        }
+        await liveActivityDriver.endActivity(activityID: activityID, immediate: true)
+        if attachedActivityID == activityID {
+            attachedActivityID = nil
+            localActivitySnapshot = nil
+        }
+        guard connectionGeneration == expectedConnectionGeneration,
+              configurationGeneration == expectedConfigurationGeneration,
+              attachedActivityID == nil else { return }
+        bridgeStatusNotice = "已停止本机实时活动显示。远端监控未因此取消；如需结束采集，请另选“停止监控”。"
+    }
+
+    /// Explicit user cleanup for the request-success/persist-ID crash window.
+    /// There is no automatic association or remote action for these activities.
+    public func endUnassociatedActivity(_ descriptor: LocalLiveActivityDescriptor) async {
+        guard liveActivityDriver.currentActivities().contains(descriptor),
+              !persistedRecords.contains(where: {
+                  $0.activityID == descriptor.id && $0.sourceID == descriptor.sourceID
+              }), attachedActivityID != descriptor.id else { return }
+        await liveActivityDriver.endActivity(activityID: descriptor.id, immediate: true)
+        refreshLocalActivityInventory()
+        bridgeStatusNotice = "已关闭未关联的本机实时活动；没有推测或更改任何远端会话。"
+    }
+
+    /// Explicit cleanup remains possible after forgetting a bridge credential.
+    /// The ID must still exist in this app's system-owned inventory.
+    public func endLocalActivity(_ descriptor: LocalLiveActivityDescriptor) async {
+        guard liveActivityDriver.currentActivities().contains(descriptor) else { return }
+        if descriptor.id == attachedActivityID {
+            await stopLocalActivityDisplay()
+            return
+        }
+        await liveActivityDriver.endActivity(activityID: descriptor.id, immediate: true)
+        refreshLocalActivityInventory()
+        bridgeStatusNotice = "已停止此本机实时活动显示。原远端监控与恢复记录保持不变。"
+    }
+
     public func restoreBridgeIfAvailable() async {
+        beginSystemActivityObservation()
+        defer { refreshLocalActivityInventory() }
         guard connection == nil, !isChangingBridge,
               let saved = metadataStore.loadSavedBridgeAddress(),
               let url = URL(string: saved), let address = try? MonitorBridgeAddress(baseURL: url) else { return }
@@ -472,9 +651,14 @@ public final class MonitoringWorkspaceCoordinator {
     public func addAccountIDDraft(_ rawID: String) {
         let id = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty, !selectedAccountIDsDraft.contains(id) else { return }
+        guard Self.isValidAccountSelection(id) else {
+            bridgeFormError = "账号标识格式无效，请使用监控服务授权的原标识。"
+            return
+        }
         guard selectedAccountIDsDraft.count < 5 else { bridgeFormError = "单次监控最多选择 5 个授权账号。"; return }
         selectedAccountIDsDraft.append(id)
         newAccountIDDraft = ""
+        bridgeFormError = nil
     }
 
     public func removeAccountIDDraft(_ id: String) { selectedAccountIDsDraft.removeAll { $0 == id } }
@@ -490,7 +674,10 @@ public final class MonitoringWorkspaceCoordinator {
                 return
             }
             let source = sourceIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !source.isEmpty, (1...5).contains(selectedAccountIDsDraft.count) else {
+            guard (try? CPAQuotaActivityAttributes(sourceID: source)) != nil,
+                  (1...5).contains(selectedAccountIDsDraft.count),
+                  Set(selectedAccountIDsDraft).count == selectedAccountIDsDraft.count,
+                  selectedAccountIDsDraft.allSatisfy(Self.isValidAccountSelection) else {
                 bridgeFormError = "请填写授权 Source ID 并选择 1–5 个账号。"
                 return
             }
@@ -544,6 +731,7 @@ public final class MonitoringWorkspaceCoordinator {
                         return
                     }
                     attachedActivityID = result.activityID
+                    localActivitySnapshot = liveActivityDriver.currentSnapshot
                     // A callback may run before this continuation. Keep the newer observed token.
                     if latestToken?.sessionID != intent.id || latestToken?.activityID != result.activityID {
                         latestToken = result.initialPushTokenHex.map {
@@ -698,6 +886,7 @@ public final class MonitoringWorkspaceCoordinator {
             if let activityID { await liveActivityDriver.endActivity(activityID: activityID, immediate: true) }
             guard isCurrent(context, operation) else { return }
             attachedActivityID = nil
+            localActivitySnapshot = nil
             bridgeStatusNotice = "已取消本次本地启动；尚未发出远端注册请求。"
             return
         }
@@ -714,6 +903,7 @@ public final class MonitoringWorkspaceCoordinator {
             if let activityID { await liveActivityDriver.endActivity(activityID: activityID, immediate: true) }
             guard isCurrent(context, operation) else { return }
             attachedActivityID = nil
+            localActivitySnapshot = nil
             bridgeStatusNotice = "原桥接已确认终态或持久取消意图；本地绑定活动已结束。该回执不证明 APNs end 已送达。"
         } else {
             bridgeStatusNotice = "停止结果未确认，已保留原 UUID；404、超时或 507 均不代表停止成功。"
@@ -835,6 +1025,7 @@ public final class MonitoringWorkspaceCoordinator {
     public func handleUserDismissedActivity(activityID: String) {
         guard attachedActivityID == activityID else { return }
         attachedActivityID = nil
+        localActivitySnapshot = nil
         latestToken = nil
         tokenTask?.cancel()
         tokenTask = nil
@@ -911,6 +1102,12 @@ public final class MonitoringWorkspaceCoordinator {
         return id
     }
 
+    nonisolated private static func isValidAccountSelection(_ id: String) -> Bool {
+        !id.isEmpty && id.utf8.count <= 128 && id.unicodeScalars.allSatisfy {
+            CharacterSet.alphanumerics.contains($0) || "_-@.".unicodeScalars.contains($0)
+        }
+    }
+
     private func finishOperation(_ id: UUID) {
         guard operationID == id else { return }
         operationID = nil
@@ -946,6 +1143,7 @@ public final class MonitoringWorkspaceCoordinator {
         acknowledgedToken = nil
         blockedToken = nil
         attachedActivityID = nil
+        localActivitySnapshot = nil
         liveActivityDriver.detachActivity()
         clearPendingIntent()
     }
@@ -959,6 +1157,7 @@ public final class MonitoringWorkspaceCoordinator {
             await liveActivityDriver.endActivity(activityID: session.activityID, immediate: true)
             guard isCurrent(context, operation) else { return }
             attachedActivityID = nil
+            localActivitySnapshot = nil
             latestToken = nil
         } else {
             do {
@@ -967,6 +1166,7 @@ public final class MonitoringWorkspaceCoordinator {
                     onSystemDismissed: dismissalCallback(context: context))
                 guard isCurrent(context, operation) else { return }
                 attachedActivityID = restored?.activityID == liveActivityDriver.activeActivityID ? restored?.activityID : nil
+                localActivitySnapshot = attachedActivityID == nil ? nil : liveActivityDriver.currentSnapshot
                 // The observer may have advanced since restore captured its return value.
                 // Read the driver's current token only after confirming the exact active ID.
                 if let activityID = attachedActivityID, let token = liveActivityDriver.latestPushTokenHex {

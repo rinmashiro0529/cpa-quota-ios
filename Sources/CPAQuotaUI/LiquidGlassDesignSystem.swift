@@ -11,7 +11,7 @@ extension CPAThemeMode {
     }
 }
 
-public struct LiquidGlassPalette: Sendable {
+public struct BrandPalette: Sendable {
     public let colorScheme: ColorScheme
 
     public init(colorScheme: ColorScheme) {
@@ -22,7 +22,7 @@ public struct LiquidGlassPalette: Sendable {
         colorScheme == .dark
     }
 
-    // Claude Warm Parchment (Light) vs Warm Obsidian (Dark)
+    // Original brand values: warm parchment and warm obsidian.
     public var canvasBase: Color {
         isDark
             ? Color(red: 0.075, green: 0.071, blue: 0.067) // #131211
@@ -47,11 +47,33 @@ public struct LiquidGlassPalette: Sendable {
             : Color(red: 0.580, green: 0.561, blue: 0.529) // #948F87
     }
 
-    // Claude Terracotta Accent
+    // Preserve the original terracotta in both appearances.
     public var accent: Color {
         isDark
             ? Color(red: 0.886, green: 0.502, blue: 0.376) // #E28060
             : Color(red: 0.824, green: 0.427, blue: 0.298) // #D26D4C
+    }
+
+    public var actionTint: Color { accent }
+
+    /// The original dark brand ink stays readable on either terracotta tint.
+    /// Dark appearance's light textPrimary is intended for dark content surfaces,
+    /// not for a prominent control filled with the lighter accent.
+    public var textOnAccent: Color {
+        Color(red: 0.094, green: 0.090, blue: 0.082)
+    }
+
+    /// Opaque content surfaces, deliberately separate from the system control layer.
+    public var contentSurface: Color {
+        isDark
+            ? Color(red: 0.145, green: 0.137, blue: 0.125)
+            : Color(red: 1.000, green: 0.992, blue: 0.976)
+    }
+
+    public var insetSurface: Color {
+        isDark
+            ? Color(red: 0.180, green: 0.173, blue: 0.161)
+            : Color(red: 0.941, green: 0.922, blue: 0.886)
     }
 
     public var accentSoft: Color {
@@ -80,138 +102,134 @@ public struct LiquidGlassPalette: Sendable {
         isDark ? Color.white.opacity(0.11) : Color.black.opacity(0.08)
     }
 
-    public var cardTintOverlay: Color {
-        isDark
-            ? Color(red: 0.145, green: 0.137, blue: 0.125).opacity(0.56)
-            : Color(red: 1.000, green: 0.992, blue: 0.976).opacity(0.62)
-    }
 
-    public var pillTintOverlay: Color {
-        isDark
-            ? Color(red: 0.180, green: 0.173, blue: 0.161).opacity(0.70)
-            : Color(red: 0.941, green: 0.922, blue: 0.886).opacity(0.74)
-    }
-
-    public var specularRimGradient: LinearGradient {
-        LinearGradient(
-            colors: isDark
-                ? [Color.white.opacity(0.22), Color.white.opacity(0.06), Color.white.opacity(0.03)]
-                : [Color.white.opacity(0.95), Color.white.opacity(0.45), Color.black.opacity(0.08)],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
-    }
 }
 
-public struct AmbientGlassCanvasBackground: View {
+/// A content canvas, not a substitute for Liquid Glass. It remains readable
+/// under Reduce Transparency and does not add decorative continuous rendering.
+public struct BrandCanvasBackground: View {
     @Environment(\.colorScheme) private var colorScheme
 
     public init() {}
 
     public var body: some View {
-        let palette = LiquidGlassPalette(colorScheme: colorScheme)
-        ZStack {
-            palette.canvasBase
-                .ignoresSafeArea()
-
-            GeometryReader { proxy in
-                let width = proxy.size.width
-                let height = proxy.size.height
-
-                Circle()
-                    .fill(palette.accent.opacity(palette.isDark ? 0.16 : 0.12))
-                    .frame(width: width * 0.78, height: width * 0.78)
-                    .blur(radius: 64)
-                    .offset(x: -width * 0.22, y: -height * 0.08)
-
-                Circle()
-                    .fill(
-                        (palette.isDark
-                            ? Color(red: 0.45, green: 0.36, blue: 0.28)
-                            : Color(red: 0.72, green: 0.64, blue: 0.50))
-                            .opacity(palette.isDark ? 0.15 : 0.16)
-                    )
-                    .frame(width: width * 0.72, height: width * 0.72)
-                    .blur(radius: 72)
-                    .offset(x: width * 0.36, y: height * 0.18)
-
-                Circle()
-                    .fill(
-                        Color(red: 0.32, green: 0.48, blue: 0.62)
-                            .opacity(palette.isDark ? 0.12 : 0.08)
-                    )
-                    .frame(width: width * 0.80, height: width * 0.80)
-                    .blur(radius: 80)
-                    .offset(x: width * 0.05, y: height * 0.62)
-            }
+        BrandPalette(colorScheme: colorScheme).canvasBase
             .ignoresSafeArea()
-        }
+            .accessibilityHidden(true)
     }
 }
 
-public struct LiquidGlassCardModifier: ViewModifier {
+public enum QuotaTypography {
+    public static var brandTitle: Font { .system(.title2, design: .serif).weight(.semibold) }
+    public static var brandHeadline: Font { .system(.headline, design: .serif) }
+    public static var data: Font { .system(.body, design: .monospaced) }
+    public static var dataDetail: Font { .system(.subheadline, design: .monospaced) }
+}
+
+public struct QuotaContentSurfaceModifier: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
     public let cornerRadius: CGFloat
     public let prominent: Bool
 
-    public init(cornerRadius: CGFloat = 26, prominent: Bool = false) {
+    public init(cornerRadius: CGFloat = 20, prominent: Bool = false) {
         self.cornerRadius = cornerRadius
         self.prominent = prominent
     }
 
     public func body(content: Content) -> some View {
-        let palette = LiquidGlassPalette(colorScheme: colorScheme)
+        let palette = BrandPalette(colorScheme: colorScheme)
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         content
-            .background {
-                ZStack {
-                    shape.fill(prominent ? .regularMaterial : .ultraThinMaterial)
-                    shape.fill(palette.cardTintOverlay)
-                }
-                .shadow(
-                    color: Color.black.opacity(palette.isDark ? 0.42 : 0.07),
-                    radius: prominent ? 22 : 14,
-                    x: 0,
-                    y: prominent ? 10 : 6
-                )
-            }
+            .background(palette.contentSurface, in: shape)
             .overlay {
-                shape.strokeBorder(palette.specularRimGradient, lineWidth: 1)
+                shape.strokeBorder(
+                    contrast == .increased ? palette.textSecondary : palette.trackBackground,
+                    lineWidth: contrast == .increased || prominent ? 1 : 0.5
+                )
+                .allowsHitTesting(false)
             }
     }
 }
 
-public struct LiquidGlassPillModifier: ViewModifier {
+private struct QuotaPrimaryButtonStyleModifier: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
-    public let cornerRadius: CGFloat
 
-    public init(cornerRadius: CGFloat = 18) {
-        self.cornerRadius = cornerRadius
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        let palette = BrandPalette(colorScheme: colorScheme)
+        if #available(iOS 26.0, macOS 26.0, *) {
+            content
+                .buttonStyle(.glassProminent)
+                .tint(palette.actionTint)
+                .foregroundStyle(palette.textOnAccent)
+                .controlSize(.large)
+        } else {
+            // The original accent is retained. A readable foreground on a
+            // bordered control avoids imposing low-contrast white-on-accent.
+            content
+                .buttonStyle(.bordered)
+                .tint(palette.actionTint)
+                .foregroundStyle(palette.textPrimary)
+                .controlSize(.large)
+        }
+    }
+}
+
+private struct QuotaSecondaryButtonStyleModifier: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        let palette = BrandPalette(colorScheme: colorScheme)
+        if #available(iOS 26.0, macOS 26.0, *) {
+            content
+                .buttonStyle(.glass)
+                .controlSize(.large)
+        } else {
+            content
+                .buttonStyle(.bordered)
+                .foregroundStyle(palette.textPrimary)
+                .controlSize(.large)
+        }
+    }
+}
+
+/// Groups nearby glass controls; callers own layout and may switch to VStack
+/// for large Dynamic Type. Do not wrap dashboard cards or a complete page.
+public struct NativeGlassActionGroup<Content: View>: View {
+    private let spacing: CGFloat
+    private let content: Content
+
+    public init(spacing: CGFloat = 12, @ViewBuilder content: () -> Content) {
+        self.spacing = spacing
+        self.content = content()
     }
 
-    public func body(content: Content) -> some View {
-        let palette = LiquidGlassPalette(colorScheme: colorScheme)
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        content
-            .background {
-                ZStack {
-                    shape.fill(.ultraThinMaterial)
-                    shape.fill(palette.pillTintOverlay)
-                }
+    @ViewBuilder
+    public var body: some View {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            GlassEffectContainer(spacing: spacing) {
+                content
             }
-            .overlay {
-                shape.strokeBorder(palette.specularRimGradient, lineWidth: 0.8)
-            }
+        } else {
+            content
+        }
     }
 }
 
 extension View {
-    public func liquidGlassCard(cornerRadius: CGFloat = 26, prominent: Bool = false) -> some View {
-        modifier(LiquidGlassCardModifier(cornerRadius: cornerRadius, prominent: prominent))
+    public func quotaContentSurface(cornerRadius: CGFloat = 20, prominent: Bool = false) -> some View {
+        modifier(QuotaContentSurfaceModifier(cornerRadius: cornerRadius, prominent: prominent))
     }
 
-    public func liquidGlassPill(cornerRadius: CGFloat = 18) -> some View {
-        modifier(LiquidGlassPillModifier(cornerRadius: cornerRadius))
+    public func quotaPrimaryButtonStyle() -> some View {
+        modifier(QuotaPrimaryButtonStyleModifier())
+    }
+
+    public func quotaSecondaryButtonStyle() -> some View {
+        modifier(QuotaSecondaryButtonStyleModifier())
     }
 }
+
 #endif

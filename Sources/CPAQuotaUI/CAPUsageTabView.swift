@@ -6,774 +6,334 @@ public struct CAPUsageTabView: View {
     @Bindable public var session: CPAQuotaSession
     @Environment(\.colorScheme) private var colorScheme
     @State private var selectedSection: DetailSection = .models
-    @State private var groupPageSize: Int = 50
-    @State private var requestPageSize: Int = 50
+    @State private var groupPageSize = 50
+    @State private var requestPageSize = 50
 
     public enum DetailSection: String, CaseIterable, Identifiable {
         case models = "近30m模型概览"
         case details = "趋势·分组·费用"
         case requests = "请求明细页"
         case management = "管理统计对比"
-
         public var id: String { rawValue }
     }
 
-    public init(session: CPAQuotaSession) {
-        self.session = session
+    public init(session: CPAQuotaSession) { self.session = session }
+
+    private var coordinator: CAPUsageWorkspaceCoordinator { session.capUsageCoordinator }
+    private var palette: BrandPalette { BrandPalette(colorScheme: colorScheme) }
+    private var isBusy: Bool {
+        coordinator.store?.isRefreshing == true || coordinator.store?.isLoadingDetails == true ||
+        coordinator.isLoadingRequestPage || coordinator.isLoadingManagementStats
+    }
+    private var displayedWindow: CAPUsageWindow {
+        switch selectedSection {
+        case .models: coordinator.overviewPresentation?.snapshot.window ?? coordinator.activeWindow
+        case .details: coordinator.analyticsPresentation?.snapshot.window ?? coordinator.activeWindow
+        case .requests: coordinator.requestPagePresentation?.window ?? coordinator.activeWindow
+        case .management: coordinator.managementPresentation?.window ?? coordinator.activeWindow
+        }
     }
 
     public var body: some View {
-        let palette = LiquidGlassPalette(colorScheme: colorScheme)
-        let coordinator = session.capUsageCoordinator
-        let store = coordinator.store
-
-        VStack(alignment: .leading, spacing: 16) {
-            headerAndControlCard(coordinator: coordinator, store: store, palette: palette)
-
-            if let error = store?.error {
-                let desc = CAPUsagePresentation.errorDescription(error)
-                errorBanner(title: desc.title, detail: desc.detail, hasPreservedData: store?.snapshot != nil, palette: palette)
-            }
-
-            sectionPicker(palette: palette)
-
-            switch selectedSection {
-            case .models:
-                modelsOverviewSection(coordinator: coordinator, store: store, palette: palette)
-            case .details:
-                detailsAnalyticsSection(coordinator: coordinator, store: store, palette: palette)
-            case .requests:
-                requestPageSection(coordinator: coordinator, palette: palette)
-            case .management:
-                managementStatsSection(coordinator: coordinator, palette: palette)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func headerAndControlCard(
-        coordinator: CAPUsageWorkspaceCoordinator,
-        store: CAPUsageStore?,
-        palette: LiquidGlassPalette
-    ) -> some View {
-        let activeWindow = store?.snapshot?.window ?? coordinator.activeWindow
-
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("CAP Token 用量与严格加权 TPS")
-                        .font(.system(size: 20, weight: .bold))
-                        .foregroundStyle(palette.textPrimary)
-                    Text(CAPUsagePresentation.windowBadgeText(activeWindow))
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(palette.accent)
+        List {
+            controls
+            if coordinator.store == nil {
+                Section {
+                    CAPEmptyState(title: "连接服务后查看用量", systemImage: "chart.bar.xaxis",
+                        detail: "请在连接页面配置 CPA 服务。这里不会自动加载数据或改变资源访问权限。")
                 }
-                Spacer()
-                if store?.isRefreshing == true || store?.isLoadingDetails == true || coordinator.isLoadingRequestPage || coordinator.isLoadingManagementStats {
-                    Button {
-                        coordinator.cancelAll()
-                    } label: {
-                        HStack(spacing: 4) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("取消读取")
-                                .font(.system(size: 11, weight: .semibold))
-                        }
-                        .foregroundStyle(palette.statusError)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .liquidGlassPill(cornerRadius: 12)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("CAP 资源接口鉴权模式（显式选择，绝不自动降级或偷偷重发管理密钥）")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(palette.textSecondary)
-
-                HStack(spacing: 8) {
-                    accessModeButton(
-                        title: "匿名资源 (.anonymous)",
-                        mode: .anonymous,
-                        coordinator: coordinator,
-                        palette: palette
-                    )
-                    accessModeButton(
-                        title: "管理密钥 (.managementKey)",
-                        mode: .managementKey,
-                        coordinator: coordinator,
-                        palette: palette
-                    )
-                }
-            }
-
-            HStack(spacing: 8) {
-                Button {
-                    Task { await coordinator.refreshOverview() }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "arrow.clockwise")
-                        Text("刷新 30m 概览")
-                    }
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(palette.accent)
-                    )
-                }
-                .buttonStyle(.plain)
-                .disabled(store == nil)
-
-                Button {
-                    Task { await coordinator.refreshDetails(groupOffset: 0, groupLimit: groupPageSize) }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "chart.xyaxis.line")
-                        Text("加载四端点详情")
-                    }
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(palette.accent)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .liquidGlassPill(cornerRadius: 14)
-                }
-                .buttonStyle(.plain)
-                .disabled(store == nil)
-            }
-
-            Text("口径说明：生成 TPS = 有效输出 Token 总和 ÷ 有效生成时长 (latency_ns − ttft_ns) 总和；非单请求算术平均，亦非除以 1800 秒窗口。同名模型按不同 provider 与 stream 独立分组。")
-                .font(.system(size: 10))
-                .foregroundStyle(palette.textMuted)
-                .lineSpacing(1.5)
-        }
-        .padding(16)
-        .liquidGlassCard(cornerRadius: 24)
-    }
-
-    @ViewBuilder
-    private func accessModeButton(
-        title: String,
-        mode: CAPUsageResourceAccess,
-        coordinator: CAPUsageWorkspaceCoordinator,
-        palette: LiquidGlassPalette
-    ) -> some View {
-        let isSelected = coordinator.resourceAccess.isSameMode(as: mode)
-        Button {
-            coordinator.resourceAccess = mode
-        } label: {
-            Text(title)
-                .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
-                .foregroundStyle(isSelected ? Color.white : palette.textSecondary)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 7)
-                .background {
-                    if isSelected {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(palette.accent)
-                    }
-                }
-        }
-        .buttonStyle(.plain)
-        .liquidGlassPill(cornerRadius: 10)
-    }
-
-    @ViewBuilder
-    private func sectionPicker(palette: LiquidGlassPalette) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(DetailSection.allCases) { sec in
-                    let isSelected = selectedSection == sec
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.18)) {
-                            selectedSection = sec
-                        }
-                    } label: {
-                        Text(sec.rawValue)
-                            .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
-                            .foregroundStyle(isSelected ? Color.white : palette.textSecondary)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 7)
-                            .background {
-                                if isSelected {
-                                    Capsule(style: .continuous).fill(palette.accent)
-                                } else {
-                                    Capsule(style: .continuous).fill(palette.pillTintOverlay)
-                                }
-                            }
-                    }
-                    .buttonStyle(.plain)
+            } else {
+                switch selectedSection {
+                case .models: modelsSection
+                case .details: analyticsSection
+                case .requests: requestsSection
+                case .management: managementSection
                 }
             }
         }
-    }
-
-    @ViewBuilder
-    private func modelsOverviewSection(
-        coordinator: CAPUsageWorkspaceCoordinator,
-        store: CAPUsageStore?,
-        palette: LiquidGlassPalette
-    ) -> some View {
-        if let snapshot = store?.snapshot {
-            let overallSummary = CAPUsageAggregation.summarize(snapshot.requests.items)
-            VStack(alignment: .leading, spacing: 14) {
-                completenessCard(
-                    completeness: snapshot.requests.completeness,
-                    itemCount: snapshot.requests.items.count,
-                    overallSummary: overallSummary,
-                    palette: palette
-                )
-
-                if snapshot.models.isEmpty {
-                    emptyCard(
-                        title: "当前 30 分钟窗口内无请求记录",
-                        subtitle: "截至 \(CAPUsagePresentation.windowBadgeText(snapshot.window)) 暂未捕获模型调用记录。",
-                        palette: palette
-                    )
+        .capPageStyle()
+        .environment(\.capMasksEmail, session.maskEmail)
+        .navigationTitle("用量")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                if isBusy {
+                    Button("取消读取", systemImage: "xmark") { coordinator.cancelAll() }
+                        .accessibilityIdentifier("cap.cancel")
                 } else {
-                    ForEach(Array(snapshot.models.enumerated()), id: \.offset) { _, item in
-                        modelSummaryCard(item: item, palette: palette)
+                    Button("刷新当前栏目", systemImage: "arrow.clockwise") {
+                        Task { await refreshCurrentSection() }
                     }
+                    .disabled(coordinator.store == nil)
+                    .accessibilityIdentifier("cap.refresh")
+                }
+            }
+        }
+        .refreshable { await refreshCurrentSection() }
+    }
+
+    private var controls: some View {
+        Section {
+            Picker("栏目", selection: $selectedSection) {
+                ForEach(DetailSection.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.menu)
+            .accessibilityIdentifier("cap.sectionPicker")
+            CAPValueRow(title: "查询窗口", value: CAPUsagePresentation.windowBadgeText(displayedWindow))
+            if isBusy {
+                Label { Text("正在读取，已显示的数据仍属于原窗口。") } icon: { ProgressView() }
+                    .font(.subheadline)
+                    .accessibilityElement(children: .combine)
+            }
+            DisclosureGroup("访问方式与统计口径") {
+                Picker("资源访问", selection: Binding(
+                    get: { coordinator.resourceAccess.isSameMode(as: .managementKey) },
+                    set: { coordinator.resourceAccess = $0 ? .managementKey : .anonymous }
+                )) {
+                    Text("匿名").tag(false)
+                    Text("管理密钥").tag(true)
+                }
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("cap.resourceAccess")
+                Text("资源请求只使用你选定的权限；失败时不会自动附加管理密钥。管理统计始终使用管理权限。切换方式会清除原资源快照。")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Text("生成 TPS 按有效输出 Token 总和 ÷ 有效生成时长总和计算；生成时长为 latency − TTFT。它不是单次速度的平均，也不除以 30 分钟窗口。同名模型的不同平台与流式模式分别统计。")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Text("窗口截至最后完整分钟。缺失字段保持未知；失败请求可保留部分用量，但不计入成功生成 TPS。分页到末页也不能证明跨页是数据库原子快照。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder private var modelsSection: some View {
+        if let error = coordinator.store?.error {
+            Section { CAPErrorNotice(error: error, preservesData: coordinator.overviewPresentation != nil) }
+        }
+        if let presentation = coordinator.overviewPresentation {
+            let snapshot = presentation.snapshot
+            Section("窗口概览") {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Image(systemName: snapshot.requests.completeness == .singlePage ? "checkmark.circle" : "exclamationmark.circle")
+                        .accessibilityHidden(true)
+                    Text(CAPUsagePresentation.completenessTitle(snapshot.requests.completeness))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("cap.overview.loaded")
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(snapshot.requests.completeness == .singlePage ? palette.statusOK : palette.statusWarn)
+                Text(CAPUsagePresentation.completenessSubtitle(snapshot.requests.completeness,
+                    itemCount: snapshot.requests.items.count))
+                    .font(.footnote).foregroundStyle(.secondary)
+                CAPSummaryRows(summary: presentation.summary)
+                NavigationLink("全部窗口计数与样本") {
+                    CAPSummaryDetailView(title: "窗口统计", summary: presentation.summary, window: snapshot.window)
+                }
+            }
+            Section("模型 · 平台 · 流式模式") {
+                if presentation.models.isEmpty {
+                    CAPEmptyState(title: "当前窗口没有请求", systemImage: "tray",
+                        detail: "此结果仅对应显示的查询窗口。")
+                }
+                ForEach(presentation.models) { item in
+                    NavigationLink {
+                        CAPModelDetailView(item: item.value, window: snapshot.window)
+                    } label: { CAPModelRow(item: item.value) }
                 }
             }
         } else {
-            emptyCard(
-                title: "尚未加载近 30 分钟 CAP 概览",
-                subtitle: "点击上方「刷新 30m 概览」按当前连接获取截至最后完整分钟的请求集合与模型加权 TPS。切换标签不会自动发起全量请求风暴。",
-                palette: palette
-            )
-        }
-    }
-
-    @ViewBuilder
-    private func completenessCard(
-        completeness: CAPUsageCompleteness,
-        itemCount: Int,
-        overallSummary: CAPUsageSummary,
-        palette: LiquidGlassPalette
-    ) -> some View {
-        let badgeTint: Color = {
-            switch completeness {
-            case .singlePage: return palette.statusOK
-            case .offsetUnverified: return palette.accent
-            case .truncated: return palette.statusWarn
-            }
-        }()
-
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(CAPUsagePresentation.completenessTitle(completeness))
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(badgeTint)
-                Spacer()
-                Text("已获取 \(itemCount) 条记录")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(palette.textSecondary)
-            }
-
-            Text(CAPUsagePresentation.completenessSubtitle(completeness, itemCount: itemCount))
-                .font(.system(size: 11))
-                .foregroundStyle(palette.textSecondary)
-                .lineSpacing(1.5)
-
-            Divider().overlay(palette.trackBackground)
-
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                counterMetricPill(label: "窗口加权生成 TPS", value: CAPUsagePresentation.generationTPSText(overallSummary), palette: palette)
-                counterMetricPill(label: "生成 TPS 样本覆盖", value: CAPUsagePresentation.generationCoverageText(overallSummary), palette: palette)
-                counterMetricPill(label: "窗口端到端速度", value: CAPUsagePresentation.endToEndTPSText(overallSummary), palette: palette)
-                counterMetricPill(label: "总请求 / 失败请求", value: "\(CAPUsagePresentation.formatCounter(overallSummary.counters.requests)) / \(CAPUsagePresentation.formatCounter(overallSummary.counters.failedRequests))", palette: palette)
-                counterMetricPill(label: "输入 / 输出 Token", value: "\(CAPUsagePresentation.formatCounter(overallSummary.counters.inputTokens)) / \(CAPUsagePresentation.formatCounter(overallSummary.counters.outputTokens))", palette: palette)
-                counterMetricPill(label: "Reasoning / 总 Token", value: "\(CAPUsagePresentation.formatCounter(overallSummary.counters.reasoningTokens)) / \(CAPUsagePresentation.formatCounter(overallSummary.counters.totalTokens))", palette: palette)
-            }
-        }
-        .padding(15)
-        .liquidGlassCard(cornerRadius: 22)
-    }
-
-    @ViewBuilder
-    private func modelSummaryCard(item: CAPUsageModelSummary, palette: LiquidGlassPalette) -> some View {
-        let summary = item.summary
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(item.model ?? "未知模型 (nil)")
-                        .font(.system(size: 14, weight: .bold, design: .monospaced))
-                        .foregroundStyle(palette.textPrimary)
-                    HStack(spacing: 6) {
-                        Text("Provider: \(item.provider ?? "未知 (nil)")")
-                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(palette.accent)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(palette.accentSoft))
-
-                        Text(CAPUsagePresentation.streamLabel(item.stream))
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundStyle(palette.textSecondary)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 2)
-                            .liquidGlassPill(cornerRadius: 8)
-                    }
+            Section {
+                CAPEmptyState(title: "查看近 30 分钟用量", systemImage: "chart.bar",
+                    detail: "按需读取请求集合、模型用量与加权速度。切换栏目不会自动加载全部端点。")
+                Button("读取概览", systemImage: "arrow.clockwise") {
+                    Task { await coordinator.refreshOverview() }
                 }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(CAPUsagePresentation.generationTPSText(summary))
-                        .font(.system(size: 13, weight: .bold, design: .monospaced))
-                        .foregroundStyle(summary.generationTPS != nil ? palette.statusOK : palette.statusWarn)
-                    Text(CAPUsagePresentation.generationCoverageText(summary))
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(palette.textMuted)
-                }
-            }
-
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
-                counterMetricPill(label: "端到端速度", value: CAPUsagePresentation.endToEndTPSText(summary), palette: palette)
-                counterMetricPill(label: "请求数 (失败)", value: "\(CAPUsagePresentation.formatCounter(summary.counters.requests)) (\(CAPUsagePresentation.formatCounter(summary.counters.failedRequests)) 失败)", palette: palette)
-                counterMetricPill(label: "Input / Output", value: "\(CAPUsagePresentation.formatCounter(summary.counters.inputTokens)) / \(CAPUsagePresentation.formatCounter(summary.counters.outputTokens))", palette: palette)
-                counterMetricPill(label: "Reasoning / Total", value: "\(CAPUsagePresentation.formatCounter(summary.counters.reasoningTokens)) / \(CAPUsagePresentation.formatCounter(summary.counters.totalTokens))", palette: palette)
-                counterMetricPill(label: "Cache Read / Write", value: "\(CAPUsagePresentation.formatCounter(summary.counters.cacheReadTokens)) / \(CAPUsagePresentation.formatCounter(summary.counters.cacheCreationTokens))", palette: palette)
-                counterMetricPill(label: "Cached Tokens", value: CAPUsagePresentation.formatCounter(summary.counters.cachedTokens), palette: palette)
-            }
-        }
-        .padding(14)
-        .liquidGlassCard(cornerRadius: 20)
-    }
-
-    @ViewBuilder
-    private func detailsAnalyticsSection(
-        coordinator: CAPUsageWorkspaceCoordinator,
-        store: CAPUsageStore?,
-        palette: LiquidGlassPalette
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if let detailsError = store?.detailsError {
-                let desc = CAPUsagePresentation.errorDescription(detailsError)
-                errorBanner(
-                    title: "详情刷新失败 · \(desc.title)",
-                    detail: "\(desc.detail) 已保留上次成功详情（若有），不会伪造四端点一致成功。",
-                    hasPreservedData: store?.details != nil,
-                    palette: palette
-                )
-            }
-
-            if let details = store?.details {
-                Text("详情窗口 · \(CAPUsagePresentation.windowBadgeText(details.window))")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(palette.textSecondary)
-                // 1. Initial Stats Card
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("1. Initial 端点统计 (/stats/initial)")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(palette.textPrimary)
-                        Spacer()
-                        Text("生成时间: \(details.initial.generatedAt)")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(palette.textMuted)
-                    }
-                    Text("时间桶分辨率: \(details.initial.bucketSeconds)s · 保留起点: \(details.initial.retainedSince) · 最后使用: \(details.initial.lastUsed)")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(palette.textSecondary)
-
-                    if !details.initial.sources.isEmpty {
-                        Text("Sources: \(details.initial.sources.joined(separator: ", "))")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(palette.accent)
-                    }
-
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
-                        counterMetricPill(label: "Initial 总请求 / 失败", value: "\(CAPUsagePresentation.formatCounter(details.initial.summary.requests)) / \(CAPUsagePresentation.formatCounter(details.initial.summary.failedRequests))", palette: palette)
-                        counterMetricPill(label: "Initial Input / Output", value: "\(CAPUsagePresentation.formatCounter(details.initial.summary.inputTokens)) / \(CAPUsagePresentation.formatCounter(details.initial.summary.outputTokens))", palette: palette)
-                        counterMetricPill(label: "Initial Reasoning / Total", value: "\(CAPUsagePresentation.formatCounter(details.initial.summary.reasoningTokens)) / \(CAPUsagePresentation.formatCounter(details.initial.summary.totalTokens))", palette: palette)
-                        counterMetricPill(label: "Latency / TTFT 样本", value: "\(CAPUsagePresentation.formatCounter(details.initial.summary.latencySamples)) / \(CAPUsagePresentation.formatCounter(details.initial.summary.ttftSamples))", palette: palette)
-                    }
-                }
-                .padding(14)
-                .liquidGlassCard(cornerRadius: 20)
-
-                // 2. Costs Card
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("2. Costs 费用估算与缺价覆盖 (/costs)")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(palette.textPrimary)
-                        Spacer()
-                        Text("生成: \(details.costs.generatedAt)")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(palette.textMuted)
-                    }
-                    Text(CAPUsagePresentation.costReliabilityBanner(details.costs))
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(CAPUsagePresentation.costCoverageIsComplete(details.costs) ? palette.statusOK : palette.statusWarn)
-
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
-                        counterMetricPill(label: "估算总费用 (\(details.costs.currency))", value: CAPUsagePresentation.formatUSD(details.costs.summary.totalUsd, currency: details.costs.currency), palette: palette)
-                        counterMetricPill(label: "已计价 / 未计价请求", value: "\(CAPUsagePresentation.formatCounter(details.costs.summary.pricedRequests)) / \(CAPUsagePresentation.formatCounter(details.costs.summary.unpricedRequests))", palette: palette)
-                        counterMetricPill(label: "Input / Output 费用", value: "\(CAPUsagePresentation.formatUSD(details.costs.summary.inputUsd, currency: details.costs.currency)) / \(CAPUsagePresentation.formatUSD(details.costs.summary.outputUsd, currency: details.costs.currency))", palette: palette)
-                        counterMetricPill(label: "Cache Read / Write 费用", value: "\(CAPUsagePresentation.formatUSD(details.costs.summary.cacheReadUsd, currency: details.costs.currency)) / \(CAPUsagePresentation.formatUSD(details.costs.summary.cacheCreationUsd, currency: details.costs.currency))", palette: palette)
-                    }
-
-                    if !details.costs.missingPrices.isEmpty {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("缺失价格表项 (缺价不等于免费 $0):")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(palette.statusWarn)
-                            ForEach(Array(details.costs.missingPrices.enumerated()), id: \.offset) { _, mp in
-                                Text("• \(mp.provider) / \(mp.model) — 未计价请求 \(mp.requests) 次")
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(palette.textSecondary)
-                            }
-                        }
-                        .padding(10)
-                        .liquidGlassPill(cornerRadius: 12)
-                    }
-                }
-                .padding(14)
-                .liquidGlassCard(cornerRadius: 20)
-
-                // 3. Trends Card
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("3. Trends 逐模型时间桶 (/stats/trends)")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(palette.textPrimary)
-                        Spacer()
-                        Text("桶宽 \(details.trends.bucketSeconds)s · 生成: \(details.trends.generatedAt)")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(palette.textMuted)
-                    }
-                    if details.trends.modelSeries.isEmpty {
-                        Text("当前窗口无趋势时间桶记录。")
-                            .font(.system(size: 11))
-                            .foregroundStyle(palette.textSecondary)
-                    } else {
-                        if details.trends.modelSeries.count > 20 {
-                            Text("显示前 20 项，共 \(details.trends.modelSeries.count) 项；此处未展示完整趋势列表。")
-                                .font(.system(size: 11))
-                                .foregroundStyle(palette.statusWarn)
-                        }
-                        ForEach(Array(details.trends.modelSeries.prefix(20).enumerated()), id: \.offset) { _, row in
-                            statRowItem(row: row, palette: palette)
-                        }
-                    }
-                }
-                .padding(14)
-                .liquidGlassCard(cornerRadius: 20)
-
-                // 4. Groups Card with pagination
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("4. Groups 多维分组明细 (/stats/groups)")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(palette.textPrimary)
-                        Spacer()
-                        Text("生成: \(details.groups.generatedAt)")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(palette.textMuted)
-                    }
-
-                    Text(CAPUsagePresentation.groupPaginationBanner(
-                        offset: details.groupOffset,
-                        limit: details.groupLimit,
-                        count: details.groups.items.count,
-                        total: details.groups.total
-                    ))
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(palette.accent)
-
-                    HStack(spacing: 8) {
-                        Button {
-                            let prev = max(0, details.groupOffset - details.groupLimit)
-                            Task { await coordinator.refreshDetails(window: details.window, groupOffset: prev, groupLimit: details.groupLimit) }
-                        } label: {
-                            Text("上一页分组")
-                                .font(.system(size: 11, weight: .semibold))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .liquidGlassPill(cornerRadius: 10)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(details.groupOffset <= 0 || store?.isLoadingDetails == true)
-
-                        Button {
-                            let next = details.groupOffset + details.groupLimit
-                            Task { await coordinator.refreshDetails(window: details.window, groupOffset: next, groupLimit: details.groupLimit) }
-                        } label: {
-                            Text("下一页分组")
-                                .font(.system(size: 11, weight: .semibold))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .liquidGlassPill(cornerRadius: 10)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(details.groupOffset + details.groups.items.count >= details.groups.total || store?.isLoadingDetails == true)
-                    }
-
-                    ForEach(Array(details.groups.items.enumerated()), id: \.offset) { _, row in
-                        statRowItem(row: row, palette: palette)
-                    }
-                }
-                .padding(14)
-                .liquidGlassCard(cornerRadius: 20)
-            } else {
-                emptyCard(
-                    title: "尚未读取四端点详情 (initial / trends / groups / costs)",
-                    subtitle: "点击顶部「加载四端点详情」读取；各端点拥有独立响应生成时间，固定窗口不代表跨端点原子数据库快照。",
-                    palette: palette
-                )
+                .disabled(coordinator.store?.isRefreshing == true)
+                .accessibilityIdentifier("cap.loadOverview")
             }
         }
     }
 
-    @ViewBuilder
-    private func requestPageSection(
-        coordinator: CAPUsageWorkspaceCoordinator,
-        palette: LiquidGlassPalette
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("单页请求日志浏览 (/requests)")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(palette.textPrimary)
-                Spacer()
-                Button {
-                    Task { await coordinator.loadRequestPage(offset: 0, limit: requestPageSize) }
+    @ViewBuilder private var analyticsSection: some View {
+        Section {
+            Picker("分组每页条数", selection: $groupPageSize) {
+                Text("25").tag(25)
+                Text("50").tag(50)
+                Text("100").tag(100)
+            }
+            .pickerStyle(.menu)
+            Button("读取趋势、分组和费用", systemImage: "chart.xyaxis.line") {
+                Task { await coordinator.refreshDetails(groupOffset: 0, groupLimit: groupPageSize) }
+            }
+            .disabled(coordinator.store?.isLoadingDetails == true)
+            .accessibilityIdentifier("cap.loadAnalytics")
+            Text("四个响应分别生成。即使查询窗口相同，也不表示同一时刻的原子快照。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        if let error = coordinator.store?.detailsError {
+            Section { CAPErrorNotice(error: error, preservesData: coordinator.analyticsPresentation != nil) }
+        }
+        if let presentation = coordinator.analyticsPresentation {
+            Section("分析") {
+                NavigationLink {
+                    CAPInitialStatsView(presentation: presentation)
                 } label: {
-                    Text(coordinator.isLoadingRequestPage ? "读取中…" : "读取当前窗口首页")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(palette.accent)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .liquidGlassPill(cornerRadius: 10)
+                    CAPDestinationLabel(title: "汇总与保留范围", systemImage: "sum",
+                        detail: "生成于 \(presentation.snapshot.initial.generatedAt)")
                 }
-                .buttonStyle(.plain)
-            }
-
-            if let err = coordinator.requestPageError {
-                let desc = CAPUsagePresentation.errorDescription(err)
-                errorBanner(title: desc.title, detail: desc.detail, hasPreservedData: coordinator.requestPage != nil, palette: palette)
-            }
-
-            if let page = coordinator.requestPage, let pageWindow = coordinator.requestPageWindow {
-                Text("请求页窗口 · \(CAPUsagePresentation.windowBadgeText(pageWindow))")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(palette.textSecondary)
-                Text("请求明细分页：当前显示 \(page.items.count) 条 (offset \(page.offset), limit \(page.limit)) / 报告总计 \(page.total) 条 · 价格簿版本: \(page.priceBookRevision.map { "#\($0)" } ?? "未知")")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(palette.accent)
-
-                HStack(spacing: 8) {
-                    Button {
-                        let prev = max(0, page.offset - page.limit)
-                        Task { await coordinator.loadRequestPage(window: pageWindow, offset: prev, limit: page.limit) }
-                    } label: {
-                        Text("上一页")
-                            .font(.system(size: 11, weight: .semibold))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .liquidGlassPill(cornerRadius: 10)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(page.offset <= 0 || coordinator.isLoadingRequestPage)
-
-                    Button {
-                        let next = page.offset + page.limit
-                        Task { await coordinator.loadRequestPage(window: pageWindow, offset: next, limit: page.limit) }
-                    } label: {
-                        Text("下一页")
-                            .font(.system(size: 11, weight: .semibold))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .liquidGlassPill(cornerRadius: 10)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(page.offset + page.items.count >= page.total || coordinator.isLoadingRequestPage)
-                }
-
-                ForEach(Array(page.items.enumerated()), id: \.offset) { _, req in
-                    requestRowItem(req: req, palette: palette)
-                }
-            } else {
-                emptyCard(
-                    title: "按需分页查看单条请求明细",
-                    subtitle: "点击「读取当前窗口首页」查看请求序列号、模型、Provider、Stream、Token 用量与 TTFT/Latency 指标。翻页保持该页的查询窗口；失败请求的部分用量不计入成功生成 TPS 样本。",
-                    palette: palette
-                )
-            }
-        }
-        .padding(14)
-        .liquidGlassCard(cornerRadius: 22)
-    }
-
-    @ViewBuilder
-    private func managementStatsSection(
-        coordinator: CAPUsageWorkspaceCoordinator,
-        palette: LiquidGlassPalette
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("管理路由聚合统计 (/v0/management/.../stats)")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(palette.textPrimary)
-                Spacer()
-                Button {
-                    Task { await coordinator.refreshManagementStats() }
+                .accessibilityIdentifier("cap.analytics.loaded")
+                NavigationLink {
+                    CAPTrendsView(presentation: presentation)
                 } label: {
-                    Text(coordinator.isLoadingManagementStats ? "读取中…" : "读取管理统计")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(palette.accent)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .liquidGlassPill(cornerRadius: 10)
+                    CAPDestinationLabel(title: "时间桶趋势", systemImage: "chart.dots.scatter",
+                        detail: "\(presentation.trendRows.count) 个返回桶 · \(presentation.snapshot.trends.bucketSeconds) 秒分辨率")
                 }
-                .buttonStyle(.plain)
-            }
-
-            if let err = coordinator.managementStatsError {
-                let desc = CAPUsagePresentation.errorDescription(err)
-                errorBanner(title: desc.title, detail: desc.detail, hasPreservedData: coordinator.managementStats != nil, palette: palette)
-            }
-
-            if let stats = coordinator.managementStats, let window = coordinator.managementStatsWindow {
-                Text("管理统计窗口 · \(CAPUsagePresentation.windowBadgeText(window))")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(palette.textSecondary)
-                Text("生成时间: \(stats.generatedAt ?? "未知") · 保留起点: \(stats.retainedSince ?? "未知") · 最后使用: \(stats.lastUsed ?? "未知")")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(palette.textSecondary)
-
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
-                    counterMetricPill(label: "请求数 / 失败数", value: "\(CAPUsagePresentation.formatCounter(stats.summary.requests)) / \(CAPUsagePresentation.formatCounter(stats.summary.failedRequests))", palette: palette)
-                    counterMetricPill(label: "Input / Output", value: "\(CAPUsagePresentation.formatCounter(stats.summary.inputTokens)) / \(CAPUsagePresentation.formatCounter(stats.summary.outputTokens))", palette: palette)
-                    counterMetricPill(label: "Reasoning / Total", value: "\(CAPUsagePresentation.formatCounter(stats.summary.reasoningTokens)) / \(CAPUsagePresentation.formatCounter(stats.summary.totalTokens))", palette: palette)
-                    counterMetricPill(label: "Latency / TTFT 样本", value: "\(CAPUsagePresentation.formatCounter(stats.summary.latencySamples)) / \(CAPUsagePresentation.formatCounter(stats.summary.ttftSamples))", palette: palette)
+                NavigationLink {
+                    CAPCostsView(presentation: presentation)
+                } label: {
+                    CAPDestinationLabel(title: "费用与计价覆盖", systemImage: "creditcard",
+                        detail: CAPUsagePresentation.formatUSD(presentation.snapshot.costs.summary.totalUsd,
+                            currency: presentation.snapshot.costs.currency))
                 }
-            } else {
-                emptyCard(
-                    title: "尚未读取管理路由统计",
-                    subtitle: "管理统计始终使用管理 Bearer 鉴权并共享管理层 3 并发与 401/403/429 熔断保护。",
-                    palette: palette
-                )
-            }
-        }
-        .padding(14)
-        .liquidGlassCard(cornerRadius: 22)
-    }
-
-    @ViewBuilder
-    private func statRowItem(row: CAPUsageStatRow, palette: LiquidGlassPalette) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("\(row.provider ?? "未知") · \(row.model ?? "未知")")
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(palette.textPrimary)
-                Spacer()
-                if let hour = row.hour {
-                    Text(hour)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(palette.textMuted)
+                NavigationLink {
+                    CAPGroupsView(coordinator: coordinator)
+                } label: {
+                    CAPDestinationLabel(title: "分组明细", systemImage: "square.stack.3d.up",
+                        detail: "已加载 \(presentation.groups.count) 项 · 报告总计 \(presentation.snapshot.groups.total) 项")
                 }
             }
-            Text("Executor: \(row.executorType ?? "-") · Source: \(row.source ?? "-") · Tier: \(row.serviceTier ?? "-") · Effort: \(row.reasoningEffort ?? "-")")
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(palette.textSecondary)
-            Text("Req: \(CAPUsagePresentation.formatCounter(row.counters.requests)) (失败 \(CAPUsagePresentation.formatCounter(row.counters.failedRequests))) · In/Out: \(CAPUsagePresentation.formatCounter(row.counters.inputTokens))/\(CAPUsagePresentation.formatCounter(row.counters.outputTokens)) · AvgLat: \(CAPUsagePresentation.formatNanosecondsAsMillis(row.averageLatencyNs)) · AvgTTFT: \(CAPUsagePresentation.formatNanosecondsAsMillis(row.averageTtftNs))")
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(palette.textSecondary)
-        }
-        .padding(10)
-        .liquidGlassPill(cornerRadius: 12)
-    }
-
-    @ViewBuilder
-    private func requestRowItem(req: CAPUsageRequest, palette: LiquidGlassPalette) -> some View {
-        let isFailed = req.failed == true
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("#\(req.sequence.map(String.init) ?? "?") · \(req.provider ?? "未知") / \(req.model ?? "未知")")
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(palette.textPrimary)
-                Spacer()
-                Text(CAPUsagePresentation.requestOutcomeText(req))
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(isFailed ? palette.statusError : req.failed == false ? palette.statusOK : palette.textMuted)
+            Section("费用覆盖") {
+                Label(CAPUsagePresentation.costReliabilityBanner(presentation.snapshot.costs),
+                    systemImage: CAPUsagePresentation.costCoverageIsComplete(presentation.snapshot.costs) ? "checkmark.circle" : "exclamationmark.triangle")
+                    .font(.subheadline)
+                    .foregroundStyle(CAPUsagePresentation.costCoverageIsComplete(presentation.snapshot.costs) ? palette.statusOK : palette.statusWarn)
             }
-            Text("时间: \(req.time ?? "未知") · \(CAPUsagePresentation.streamLabel(req.stream)) · Executor: \(req.executorType ?? "-")")
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(palette.textSecondary)
-            Text("In: \(CAPUsagePresentation.formatCounter(req.inputTokens)) · Out: \(CAPUsagePresentation.formatCounter(req.outputTokens)) · Reasoning: \(CAPUsagePresentation.formatCounter(req.reasoningTokens)) · Total: \(CAPUsagePresentation.formatCounter(req.totalTokens))")
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(palette.textSecondary)
-            Text("TTFT: \(CAPUsagePresentation.formatNanosecondsAsMillis(req.ttftNs)) · Latency: \(CAPUsagePresentation.formatNanosecondsAsMillis(req.latencyNs))\(isFailed ? " · (失败请求不纳入成功生成 TPS 样本)" : "")")
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(isFailed ? palette.statusWarn : palette.textMuted)
-        }
-        .padding(10)
-        .liquidGlassPill(cornerRadius: 12)
-    }
-
-    @ViewBuilder
-    private func counterMetricPill(label: String, value: String, palette: LiquidGlassPalette) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label)
-                .font(.system(size: 10))
-                .foregroundStyle(palette.textSecondary)
-                .lineLimit(1)
-            Text(value)
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                .foregroundStyle(palette.textPrimary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-        }
-        .padding(9)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .liquidGlassPill(cornerRadius: 12)
-    }
-
-    @ViewBuilder
-    private func errorBanner(title: String, detail: String, hasPreservedData: Bool, palette: LiquidGlassPalette) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                Text(title)
-                    .font(.system(size: 12, weight: .semibold))
-            }
-            .foregroundStyle(palette.statusError)
-
-            Text(detail)
-                .font(.system(size: 11))
-                .foregroundStyle(palette.textSecondary)
-
-            if hasPreservedData {
-                Text("已保留上一次有效快照数据供对比查阅。")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(palette.statusWarn)
+        } else {
+            Section {
+                CAPEmptyState(title: "尚未读取分析", systemImage: "chart.xyaxis.line",
+                    detail: "读取后可以分别查看汇总、完整趋势表、分页分组与费用明细。")
             }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .liquidGlassCard(cornerRadius: 18)
     }
 
-    @ViewBuilder
-    private func emptyCard(title: String, subtitle: String, palette: LiquidGlassPalette) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(palette.textPrimary)
-            Text(subtitle)
-                .font(.system(size: 11))
-                .foregroundStyle(palette.textSecondary)
-                .lineSpacing(2)
+    @ViewBuilder private var requestsSection: some View {
+        Section {
+            Picker("每页请求数", selection: $requestPageSize) {
+                Text("25").tag(25)
+                Text("50").tag(50)
+                Text("100").tag(100)
+            }
+            .pickerStyle(.menu)
+            Button("读取当前窗口首页", systemImage: "list.bullet.rectangle") {
+                Task { await coordinator.loadRequestPage(offset: 0, limit: requestPageSize) }
+            }
+            .disabled(coordinator.isLoadingRequestPage)
+            .accessibilityIdentifier("cap.loadRequests")
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .liquidGlassCard(cornerRadius: 20)
+        if let error = coordinator.requestPageError {
+            Section { CAPErrorNotice(error: error, preservesData: coordinator.requestPagePresentation != nil) }
+        }
+        if let presentation = coordinator.requestPagePresentation {
+            let page = presentation.page
+            Section("分页与来源") {
+                CAPValueRow(title: "已加载 / 报告总计", value: "\(page.items.count) / \(page.total)")
+                    .accessibilityIdentifier("cap.requests.loaded")
+                CAPValueRow(title: "页偏移 / 每页上限", value: "\(page.offset) / \(page.limit)")
+                CAPValueRow(title: "生成时间", value: page.generatedAt ?? "未知")
+                CAPValueRow(title: "价格簿版本", value: page.priceBookRevision.map { "#\($0)" } ?? "未知")
+                Text("翻页固定当前请求窗口；服务端迟到写入仍可能改变分页内容。")
+                    .font(.footnote).foregroundStyle(.secondary)
+                requestPagination(presentation)
+            }
+            Section("请求") {
+                if presentation.rows.isEmpty {
+                    CAPEmptyState(title: "此页没有请求", systemImage: "tray",
+                        detail: "空页不代表其他页或其他窗口没有记录。")
+                }
+                ForEach(presentation.rows) { item in
+                    NavigationLink {
+                        CAPRequestDetailView(request: item.value, window: presentation.window,
+                            generatedAt: page.generatedAt, priceBookRevision: page.priceBookRevision)
+                    } label: { CAPRequestRow(request: item.value) }
+                }
+            }
+        } else {
+            Section {
+                CAPEmptyState(title: "按需查看请求明细", systemImage: "list.bullet.rectangle",
+                    detail: "保留请求结果的成功、失败与未知三种状态，以及完整 Token、TTFT、延迟和来源字段。")
+            }
+        }
+    }
+
+    private func requestPagination(_ presentation: CAPRequestPagePresentation) -> some View {
+        let page = presentation.page
+        let next = CAPPageNavigation.nextOffset(offset: page.offset, limit: page.limit,
+            count: page.items.count, total: page.total)
+        return HStack {
+            Button("上一页", systemImage: "chevron.backward") {
+                Task { await coordinator.loadRequestPage(window: presentation.window,
+                    offset: max(0, page.offset - page.limit), limit: page.limit) }
+            }
+            .disabled(page.offset <= 0 || coordinator.isLoadingRequestPage)
+            Spacer()
+            Button("下一页", systemImage: "chevron.forward") {
+                guard let next else { return }
+                Task { await coordinator.loadRequestPage(window: presentation.window, offset: next, limit: page.limit) }
+            }
+            .disabled(next == nil || coordinator.isLoadingRequestPage)
+        }
+        .buttonStyle(.borderless)
+        .frame(minHeight: 44)
+    }
+
+    @ViewBuilder private var managementSection: some View {
+        Section {
+            Button("读取管理统计", systemImage: "arrow.clockwise") {
+                Task { await coordinator.refreshManagementStats() }
+            }
+            .disabled(coordinator.isLoadingManagementStats)
+            .accessibilityIdentifier("cap.loadManagement")
+            Text("使用管理权限，保留管理请求的并发与限流保护。下面的来源分别显示各自窗口和生成时间。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        if let error = coordinator.managementStatsError {
+            Section { CAPErrorNotice(error: error, preservesData: coordinator.managementPresentation != nil) }
+        }
+        if let presentation = coordinator.managementPresentation {
+            Section("管理统计") {
+                CAPValueRow(title: "统计窗口", value: CAPUsagePresentation.windowBadgeText(presentation.window))
+                    .accessibilityIdentifier("cap.management.loaded")
+                CAPValueRow(title: "生成时间", value: presentation.stats.generatedAt ?? "未知")
+                CAPValueRow(title: "请求 / 失败", value: "\(CAPDisplay.counter(presentation.stats.summary.requests)) / \(CAPDisplay.counter(presentation.stats.summary.failedRequests))")
+                CAPValueRow(title: "总 Token", value: CAPDisplay.counter(presentation.stats.summary.totalTokens))
+                NavigationLink("全部管理统计与来源") {
+                    CAPManagementDetailView(presentation: presentation)
+                }
+            }
+        } else {
+            Section {
+                CAPEmptyState(title: "尚未读取管理统计", systemImage: "server.rack",
+                    detail: "这组统计使用独立管理路由；资源端点成功不代表管理权限有效。")
+            }
+        }
+        if let resource = coordinator.analyticsPresentation {
+            Section("资源汇总 · 独立来源") {
+                CAPValueRow(title: "统计窗口", value: CAPUsagePresentation.windowBadgeText(resource.snapshot.window))
+                CAPValueRow(title: "生成时间", value: resource.snapshot.initial.generatedAt)
+                CAPValueRow(title: "请求 / 失败", value: "\(CAPDisplay.counter(resource.snapshot.initial.summary.requests)) / \(CAPDisplay.counter(resource.snapshot.initial.summary.failedRequests))")
+                CAPValueRow(title: "总 Token", value: CAPDisplay.counter(resource.snapshot.initial.summary.totalTokens))
+                NavigationLink("全部资源汇总") { CAPInitialStatsView(presentation: resource) }
+                Text("不同来源不相加；窗口或生成时间不同也不能直接当作同一时刻的差额。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func refreshCurrentSection() async {
+        switch selectedSection {
+        case .models: await coordinator.refreshOverview()
+        case .details: await coordinator.refreshDetails(groupOffset: 0, groupLimit: groupPageSize)
+        case .requests: await coordinator.loadRequestPage(offset: 0, limit: requestPageSize)
+        case .management: await coordinator.refreshManagementStats()
+        }
     }
 }
 #endif

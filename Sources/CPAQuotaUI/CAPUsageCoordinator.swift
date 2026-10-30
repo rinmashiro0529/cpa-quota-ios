@@ -20,6 +20,13 @@ public final class CAPUsageWorkspaceCoordinator {
     public private(set) var requestPageOffset = 0
     public private(set) var requestPageLimit = 50
 
+    // Immutable presentation data is published with its original query window.
+    // Large request aggregation and row identity work never run in View.body.
+    private(set) var overviewPresentation: CAPOverviewPresentation?
+    private(set) var analyticsPresentation: CAPAnalyticsPresentation?
+    private(set) var requestPagePresentation: CAPRequestPagePresentation?
+    private(set) var managementPresentation: CAPManagementPresentation?
+
     public var resourceAccess: CAPUsageResourceAccess {
         didSet {
             guard !oldValue.isSameMode(as: resourceAccess) else { return }
@@ -57,6 +64,10 @@ public final class CAPUsageWorkspaceCoordinator {
         self.requestPageWindow = nil
         self.requestPageError = nil
         self.requestPageOffset = 0
+        self.overviewPresentation = nil
+        self.analyticsPresentation = nil
+        self.requestPagePresentation = nil
+        self.managementPresentation = nil
         self.activeWindow = CAPUsageWindow(now: clock())
         if let client {
             self.store = CAPUsageStore(client: client, access: resourceAccess)
@@ -75,6 +86,9 @@ public final class CAPUsageWorkspaceCoordinator {
         requestPageWindow = nil
         requestPageError = nil
         requestPageOffset = 0
+        overviewPresentation = nil
+        analyticsPresentation = nil
+        requestPagePresentation = nil
         if let client {
             store = CAPUsageStore(client: client, access: resourceAccess)
         } else {
@@ -110,6 +124,10 @@ public final class CAPUsageWorkspaceCoordinator {
         let currentGen = generation
         let task = Task { @MainActor in
             await store.refresh(window: window)
+            guard !Task.isCancelled, self.generation == currentGen,
+                  self.overviewRequestID == requestID, self.store === store,
+                  store.error == nil, let snapshot = store.snapshot else { return }
+            self.overviewPresentation = CAPOverviewPresentation(snapshot: snapshot)
         }
         overviewTask = task
         await withTaskCancellationHandler {
@@ -130,6 +148,10 @@ public final class CAPUsageWorkspaceCoordinator {
         let currentGen = generation
         let task = Task { @MainActor in
             await store.refreshDetails(window: window, groupOffset: groupOffset, groupLimit: groupLimit)
+            guard !Task.isCancelled, self.generation == currentGen,
+                  self.detailsRequestID == requestID, self.store === store,
+                  store.detailsError == nil, let snapshot = store.details else { return }
+            self.analyticsPresentation = CAPAnalyticsPresentation(snapshot: snapshot)
         }
         detailsTask = task
         await withTaskCancellationHandler {
@@ -164,6 +186,7 @@ public final class CAPUsageWorkspaceCoordinator {
                       self.managementRequestID == requestID else { return }
                 self.managementStats = stats
                 self.managementStatsWindow = window
+                self.managementPresentation = CAPManagementPresentation(stats: stats, window: window)
             } catch is CancellationError {
             } catch let error as CAPUsageError {
                 guard !Task.isCancelled, self.generation == currentGen,
@@ -216,6 +239,7 @@ public final class CAPUsageWorkspaceCoordinator {
                 self.requestPageWindow = window
                 self.requestPageOffset = offset
                 self.requestPageLimit = limit
+                self.requestPagePresentation = CAPRequestPagePresentation(page: page, window: window)
             } catch is CancellationError {
             } catch let error as CAPUsageError {
                 guard !Task.isCancelled, self.generation == currentGen,

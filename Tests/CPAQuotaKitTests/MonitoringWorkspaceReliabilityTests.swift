@@ -316,6 +316,154 @@ struct MonitoringWorkspaceReliabilityTests {
         #expect(throws: CPAError.self) { _ = try ManagementKey(String(repeating: "x", count: 4097)) }
     }
 
+    @Test func localPresentationCanEndWhenRemoteCancellationIsRejected() async throws {
+        let transport = WorkspaceMonitorTransport()
+        let driver = WorkspaceActivityDriver()
+        let coordinator = workspace(transport: transport, driver: driver)
+        await connect(coordinator)
+        drafts(coordinator)
+        await coordinator.startOrReconcileMonitoringSession()
+        let originalID = try #require(coordinator.store?.sessionID)
+        await transport.setDeleteStatus(507)
+        await coordinator.stopActiveMonitoringSession()
+        #expect(coordinator.store?.error == .capacityExceeded)
+        #expect(coordinator.store?.cancellationReceipt == nil)
+        #expect(driver.endedIDs.isEmpty)
+        let requests = await transport.totalCount()
+        await coordinator.stopLocalActivityDisplay()
+        #expect(driver.endedIDs == ["activity-1"])
+        #expect(coordinator.localActivityID == nil)
+        #expect(coordinator.store?.sessionID == originalID)
+        #expect(coordinator.store?.cancellationReceipt == nil)
+        #expect(coordinator.persistedRecords.first?.stopIntentRecorded == false)
+        #expect(await transport.totalCount() == requests)
+        await coordinator.reconcileCurrentSession()
+        #expect(coordinator.store?.session?.status == .active)
+        #expect(coordinator.localActivityID == nil)
+        #expect(driver.startCount == 1)
+    }
+
+    @Test func endingOldLocalActivityCannotClearANewBridgeActivityOrNotice() async throws {
+        let first = WorkspaceMonitorTransport()
+        let second = WorkspaceMonitorTransport()
+        let gate = WorkspaceGate()
+        let driver = WorkspaceActivityDriver(endGate: gate)
+        let coordinator = workspace(transport: first, second: second, driver: driver)
+        await connect(coordinator)
+        drafts(coordinator)
+        await coordinator.startOrReconcileMonitoringSession()
+        let ending = Task { await coordinator.stopLocalActivityDisplay() }
+        await gate.waitUntilEntered()
+        await connect(coordinator, host: "second.invalid", token: "second-fixture-token")
+        drafts(coordinator)
+        await coordinator.startOrReconcileMonitoringSession()
+        let currentNotice = coordinator.bridgeStatusNotice
+        #expect(coordinator.localActivityID == "activity-2")
+        await gate.open()
+        await ending.value
+        #expect(driver.endedIDs == ["activity-1"])
+        #expect(driver.activeActivityID == "activity-2")
+        #expect(coordinator.localActivityID == "activity-2")
+        #expect(coordinator.bridgeStatusNotice == currentNotice)
+        #expect(await first.count(method: "DELETE") == 0)
+        #expect(await second.count(method: "DELETE") == 0)
+    }
+
+    @Test func localEndWhileWaitingForTokenCancelsOnlyTheUnsubmittedIntent() async throws {
+        let transport = WorkspaceMonitorTransport()
+        let driver = WorkspaceActivityDriver(initialToken: nil)
+        let coordinator = workspace(transport: transport, driver: driver)
+        await connect(coordinator)
+        drafts(coordinator)
+        await coordinator.startOrReconcileMonitoringSession()
+        await coordinator.stopLocalActivityDisplay()
+        driver.emitOldToken("cc33")
+        await Task.yield()
+        #expect(coordinator.pendingCreateUUID == nil)
+        #expect(!coordinator.isWaitingForPushToken)
+        #expect(coordinator.persistedRecords.isEmpty)
+        #expect(driver.endedIDs == ["activity-1"])
+        #expect(await transport.totalCount() == 0)
+    }
+
+    @Test func appActivationRestoresTheExactActivityWithoutVisitingATabOrStartingAnother() async throws {
+        let transport = WorkspaceMonitorTransport()
+        let credentials = MonitoringBridgeCredentialStore(storage: MemoryCredentialStore())
+        let metadata = MemoryMonitoringMetadataPersistence()
+        let driver = WorkspaceActivityDriver()
+        let first = workspace(transport: transport, credentials: credentials, metadata: metadata, driver: driver)
+        await connect(first)
+        drafts(first)
+        await first.startOrReconcileMonitoringSession()
+        let original = try #require(first.store?.sessionID)
+        driver.detachActivity()
+        let restored = workspace(transport: transport, credentials: credentials, metadata: metadata, driver: driver)
+        await restored.applicationDidBecomeActive()
+        #expect(restored.store?.sessionID == original)
+        #expect(restored.localActivityID == "activity-1")
+        #expect(restored.unassociatedActivities.isEmpty)
+        await restored.applicationDidBecomeActive()
+        #expect(driver.startCount == 1)
+        #expect(await transport.count(method: "POST", suffix: "/sessions") == 1)
+    }
+
+    @Test func sourceDeepLinkRejectsUnknownAndAmbiguousBindingsWithoutChangingDrafts() async throws {
+        let transport = WorkspaceMonitorTransport()
+        let other = PersistedMonitoringRecord(
+            sessionID: UUID(), bridgeBaseURLString: "https://other.invalid",
+            sourceID: "personal", accountIDs: ["other-account"], durationSeconds: 3_600,
+            activityID: "other-activity", lastKnownRevision: 1, stopIntentRecorded: false,
+            credentialBindingID: UUID()
+        )
+        let metadata = MemoryMonitoringMetadataPersistence(records: [other])
+        let coordinator = workspace(transport: transport, metadata: metadata)
+        await connect(coordinator)
+        drafts(coordinator)
+        await coordinator.startOrReconcileMonitoringSession()
+        let original = coordinator.store?.sessionID
+        coordinator.sourceIDDraft = "current-draft"
+        let requests = await transport.totalCount()
+        await coordinator.openSourceFromDeepLink("unknown-source")
+        await coordinator.openSourceFromDeepLink("personal")
+        #expect(coordinator.sourceIDDraft == "current-draft")
+        #expect(coordinator.store?.sessionID == original)
+        #expect(coordinator.persistedRecords.contains(other))
+        #expect(await transport.totalCount() == requests)
+    }
+
+    @Test func invalidSelectionDoesNotCreateASystemActivity() async throws {
+        let transport = WorkspaceMonitorTransport()
+        let driver = WorkspaceActivityDriver()
+        let coordinator = workspace(transport: transport, driver: driver)
+        await connect(coordinator)
+        coordinator.sourceIDDraft = "personal"
+        coordinator.selectedAccountIDsDraft = ["not/a-valid-id"]
+        await coordinator.startOrReconcileMonitoringSession()
+        #expect(driver.startCount == 0)
+        #expect(coordinator.pendingCreateUUID == nil)
+        #expect(await transport.totalCount() == 0)
+    }
+
+    @Test func knownLocalActivityCanBeExplicitlyEndedAfterForgettingTheBridge() async throws {
+        let transport = WorkspaceMonitorTransport()
+        let driver = WorkspaceActivityDriver()
+        let coordinator = workspace(transport: transport, driver: driver)
+        await connect(coordinator)
+        drafts(coordinator)
+        await coordinator.startOrReconcileMonitoringSession()
+        let originalRecord = try #require(coordinator.persistedRecords.first)
+        await coordinator.forgetBridgeLocallyOnly()
+        coordinator.refreshLocalActivityInventory()
+        let local = try #require(coordinator.localActivities.first)
+        let requests = await transport.totalCount()
+        await coordinator.endLocalActivity(local)
+        #expect(driver.endedIDs == ["activity-1"])
+        #expect(coordinator.bridgeState == .unconfigured)
+        #expect(coordinator.store == nil)
+        #expect(coordinator.persistedRecords.contains(originalRecord))
+        #expect(await transport.totalCount() == requests)
+    }
+
     private func workspace(transport: WorkspaceMonitorTransport, second: WorkspaceMonitorTransport? = nil,
         credentials: MonitoringBridgeCredentialStore? = nil,
         metadata: MemoryMonitoringMetadataPersistence = MemoryMonitoringMetadataPersistence(),
@@ -407,10 +555,12 @@ private final class WorkspaceActivityDriver: SystemLiveActivityDriver {
     private let tokenDuringStart: String?
     private let tokenDuringRestore: String?
     private let endDuringStart: Bool
+    private let endGate: WorkspaceGate?
     init(initialToken: String? = "aa11", tokenDuringStart: String? = nil,
-         tokenDuringRestore: String? = nil, endDuringStart: Bool = false) {
+         tokenDuringRestore: String? = nil, endDuringStart: Bool = false, endGate: WorkspaceGate? = nil) {
         self.initialToken = initialToken; self.tokenDuringStart = tokenDuringStart
         self.tokenDuringRestore = tokenDuringRestore; self.endDuringStart = endDuringStart
+        self.endGate = endGate
     }
     func startActivity(sourceID: String, initialSnapshot: MonitoringSnapshot?,
         onPushTokenUpdate: @escaping @MainActor (String, String) -> Void,
@@ -444,10 +594,16 @@ private final class WorkspaceActivityDriver: SystemLiveActivityDriver {
         if sources[activityID] != nil { updatedIDs.append(activityID) }
     }
     func endActivity(activityID: String, immediate: Bool) async {
+        if activeActivityID == activityID { activeActivityID = nil; latestPushTokenHex = nil }
+        await endGate?.wait()
         if sources.removeValue(forKey: activityID) != nil { endedIDs.append(activityID) }
         if activeActivityID == activityID { activeActivityID = nil; latestPushTokenHex = nil }
     }
     func detachActivity() { activeActivityID = nil; latestPushTokenHex = nil }
+    func currentActivities() -> [LocalLiveActivityDescriptor] {
+        sources.map { LocalLiveActivityDescriptor(id: $0.key, sourceID: $0.value) }
+            .sorted { $0.id < $1.id }
+    }
     func emitToken(_ token: String) {
         guard let id = activeActivityID else { return }
         latestPushTokenHex = token
@@ -479,12 +635,14 @@ private actor WorkspaceMonitorTransport: HTTPTransport {
     private let createFails: Bool
     private var quotaStatus = 200
     private var getsHidden = false
+    private var deleteStatus: Int?
     init(createGate: WorkspaceGate? = nil, quotaGate: WorkspaceGate? = nil,
          rotateGate: WorkspaceGate? = nil, createFails: Bool = false) {
         self.createGate = createGate; self.quotaGate = quotaGate; self.rotateGate = rotateGate; self.createFails = createFails
     }
     func setQuotaStatus(_ status: Int) { quotaStatus = status }
     func setGetsHidden(_ value: Bool) { getsHidden = value }
+    func setDeleteStatus(_ value: Int) { deleteStatus = value }
     func totalCount() -> Int { requests.count }
     func count(method: String, suffix: String? = nil) -> Int {
         requests.filter { $0.0 == method && (suffix == nil || $0.1.hasSuffix(suffix!)) }.count
@@ -519,6 +677,7 @@ private actor WorkspaceMonitorTransport: HTTPTransport {
         guard parts.count >= 4 else { return response(404) }
         let id = parts[3]
         if method == "DELETE" {
+            if let deleteStatus { return response(deleteStatus) }
             cancelled.insert(id)
             guard var session = sessions[id] else { return response(204) }
             if session.status == "active" { session.status = "stopped"; session.revision += 1 }

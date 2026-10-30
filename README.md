@@ -1,6 +1,6 @@
 # CPA Quota iOS App & Backend (`CPAQuotaKit` + `CPAQuotaUI` + `CPAQuotaActivity`)
 
-Rin，本工程包含原生 Swift 6 后端包 `CPAQuotaKit`、SwiftUI 前端模块 `CPAQuotaUI`、共享活动模块 `CPAQuotaActivity` 以及 App 入口 `CPAQuotaApp`。后端负责连接个人 CPA、枚举已有账号、读取并归一化额度、缓存最后成功结果、管理并发/取消以及通过系统 Keychain 保存管理凭据；前端通过 `@MainActor @Observable` 状态驱动额度、CAP 用量、监控、账号与连接工作台。应用内灵动岛样式状态栏沿用交付设计；真正的系统 Live Activity 由独立 `CPAQuotaActivityExtension` 承载，两者是不同功能。
+Rin，本工程包含原生 Swift 6 后端包 `CPAQuotaKit`、SwiftUI 前端模块 `CPAQuotaUI`、共享活动模块 `CPAQuotaActivity` 以及 App 入口 `CPAQuotaApp`。后端负责连接个人 CPA、枚举已有账号、读取并归一化额度、缓存最后成功结果、管理并发/取消以及通过系统 Keychain 保存管理凭据；前端通过 `@MainActor @Observable` 状态驱动额度、CAP 用量、监控、账号与连接工作台。前端现使用 5 个原生 Tab / NavigationStack、系统控件与可用系统上的 Liquid Glass 按钮。旧应用内仿灵动岛及浮动自绘 TabBar 已移除；真正的系统 Live Activity 和常规配额 Widget 由独立 `CPAQuotaActivityExtension` 承载。
 
 ## Rin，当前交付与启用状态
 
@@ -8,7 +8,7 @@ Rin，本工程包含原生 Swift 6 后端包 `CPAQuotaKit`、SwiftUI 前端模�
 | --- | --- | --- |
 | App 工作台 | 账号、额度、连接、CAP 近30分钟统计与监控控制页面 | 原生构建与模型测试不代替完整交互、Keychain 和真机验收 |
 | Swift 数据与状态层 | CAP 加权 TPS/详情、共享鉴权冷却、监控客户端及独立桥接凭据 | 统计、历史记录及异步结果绑定其原连接和窗口 |
-| 系统活动 | ActivityKit driver、共享 Snapshot 内容合同、Widget extension 与嵌入配置 | 签名、Push provisioning、APNs 实际送达及锁屏行为仍需真机验收 |
+| 系统活动与小组件 | ActivityKit 生命周期恢复、限宽布局、普通 Widget、默认关闭的安全快照共享 | 签名、Push provisioning、APNs 实际送达及锁屏行为仍需真机验收 |
 | 独立 Go 监控服务 | 受控读取、租约、取消墓碑、有界准入、加密状态和 APNs update/end | 源码合并不会启动或部署服务，不会配置真实凭据或启用 Apple 能力 |
 
 Rin，监控服务必须由操作者另行配置并运行。`dry_run=true` 仅禁止 APNs，不禁止有活动时的 CPA 采集，因此不能把 dry-run 当作完全离线模式。真实 CPA、插件鉴权、APNs 与设备送达仍需独立接入和验收；600秒是服务端采集目标，不是设备必达承诺。系统活动显示首个账号和其他账号数量，App 内预览可切换账号，不承诺后台自动轮播。
@@ -25,7 +25,7 @@ Rin，监控服务必须由操作者另行配置并运行。`dry_run=true` 仅�
 | 外部依赖 | 无第三方运行时依赖；Swift 使用 Foundation、Observation、SwiftUI、Apple 平台 Security，Go 使用标准库 |
 | 当前读取器 | Codex、CPA 插件标准化额度、xAI billing；CAP Usage 使用独立的只读统计接口 |
 | 写入 CPA | 不提供；只读查询，不登录上游 OAuth、不重置额度、不修改配置或账号 |
-| 缓存与安全 | App 额度缓存仅在进程内；管理和桥接凭据使用独立 Keychain 命名空间，保持 `WhenUnlockedThisDeviceOnly`；服务状态另行加密持久化 |
+| 缓存与安全 | App 完整额度缓存仅在进程内；用户主动开启后可在 App Group 保存安全别名与主要读数供 Widget 使用；管理和桥接凭据使用独立 Keychain 命名空间，保持 `WhenUnlockedThisDeviceOnly`；服务状态另行加密持久化 |
 
 ## Rin，架构与模块划分
 
@@ -38,11 +38,12 @@ Rin，监控服务必须由操作者另行配置并运行。`dry_run=true` 仅�
 | `CPAQuotaApp` | Swift Library（App 入口） | `Sources/CPAQuotaApp/`：SwiftUI `@main` 应用入口 |
 | `cpa-quota-probe` | Swift Executable | `Sources/CPAQuotaProbe/`：只读实服命令行探针；不属于合成测试的默认联网目标 |
 | `CPAQuotaKitTests` | Swift Test | `Tests/CPAQuotaKitTests/`：额度、凭据事务、取消、CAP 与监控回归；共享 JSON 由 `Tests/ContractFixtures/` 打包进入 SwiftPM/native 测试 bundle |
+| `CPAQuotaAppUITests` | 原生 XCUITest | `Apple/CPAQuotaAppUITests/`：本机 Debug 协议夹具驱动的导航、登录、CAP、外观与布局回归；Release 不包含夹具 |
 | `QuotaMonitor` | 独立 Go Module | `Services/QuotaMonitor/`：HTTP 控制、白名单采集、持久化、调度与 APNs；不属于 SwiftPM App 的自动启动流程 |
 
 ## Rin，验证与构建
 
-Rin，`.github/workflows/backend-checks.yml` 在 PR 和 `main` 更新时运行 Go test/race/vet、Linux/Windows 构建、macOS SwiftPM、iOS Simulator 原生测试、App 构建和实际嵌入活动扩展检查。该工作流仅使用 `contents: read`，不签名、不发布、不部署，也不使用真实 CPA/APNs/Apple 账号凭据；包含 macOS 作业，会消耗相应 CI 额度。当前结果应查看对应提交的 [GitHub Actions](https://github.com/rinmashiro0529/cpa-quota-ios/actions)，不能用历史回执替代新提交的检查。既有 `ios-ci.yml` 归档流程仍受原指定 CI 分支限制，并另验收设备平台的扩展产物。
+Rin，`.github/workflows/backend-checks.yml` 在 PR 和 `main` 更新时运行 Go test/race/vet、Linux/Windows 构建、Xcode 26.2 / 正式版 27.1 的 SwiftPM、iOS Simulator 原生单元与 UI 测试、设备 Release 构建和实际嵌入活动扩展检查。模拟器矩阵包含 iPhone 17 Pro / iOS 26.2、iPhone 18 Pro / iOS 27.0、iPhone Duo / iOS 27.1；标准 iPhone 验证真实横屏，Duo 按系统管理的实际窗口形状验证。实际 SDK、解析后的 Xcode 路径、模拟器 runtime、xcresult 与截图尝试作为 7 天 CI 附件保存；若附件存储配额不足，CI 明确告警并在日志中保留摘要与有界的截图审阅副本，完整结果包不可用这一限制不会被隐藏。该工作流仅使用 `contents: read`，不签名、不发布、不部署，也不使用真实 CPA/APNs/Apple 账号凭据；包含 macOS 作业，会消耗相应 CI 额度。当前结果应查看对应提交的 [GitHub Actions](https://github.com/rinmashiro0529/cpa-quota-ios/actions)，不能用历史回执替代新提交的检查。既有 `ios-ci.yml` 归档流程仍受原指定 CI 分支限制，并另验收设备平台的扩展产物。
 
 Rin，在仓库根目录可运行源码接线校验和独立 Go 合成验收；后者输出真实退出码、源码哈希和构建回执到新的 `artifacts/backend-verification/` 目录，不启动真实监控服务。
 
@@ -75,6 +76,7 @@ Rin，PR #1 的功能与 PR #2 的可靠性修复应作为完整组合维护，�
 
 | 文件 | 内容 |
 | --- | --- |
+| [原生前端实现与审阅](docs/NATIVE_FRONTEND_IMPLEMENTATION.md) | 页面迁移、系统活动、小组件安全边界、测试与签名设备验收 |
 | [前端接入合同](docs/FRONTEND_INTEGRATION.md) | public Interface、状态、取消、错误与单位 |
 | [CAP Usage 后端](docs/CAP_USAGE_BACKEND.md) | 统计鉴权、窗口、加权 TPS、分页与详情状态 |
 | [Swift 监控后端](docs/MONITORING_SWIFT_BACKEND.md) | 会话控制、204 回执、对账与安全 DTO |
