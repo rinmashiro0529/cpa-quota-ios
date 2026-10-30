@@ -341,10 +341,19 @@ final class CPAQuotaAppUITests: XCTestCase {
             + app.tables.allElementsBoundByIndex
             + app.scrollViews.allElementsBoundByIndex
         return containers
-            .filter { $0.exists && $0.isHittable && !$0.frame.intersection(app.frame).isEmpty }
+            .filter {
+                guard $0.exists else { return false }
+                // UIKit can report the CollectionView itself as non-hittable
+                // while its visible rows remain interactive and scrollable.
+                // This occurs with the keyboard and with iOS 27's side rail.
+                // Select the actual viewport; hit testing belongs to the final
+                // button assertion, not to this noninteractive container.
+                let viewport = visibleContentFrame($0, in: app)
+                return !viewport.isNull && viewport.width > 44 && viewport.height > 80
+            }
             .max { left, right in
-                let lhs = left.frame.intersection(app.frame)
-                let rhs = right.frame.intersection(app.frame)
+                let lhs = visibleContentFrame(left, in: app)
+                let rhs = visibleContentFrame(right, in: app)
                 return lhs.width * lhs.height < rhs.width * rhs.height
             }
     }
@@ -423,7 +432,12 @@ final class CPAQuotaAppUITests: XCTestCase {
 
     @MainActor
     private func attach(_ app: XCUIApplication, name: String) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        // Capture the complete display. Element screenshots can crop against
+        // the application's rotated bounds and lose landscape content.
+        let screenshot = XCUIScreen.main.screenshot()
+        let image = screenshot.image
+        print("FRONTEND_SCREENSHOT \(name) size=\(image.size.width)x\(image.size.height) scale=\(image.scale) orientation=\(image.imageOrientation.rawValue)")
+        let attachment = XCTAttachment(screenshot: screenshot)
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
