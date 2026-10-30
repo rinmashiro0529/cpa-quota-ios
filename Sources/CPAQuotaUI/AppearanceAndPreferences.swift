@@ -17,9 +17,9 @@ public enum CPAThemeMode: String, CaseIterable, Codable, Sendable, Identifiable 
 
     public var subtitle: String {
         switch self {
-        case .system: "自动匹配 iOS 系统深浅色外观设置"
-        case .light: "Claude 暖调羊皮纸基底与高透液态玻璃"
-        case .dark: "深邃暖曜石基底与低眩光暗珀液态玻璃"
+        case .system: "自动匹配系统的浅色或深色外观"
+        case .light: "暖调羊皮纸背景，搭配原生系统控件"
+        case .dark: "暖曜石背景与柔和赤陶强调色"
         }
     }
 
@@ -112,6 +112,20 @@ public protocol PreferencesStore: Sendable {
     func saveDisplayMode(_ mode: QuotaDisplayMode)
     func loadMaskEmail() -> Bool
     func saveMaskEmail(_ mask: Bool)
+    func loadSharesQuotaWithWidgets() -> Bool
+    func saveSharesQuotaWithWidgets(_ enabled: Bool)
+    func loadWidgetAccountIdentifiers(for sourceIdentifier: String) -> [String: String]
+    func saveWidgetAccountIdentifiers(_ identifiers: [String: String], for sourceIdentifier: String)
+    func clearWidgetAccountIdentifiers()
+}
+
+public extension PreferencesStore {
+    // Existing clients opt out until they implement persistence for the explicit sharing choice.
+    func loadSharesQuotaWithWidgets() -> Bool { false }
+    func saveSharesQuotaWithWidgets(_ enabled: Bool) {}
+    func loadWidgetAccountIdentifiers(for sourceIdentifier: String) -> [String: String] { [:] }
+    func saveWidgetAccountIdentifiers(_ identifiers: [String: String], for sourceIdentifier: String) {}
+    func clearWidgetAccountIdentifiers() {}
 }
 
 public final class MemoryPreferencesStore: PreferencesStore, @unchecked Sendable {
@@ -120,17 +134,22 @@ public final class MemoryPreferencesStore: PreferencesStore, @unchecked Sendable
     private var themeMode: CPAThemeMode
     private var displayMode: QuotaDisplayMode
     private var maskEmail: Bool
+    private var sharesQuotaWithWidgets: Bool
+    private var widgetSourceIdentifier: String?
+    private var widgetAccountIdentifiers: [String: String] = [:]
 
     public init(
         serverIdentifier: String? = nil,
         themeMode: CPAThemeMode = .system,
         displayMode: QuotaDisplayMode = .remaining,
-        maskEmail: Bool = true
+        maskEmail: Bool = true,
+        sharesQuotaWithWidgets: Bool = false
     ) {
         self.serverIdentifier = serverIdentifier
         self.themeMode = themeMode
         self.displayMode = displayMode
         self.maskEmail = maskEmail
+        self.sharesQuotaWithWidgets = sharesQuotaWithWidgets
     }
 
     public func loadSavedServerIdentifier() -> String? {
@@ -180,6 +199,38 @@ public final class MemoryPreferencesStore: PreferencesStore, @unchecked Sendable
         maskEmail = mask
         lock.unlock()
     }
+
+    public func loadSharesQuotaWithWidgets() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return sharesQuotaWithWidgets
+    }
+
+    public func saveSharesQuotaWithWidgets(_ enabled: Bool) {
+        lock.lock()
+        sharesQuotaWithWidgets = enabled
+        lock.unlock()
+    }
+
+    public func loadWidgetAccountIdentifiers(for sourceIdentifier: String) -> [String: String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return widgetSourceIdentifier == sourceIdentifier ? widgetAccountIdentifiers : [:]
+    }
+
+    public func saveWidgetAccountIdentifiers(_ identifiers: [String: String], for sourceIdentifier: String) {
+        lock.lock()
+        widgetSourceIdentifier = sourceIdentifier
+        widgetAccountIdentifiers = identifiers
+        lock.unlock()
+    }
+
+    public func clearWidgetAccountIdentifiers() {
+        lock.lock()
+        widgetSourceIdentifier = nil
+        widgetAccountIdentifiers = [:]
+        lock.unlock()
+    }
 }
 
 public final class UserDefaultsPreferencesStore: PreferencesStore, @unchecked Sendable {
@@ -191,6 +242,14 @@ public final class UserDefaultsPreferencesStore: PreferencesStore, @unchecked Se
         static let themeMode = "themeMode"
         static let displayMode = "displayMode"
         static let maskEmail = "maskEmail"
+        static let sharesQuotaWithWidgets = "sharesQuotaWithWidgets"
+        static let widgetIdentityRecord = "widgetIdentityRecordV1"
+    }
+
+    private struct WidgetIdentityRecord: Codable {
+        let version: Int
+        let sourceIdentifier: String
+        let identifiers: [String: String]
     }
 
     public init(suiteName: String? = nil, keyPrefix: String = "CPAQuotaUI.") {
@@ -249,5 +308,32 @@ public final class UserDefaultsPreferencesStore: PreferencesStore, @unchecked Se
 
     public func saveMaskEmail(_ mask: Bool) {
         defaults.set(mask, forKey: keyPrefix + Keys.maskEmail)
+    }
+
+    public func loadSharesQuotaWithWidgets() -> Bool {
+        defaults.bool(forKey: keyPrefix + Keys.sharesQuotaWithWidgets)
+    }
+
+    public func saveSharesQuotaWithWidgets(_ enabled: Bool) {
+        defaults.set(enabled, forKey: keyPrefix + Keys.sharesQuotaWithWidgets)
+    }
+
+    // Stored only in the containing app's preferences, never in the App Group.
+    public func loadWidgetAccountIdentifiers(for sourceIdentifier: String) -> [String: String] {
+        guard let data = defaults.data(forKey: keyPrefix + Keys.widgetIdentityRecord),
+              let record = try? JSONDecoder().decode(WidgetIdentityRecord.self, from: data),
+              record.version == 1, record.sourceIdentifier == sourceIdentifier else { return [:] }
+        return record.identifiers
+    }
+
+    public func saveWidgetAccountIdentifiers(_ identifiers: [String: String], for sourceIdentifier: String) {
+        // Publish source and IDs as one value; a process exit cannot pair a new map with an old source.
+        let record = WidgetIdentityRecord(version: 1, sourceIdentifier: sourceIdentifier, identifiers: identifiers)
+        guard let data = try? JSONEncoder().encode(record) else { return }
+        defaults.set(data, forKey: keyPrefix + Keys.widgetIdentityRecord)
+    }
+
+    public func clearWidgetAccountIdentifiers() {
+        defaults.removeObject(forKey: keyPrefix + Keys.widgetIdentityRecord)
     }
 }

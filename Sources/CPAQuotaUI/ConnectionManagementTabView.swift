@@ -12,286 +12,152 @@ public struct ConnectionManagementTabView: View {
     }
 
     public var body: some View {
-        let palette = LiquidGlassPalette(colorScheme: colorScheme)
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("CPAServer 与 Keychain 凭据状态")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(palette.textSecondary)
-                Text("连接与会话管理")
-                    .font(.system(size: 26, weight: .semibold, design: .serif))
-                    .foregroundStyle(palette.textPrimary)
+        let palette = BrandPalette(colorScheme: colorScheme)
+        Form {
+            Section {
+                QuotaLabeledValue(
+                    title: "CPA 服务",
+                    value: (session.currentServer ?? session.savedServer)?.identifier ?? "尚未配置"
+                )
+                .textSelection(.enabled)
+                QuotaLabeledValue(title: "连接状态", value: connectionStatus, monospaced: false)
+                QuotaLabeledValue(title: "凭据保存", value: storageStatus, monospaced: false)
+                if let error = session.connectionFormError {
+                    QuotaErrorNotice(presentation: ErrorPresentation(error: error))
+                } else if let message = session.statusBannerMessage {
+                    Label(message, systemImage: "info.circle")
+                        .font(.subheadline)
+                        .foregroundStyle(palette.textSecondary)
+                }
+                Button {
+                    session.isPresentingConnectionSheet = true
+                } label: {
+                    Label("更换服务地址或更新管理密钥", systemImage: "key")
+                        .frame(minHeight: 44)
+                }
+                .quotaPrimaryButtonStyle()
+            } header: {
+                Text("当前连接").font(QuotaTypography.brandHeadline)
             }
-            .padding(.horizontal, 2)
+            .listRowBackground(palette.contentSurface)
 
-            serverConnectionCard(palette: palette)
+            Section {
+                Picker("外观", selection: $session.themeMode) {
+                    ForEach(CPAThemeMode.allCases) { mode in
+                        Label(mode.title, systemImage: mode.symbolName).tag(mode)
+                    }
+                }
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("settings.appearance")
+                .accessibilityValue(session.themeMode.title)
+                Text(session.themeMode.subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(palette.textSecondary)
+                Picker("额度显示", selection: $session.displayMode) {
+                    ForEach(QuotaDisplayMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.menu)
+            } header: {
+                Text("外观与显示")
+            } footer: {
+                Text("文字大小、减少透明度与减少动态效果遵循系统辅助功能设置。")
+            }
+            .listRowBackground(palette.contentSurface)
 
-            appearanceAndPreferencesCard(palette: palette)
+            Section {
+                Toggle("账号邮箱局部脱敏", isOn: $session.maskEmail)
+                    .accessibilityIdentifier("settings.maskEmail")
+                Toggle("允许小组件显示配额", isOn: $session.sharesQuotaWithWidgets)
+                    .accessibilityIdentifier("settings.widgetSharing")
+                if let notice = session.widgetSharingNotice {
+                    Label(notice, systemImage: "info.circle")
+                        .font(.subheadline)
+                        .foregroundStyle(palette.textSecondary)
+                }
+            } header: {
+                Text("隐私")
+            } footer: {
+                Text("邮箱脱敏隐藏用户名中间字符，应用内显示与读屏使用相同结果。小组件共享默认关闭；开启后仅共享安全别名与最近读数，不共享管理密钥。")
+            }
+            .listRowBackground(palette.contentSurface)
 
-            securityBoundaryCard(palette: palette)
+            Section {
+                DisclosureGroup("只读查询与权限范围") {
+                    Text("应用可读取账号、额度与使用情况，不提供账号启停、额度重置或 CPA 配置修改。管理密钥仍保有服务端授予的管理权限，请妥善保存。")
+                        .font(.body)
+                        .foregroundStyle(palette.textSecondary)
+                    Text("单个上游账号鉴权失败，不等于 CPA 管理密钥失效。请按该账号的错误提示恢复，无需删除其他账号的连接。")
+                        .font(.subheadline)
+                        .foregroundStyle(palette.textSecondary)
+                }
+                DisclosureGroup("本机凭据保护") {
+                    Text("记住连接后，管理密钥存入仅限本设备、解锁时可用的系统钥匙串。应用不会在此显示密钥原文。")
+                        .font(.body)
+                        .foregroundStyle(palette.textSecondary)
+                    QuotaLabeledValue(
+                        title: "密钥显示",
+                        value: session.currentServer != nil ? "已隐藏" : "未载入",
+                        monospaced: false
+                    )
+                }
+            }
+            .listRowBackground(palette.contentSurface)
 
-            actionButtonsSection(palette: palette)
+            if session.currentServer != nil || session.savedServer != nil || session.connectionFormError != nil {
+                Section {
+                    Button(role: .destructive) {
+                        isConfirmingForget = true
+                    } label: {
+                        Label("忘记此连接", systemImage: "trash")
+                            .frame(minHeight: 44)
+                    }
+                } footer: {
+                    Text("移除本机保存的管理密钥，并清空本次会话中的账号与额度快照。")
+                }
+                .listRowBackground(palette.contentSurface)
+            }
         }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(BrandCanvasBackground())
+        .navigationTitle("连接与设置")
+        .tint(palette.actionTint)
         .confirmationDialog(
             "确认忘记此 CPA 连接？",
             isPresented: $isConfirmingForget,
             titleVisibility: .visible
         ) {
-            Button("从 Keychain 移除管理密钥并断开", role: .destructive) {
+            Button("移除管理密钥并断开", role: .destructive) {
                 Task { await session.forgetCurrentConnection() }
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("该操作将删除保存在本机 Keychain 中的管理密钥，并清空内存中的账号与额度快照。")
+            Text("将删除保存在本机钥匙串中的管理密钥，并清空内存中的账号与额度快照。")
         }
     }
 
-    @ViewBuilder
-    private func serverConnectionCard(palette: LiquidGlassPalette) -> some View {
-        let storageError = session.connectionFormError?.kind == .secureStorageFailure
-            || session.connectionFormError?.kind == .secureStorageUnavailable
-        let rememberedServer = session.savedServer
-        let displayedServer = session.currentServer ?? rememberedServer
-        let storageStatus: String = {
-            if storageError { return "存储状态待确认（上次操作未完成）" }
-            switch session.authState {
-            case .connected:
-                return session.isRememberedInKeychain
-                    ? "已保存 (WhenUnlockedThisDeviceOnly)" : "内存临时会话 (未写入 Keychain)"
-            case .connecting:
-                return "正在验证，尚未确认本次保存状态"
-            case .unconfigured:
-                return rememberedServer != nil ? "有已保存配置，当前未连接" : "尚未保存连接"
-            }
-        }()
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("规范化服务标识 (server.identifier)")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(palette.textPrimary)
-                Spacer()
-                Text(session.currentServer != nil ? "HTTPS 已锁定"
-                    : (rememberedServer != nil ? "已保存，未连接" : "未连接"))
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(session.currentServer != nil ? palette.statusOK : palette.statusWarn)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(
-                        Capsule(style: .continuous)
-                            .fill((session.currentServer != nil ? palette.statusOK : palette.statusWarn).opacity(0.14))
-                    )
-            }
-
-            Text(displayedServer?.identifier ?? "尚未配置 CPA 服务地址")
-                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                .foregroundStyle(palette.textPrimary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .liquidGlassPill(cornerRadius: 14)
-
-            infoRow(
-                label: "Keychain 凭据保存状态",
-                value: storageStatus,
-                palette: palette
-            )
-
-            infoRow(
-                label: "管理密钥脱敏状态",
-                value: session.currentServer != nil ? "<redacted management key>" : "未载入",
-                palette: palette
-            )
-
-            if let error = session.connectionFormError {
-                let presentation = ErrorPresentation(error: error)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(presentation.title)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(palette.statusError)
-                    Text(presentation.summary)
-                        .font(.system(size: 11))
-                        .foregroundStyle(palette.textSecondary)
-                    Text(presentation.recoveryAdvice)
-                        .font(.system(size: 11))
-                        .foregroundStyle(palette.textMuted)
-                }
-            } else if let message = session.statusBannerMessage {
-                Text(message)
-                    .font(.system(size: 11))
-                    .foregroundStyle(palette.statusWarn)
-            }
-        }
-        .padding(16)
-        .liquidGlassCard(cornerRadius: 26)
-    }
-
-    @ViewBuilder
-    private func appearanceAndPreferencesCard(palette: LiquidGlassPalette) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("界面外观与展示偏好")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(palette.textPrimary)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("深浅色外观模式")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(palette.textSecondary)
-
-                HStack(spacing: 6) {
-                    ForEach(CPAThemeMode.allCases) { mode in
-                        let isSelected = session.themeMode == mode
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                session.themeMode = mode
-                            }
-                        } label: {
-                            HStack(spacing: 5) {
-                                Image(systemName: mode.symbolName)
-                                    .font(.system(size: 11, weight: .semibold))
-                                Text(mode.title)
-                                    .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
-                            }
-                            .foregroundStyle(isSelected ? Color.white : palette.textSecondary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
-                            .background {
-                                if isSelected {
-                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                        .fill(palette.accent)
-                                }
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(4)
-                .liquidGlassPill(cornerRadius: 16)
-
-                Text(session.themeMode.subtitle)
-                    .font(.system(size: 10))
-                    .foregroundStyle(palette.textMuted)
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("额度进度条主视角")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(palette.textSecondary)
-
-                HStack(spacing: 6) {
-                    ForEach(QuotaDisplayMode.allCases) { mode in
-                        let isSelected = session.displayMode == mode
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                session.displayMode = mode
-                            }
-                        } label: {
-                            Text(mode.title)
-                                .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
-                                .foregroundStyle(isSelected ? Color.white : palette.textSecondary)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 8)
-                                .background {
-                                    if isSelected {
-                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                            .fill(palette.accent)
-                                    }
-                                }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(4)
-                .liquidGlassPill(cornerRadius: 16)
-            }
-
-            Toggle(isOn: $session.maskEmail) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("账号邮箱局部脱敏")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(palette.textPrimary)
-                    Text("开启后默认隐藏邮箱用户名中间字符，防止截屏或旁观泄露")
-                        .font(.system(size: 10))
-                        .foregroundStyle(palette.textSecondary)
-                }
-            }
-            .tint(palette.accent)
-        }
-        .padding(16)
-        .liquidGlassCard(cornerRadius: 26)
-    }
-
-    @ViewBuilder
-    private func securityBoundaryCard(palette: LiquidGlassPalette) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("只读查询与权限边界说明")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(palette.textPrimary)
-
-            Text("本客户端仅发起只读账号与额度查询，不包含 OAuth 登录、账号启停、额度重置或修改 CPA 配置。请注意：CPA 管理密钥本身仍具备服务端原有管理权限；单个上游账号鉴权失效（upstreamUnauthorized）不代表 CPA 管理密钥失效。")
-                .font(.system(size: 11))
-                .foregroundStyle(palette.textSecondary)
-                .lineSpacing(2.5)
-        }
-        .padding(15)
-        .liquidGlassCard(cornerRadius: 24)
-    }
-
-    @ViewBuilder
-    private func actionButtonsSection(palette: LiquidGlassPalette) -> some View {
-        VStack(spacing: 10) {
-            Button {
-                session.isPresentingConnectionSheet = true
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                        .font(.system(size: 13, weight: .semibold))
-                    Text("更换服务地址或更新管理密钥")
-                }
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(palette.accent)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 13)
-                .liquidGlassCard(cornerRadius: 18)
-            }
-            .buttonStyle(.plain)
-
-            if session.currentServer != nil || session.savedServer != nil || session.connectionFormError != nil {
-                Button {
-                    isConfirmingForget = true
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "trash")
-                            .font(.system(size: 13, weight: .semibold))
-                        Text("忘记此连接 (从 Keychain 移除凭据)")
-                    }
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(palette.statusError)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 13)
-                    .background(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(palette.statusError.opacity(0.11))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .strokeBorder(palette.statusError.opacity(0.26), lineWidth: 0.9)
-                    )
-                }
-                .buttonStyle(.plain)
-            }
+    private var connectionStatus: String {
+        switch session.authState {
+        case .connecting: "正在验证连接"
+        case .connected: "已通过 HTTPS 连接"
+        case .unconfigured: session.savedServer != nil ? "已保存，当前未连接" : "未连接"
         }
     }
 
-    @ViewBuilder
-    private func infoRow(label: String, value: String, palette: LiquidGlassPalette) -> some View {
-        HStack {
-            Text(label)
-                .font(.system(size: 11))
-                .foregroundStyle(palette.textSecondary)
-            Spacer()
-            Text(value)
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .foregroundStyle(palette.textPrimary)
+    private var storageStatus: String {
+        if session.connectionFormError?.kind == .secureStorageFailure
+            || session.connectionFormError?.kind == .secureStorageUnavailable {
+            return "上次存储操作未完成，状态待确认"
+        }
+        switch session.authState {
+        case .connected:
+            return session.isRememberedInKeychain ? "已保存至本机钥匙串" : "临时会话，未写入钥匙串"
+        case .connecting:
+            return "验证完成后确认保存状态"
+        case .unconfigured:
+            return session.savedServer != nil ? "有已保存配置，当前未连接" : "尚未保存连接"
         }
     }
 }

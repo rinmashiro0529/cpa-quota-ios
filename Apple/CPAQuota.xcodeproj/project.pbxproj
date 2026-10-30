@@ -55,6 +55,12 @@
 		E10000000000000000000001 /* CAPWorkspaceReliabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000001 /* CAPWorkspaceReliabilityTests.swift */; };
 		E10000000000000000000002 /* MonitoringWorkspaceReliabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000002 /* MonitoringWorkspaceReliabilityTests.swift */; };
 		E10000000000000000000003 /* ActivityReliabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000003 /* ActivityReliabilityTests.swift */; };
+		F10000000000000000000100 /* CPAQuotaAppUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000100 /* CPAQuotaAppUITests.swift */; };
+		F10000000000000000000001 /* AccountDiagnosticPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000001 /* AccountDiagnosticPresentationTests.swift */; };
+		F10000000000000000000008 /* CAPFrontendPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000008 /* CAPFrontendPresentationTests.swift */; };
+		F10000000000000000000023 /* NativeActivityAndWidgetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000023 /* NativeActivityAndWidgetTests.swift */; };
+		F10000000000000000000024 /* NativeWorkspaceLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000024 /* NativeWorkspaceLifecycleTests.swift */; };
+		FA0000000000000000000016 /* CPAQuotaUITestFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000016 /* CPAQuotaUITestFixtureTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -65,6 +71,7 @@
 			remoteGlobalIDString = D50000000000000000000001;
 			remoteInfo = CPAQuotaActivityExtension;
 		};
+		F60000000000000000000001 /* PBXContainerItemProxy */ = {isa = PBXContainerItemProxy; containerPortal = A60000000000000000000001 /* Project object */; proxyType = 1; remoteGlobalIDString = A50000000000000000000001; remoteInfo = CPAQuota; };
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -127,6 +134,14 @@
 		E20000000000000000000002 /* MonitoringWorkspaceReliabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/MonitoringWorkspaceReliabilityTests.swift; sourceTree = "<group>"; };
 		E20000000000000000000003 /* ActivityReliabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/ActivityReliabilityTests.swift; sourceTree = "<group>"; };
 		D20000000000000000000004 /* CPAQuota.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = CPAQuota.entitlements; sourceTree = "<group>"; };
+		F20000000000000000000100 /* CPAQuotaAppUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CPAQuotaAppUITests/CPAQuotaAppUITests.swift; sourceTree = "<group>"; };
+		F20000000000000000000101 /* CPAQuotaAppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CPAQuotaAppUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		F20000000000000000000102 /* Activity Extension Entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = CPAQuotaActivityExtension/CPAQuotaActivityExtension.entitlements; sourceTree = "<group>"; };
+		F20000000000000000000001 /* AccountDiagnosticPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/AccountDiagnosticPresentationTests.swift; sourceTree = "<group>"; };
+		F20000000000000000000008 /* CAPFrontendPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/CAPFrontendPresentationTests.swift; sourceTree = "<group>"; };
+		F20000000000000000000023 /* NativeActivityAndWidgetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/NativeActivityAndWidgetTests.swift; sourceTree = "<group>"; };
+		F20000000000000000000024 /* NativeWorkspaceLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/NativeWorkspaceLifecycleTests.swift; sourceTree = "<group>"; };
+		FB0000000000000000000016 /* CPAQuotaUITestFixtureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/CPAQuotaUITestFixtureTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -155,6 +170,7 @@
 			files = (D10000000000000000000002 /* CPAQuotaActivity in Frameworks */, );
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F30000000000000000000002 /* UI Tests Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -205,6 +221,13 @@
 				E20000000000000000000003 /* ActivityReliabilityTests.swift */,
 				E20000000000000000000002 /* MonitoringWorkspaceReliabilityTests.swift */,
 				E20000000000000000000001 /* CAPWorkspaceReliabilityTests.swift */,
+				F20000000000000000000100 /* CPAQuotaAppUITests.swift */,
+				F20000000000000000000102 /* Activity Extension Entitlements */,
+				F20000000000000000000001 /* AccountDiagnosticPresentationTests.swift */,
+				F20000000000000000000008 /* CAPFrontendPresentationTests.swift */,
+				F20000000000000000000023 /* NativeActivityAndWidgetTests.swift */,
+				F20000000000000000000024 /* NativeWorkspaceLifecycleTests.swift */,
+				FB0000000000000000000016 /* CPAQuotaUITestFixtureTests.swift */,
 				A40000000000000000000002 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -214,6 +237,7 @@
 			children = (
 				A20000000000000000000002 /* CPAQuota.app */,
 				A20000000000000000000018 /* CPAQuotaTests.xctest */,
+				F20000000000000000000101 /* CPAQuotaAppUITests.xctest */,
 				D20000000000000000000002 /* CPAQuotaActivityExtension.appex */,
 			);
 			name = Products;
@@ -278,6 +302,17 @@
 			productReference = D20000000000000000000002 /* CPAQuotaActivityExtension.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		F50000000000000000000001 /* CPAQuotaAppUITests */ = {
+            isa = PBXNativeTarget;
+            buildConfigurationList = F80000000000000000000001 /* Build configuration list for PBXNativeTarget "CPAQuotaAppUITests" */;
+            buildPhases = (F30000000000000000000001 /* UI Tests Sources */, F30000000000000000000002 /* UI Tests Frameworks */, F30000000000000000000003 /* UI Tests Resources */, );
+            buildRules = ();
+            dependencies = (F90000000000000000000001 /* PBXTargetDependency */, );
+            name = CPAQuotaAppUITests;
+            productName = CPAQuotaAppUITests;
+            productReference = F20000000000000000000101 /* CPAQuotaAppUITests.xctest */;
+            productType = "com.apple.product-type.bundle.ui-testing";
+        };
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -288,9 +323,10 @@
 				LastSwiftUpdateCheck = 1600;
 				LastUpgradeCheck = 1600;
 				TargetAttributes = {
-					A50000000000000000000001 = { CreatedOnToolsVersion = 16.0; SystemCapabilities = { com.apple.Push = { enabled = 1; }; }; };
+					A50000000000000000000001 = { CreatedOnToolsVersion = 16.0; SystemCapabilities = { com.apple.Push = { enabled = 1; }; com.apple.ApplicationGroups.iOS = { enabled = 1; }; }; };
 					A50000000000000000000002 = { CreatedOnToolsVersion = 16.0; };
-					D50000000000000000000001 = { CreatedOnToolsVersion = 26.2; };
+					D50000000000000000000001 = { CreatedOnToolsVersion = 26.2; SystemCapabilities = { com.apple.ApplicationGroups.iOS = { enabled = 1; }; }; };
+					F50000000000000000000001 = { CreatedOnToolsVersion = 27.2; TestTargetID = A50000000000000000000001; };
 			};
 			};
 			buildConfigurationList = A80000000000000000000002 /* Build configuration list for PBXProject "CPAQuota" */;
@@ -307,6 +343,7 @@
 			targets = (
 				A50000000000000000000001 /* CPAQuota */,
 				A50000000000000000000002 /* CPAQuotaTests */,
+				F50000000000000000000001 /* CPAQuotaAppUITests */,
 				D50000000000000000000001 /* CPAQuotaActivityExtension */,
 			);
 		};
@@ -361,6 +398,11 @@
 				E10000000000000000000003 /* ActivityReliabilityTests.swift in Sources */,
 				E10000000000000000000002 /* MonitoringWorkspaceReliabilityTests.swift in Sources */,
 				E10000000000000000000001 /* CAPWorkspaceReliabilityTests.swift in Sources */,
+							F10000000000000000000001 /* AccountDiagnosticPresentationTests.swift in Sources */,
+							F10000000000000000000008 /* CAPFrontendPresentationTests.swift in Sources */,
+							F10000000000000000000023 /* NativeActivityAndWidgetTests.swift in Sources */,
+							F10000000000000000000024 /* NativeWorkspaceLifecycleTests.swift in Sources */,
+							FA0000000000000000000016 /* CPAQuotaUITestFixtureTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -370,6 +412,7 @@
 			files = (D10000000000000000000001 /* CPAQuotaActivityBundle.swift in Sources */, );
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F30000000000000000000001 /* UI Tests Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (F10000000000000000000100 /* CPAQuotaAppUITests.swift in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXResourcesBuildPhase section */
@@ -396,6 +439,7 @@
 			files = (D10000000000000000000004 /* PrivacyInfo.xcprivacy in Resources */, );
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F30000000000000000000003 /* UI Tests Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -404,6 +448,7 @@
 			target = D50000000000000000000001 /* CPAQuotaActivityExtension */;
 			targetProxy = D60000000000000000000001 /* PBXContainerItemProxy */;
 		};
+		F90000000000000000000001 /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = A50000000000000000000001 /* CPAQuota */; targetProxy = F60000000000000000000001 /* PBXContainerItemProxy */; };
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
@@ -413,6 +458,8 @@
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ENABLE_MODULES = YES;
 				ENABLE_TESTABILITY = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 6.0;
@@ -528,6 +575,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = CPAQuotaActivityExtension/CPAQuotaActivityExtension.entitlements;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGNING_REQUIRED = NO;
 				CODE_SIGN_IDENTITY = "";
@@ -551,6 +599,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = CPAQuotaActivityExtension/CPAQuotaActivityExtension.entitlements;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGNING_REQUIRED = NO;
 				CODE_SIGN_IDENTITY = "";
@@ -570,6 +619,42 @@
 			};
 			name = Release;
 		};
+		F80000000000000000000002 /* Debug */ = {
+            isa = XCBuildConfiguration;
+            buildSettings = {
+                CODE_SIGNING_ALLOWED = NO;
+                CODE_SIGNING_REQUIRED = NO;
+                CODE_SIGN_IDENTITY = "";
+                GENERATE_INFOPLIST_FILE = YES;
+                IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+                PRODUCT_BUNDLE_IDENTIFIER = icu.nahida.cpaquota.uitests;
+                PRODUCT_NAME = "$(TARGET_NAME)";
+                SDKROOT = iphoneos;
+                SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+                SWIFT_VERSION = 6.0;
+                TARGETED_DEVICE_FAMILY = "1,2";
+                TEST_TARGET_NAME = CPAQuota;
+            };
+            name = Debug;
+        };
+		F80000000000000000000003 /* Release */ = {
+            isa = XCBuildConfiguration;
+            buildSettings = {
+                CODE_SIGNING_ALLOWED = NO;
+                CODE_SIGNING_REQUIRED = NO;
+                CODE_SIGN_IDENTITY = "";
+                GENERATE_INFOPLIST_FILE = YES;
+                IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+                PRODUCT_BUNDLE_IDENTIFIER = icu.nahida.cpaquota.uitests;
+                PRODUCT_NAME = "$(TARGET_NAME)";
+                SDKROOT = iphoneos;
+                SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+                SWIFT_VERSION = 6.0;
+                TARGETED_DEVICE_FAMILY = "1,2";
+                TEST_TARGET_NAME = CPAQuota;
+            };
+            name = Release;
+        };
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -609,6 +694,12 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		F80000000000000000000001 /* Build configuration list for PBXNativeTarget "CPAQuotaAppUITests" */ = {
+            isa = XCConfigurationList;
+            buildConfigurations = (F80000000000000000000002 /* Debug */, F80000000000000000000003 /* Release */, );
+            defaultConfigurationIsVisible = 0;
+            defaultConfigurationName = Debug;
+        };
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */

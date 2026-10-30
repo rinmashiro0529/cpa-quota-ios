@@ -1,7 +1,8 @@
 import Foundation
 import CPAQuotaKit
 
-public struct DynamicIslandState: Equatable, Sendable {
+/// Connection status data only. This type never renders or represents a system Live Activity.
+public struct ConnectionStatusPresentation: Equatable, Sendable {
     public enum Phase: Equatable, Sendable {
         case unconfigured
         case idle(host: String, activeCount: Int, totalCount: Int)
@@ -105,7 +106,7 @@ public struct DynamicIslandState: Equatable, Sendable {
             guard totalCount > 0 else { return 0.0 }
             return max(0.0, min(1.0, Double(completedCount) / Double(totalCount)))
         case .rateLimited:
-            return 0.35
+            return 0.0 // A cooldown duration is not a measurable completed-work fraction.
         case .managementBlocked:
             return 0.0
         case .connectionFailed:
@@ -153,3 +154,6 @@ public struct DynamicIslandState: Equatable, Sendable {
         return String(cleaned.prefix(10))
     }
 }
+
+@available(*, deprecated, renamed: "ConnectionStatusPresentation")
+public typealias DynamicIslandState = ConnectionStatusPresentation

@@ -1,6 +1,10 @@
 import Foundation
 import Observation
 import CPAQuotaKit
+import CPAQuotaActivity
+#if canImport(Security)
+import Security
+#endif
 
 private final class CredentialIntentCancellation: @unchecked Sendable {
     private enum State {
@@ -405,12 +409,13 @@ public final class CPAQuotaSession {
 
     public var activeTab: CPAWorkspaceTab = .quotas
     public var selectedFilter: AccountFilterCategory = .all
+    @available(*, deprecated, message: "Use connection status within normal app content.")
     public var isIslandExpanded = false
     public var selectedAccountIDForDetail: String?
     public var isPresentingConnectionSheet = false
 
     public let capUsageCoordinator = CAPUsageWorkspaceCoordinator()
-    public let monitoringCoordinator = MonitoringWorkspaceCoordinator()
+    public let monitoringCoordinator: MonitoringWorkspaceCoordinator
 
     public var serverAddressDraft: String = ""
     public var managementKeyDraft: String = ""
@@ -428,6 +433,16 @@ public final class CPAQuotaSession {
         didSet { preferences.saveMaskEmail(maskEmail) }
     }
 
+    public var sharesQuotaWithWidgets: Bool {
+        didSet {
+            preferences.saveSharesQuotaWithWidgets(sharesQuotaWithWidgets)
+            if oldValue && !sharesQuotaWithWidgets { needsWidgetSnapshotClear = true }
+            synchronizeQuotaWidgetSnapshot(reportClearFailure: oldValue)
+        }
+    }
+
+    public private(set) var widgetSharingNotice: String?
+
     @ObservationIgnored private let credentialStore: any CredentialStore
     @ObservationIgnored private let credentialCoordinator: CredentialStoreCoordinator
     @ObservationIgnored private let preferences: any PreferencesStore
@@ -438,10 +453,16 @@ public final class CPAQuotaSession {
     @ObservationIgnored private var credentialIntentVersion: UInt64 = 0
     @ObservationIgnored private var progressRoundID: UInt64 = 0
     @ObservationIgnored private var isProgressRoundActive = false
+    @ObservationIgnored private let widgetPublisher: QuotaWidgetPublisher
+    @ObservationIgnored private var applicationRestoreTask: Task<Void, Never>?
+    @ObservationIgnored private var didRestoreApplication = false
+    @ObservationIgnored private var needsWidgetSnapshotClear = false
 
     public init(
         credentialStore: any CredentialStore = KeychainCredentialStore(),
         preferences: any PreferencesStore = UserDefaultsPreferencesStore(),
+        monitoringCoordinator: MonitoringWorkspaceCoordinator? = nil,
+        widgetSnapshotStore: SharedQuotaWidgetSnapshotStore = .init(),
         clientFactory: @escaping @Sendable (CPAServer, ManagementKey) -> CPAClient = { server, key in
             CPAClient(server: server, managementKey: key)
         }
@@ -449,10 +470,13 @@ public final class CPAQuotaSession {
         self.credentialStore = credentialStore
         self.credentialCoordinator = CredentialStoreCoordinator(store: credentialStore)
         self.preferences = preferences
+        self.monitoringCoordinator = monitoringCoordinator ?? MonitoringWorkspaceCoordinator()
+        self.widgetPublisher = QuotaWidgetPublisher(store: widgetSnapshotStore, preferences: preferences)
         self.clientFactory = clientFactory
         self.themeMode = preferences.loadThemeMode()
         self.displayMode = preferences.loadDisplayMode()
         self.maskEmail = preferences.loadMaskEmail()
+        self.sharesQuotaWithWidgets = preferences.loadSharesQuotaWithWidgets()
         if let savedIdentifier = preferences.loadSavedServerIdentifier() {
             self.savedServer = try? CPAServer(baseURL: savedIdentifier)
             self.serverAddressDraft = savedIdentifier
@@ -475,7 +499,70 @@ public final class CPAQuotaSession {
         }
     }
 
+    /// Cold-launch restoration belongs to the application, including when monitoring is never opened.
+    /// A second scene or a deep link awaits the same task instead of racing credential restoration.
+    public func restoreApplicationIfAvailable() async {
+        if let applicationRestoreTask {
+            await applicationRestoreTask.value
+            return
+        }
+        guard !didRestoreApplication else { return }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            async let bridgeRestore: Void = self.monitoringCoordinator.restoreBridgeIfAvailable()
+            if !self.isWorkspaceReady, !self.isBusy {
+                await self.restoreSessionIfAvailable()
+            }
+            await bridgeRestore
+        }
+        applicationRestoreTask = task
+        await task.value
+        didRestoreApplication = true
+        applicationRestoreTask = nil
+        synchronizeQuotaWidgetSnapshot()
+    }
+
+    public func applicationDidBecomeActive() async {
+        await restoreApplicationIfAvailable()
+        // Keychain may be unavailable until first unlock. Do not forget credentials on that error.
+        var canRetryStorageRead = connectionFormError?.kind == .secureStorageUnavailable
+        #if canImport(Security)
+        canRetryStorageRead = canRetryStorageRead
+            || (connectionFormError?.kind == .secureStorageFailure
+                && connectionFormError?.statusCode == Int(errSecInteractionNotAllowed))
+        #endif
+        if !isWorkspaceReady, !isBusy, canRetryStorageRead {
+            await restoreSessionIfAvailable()
+        }
+        await monitoringCoordinator.applicationDidBecomeActive()
+        synchronizeQuotaWidgetSnapshot()
+    }
+
+    private func synchronizeQuotaWidgetSnapshot(reportClearFailure: Bool = false) {
+        guard sharesQuotaWithWidgets, let currentServer, store != nil else {
+            do {
+                try widgetPublisher.clear()
+                needsWidgetSnapshotClear = false
+                widgetSharingNotice = nil
+            } catch {
+                widgetSharingNotice = reportClearFailure || needsWidgetSnapshotClear
+                    ? "小组件快照暂未清除；请解锁设备后重试。旧读数会按原观察时间过期。" : nil
+            }
+            return
+        }
+        do {
+            try widgetPublisher.publish(sourceIdentifier: currentServer.identifier,
+                                        accounts: accounts, records: records)
+            widgetSharingNotice = accounts.count > QuotaWidgetSnapshot.maximumEntries
+                ? "小组件共享前 64 个账号的主要读数；完整窗口与指标请在额度总览查看。"
+                : "已共享安全别名与主要读数；小组件刷新由系统安排，过期读数会显示为旧数据。"
+        } catch {
+            widgetSharingNotice = "小组件共享暂不可用。请确认安装包具有共享容器权限；应用内额度不受影响。"
+        }
+    }
+
     public func restoreSessionIfAvailable() async {
+        defer { synchronizeQuotaWidgetSnapshot() }
         let startGeneration = operationGeneration
         guard let savedIdentifier = preferences.loadSavedServerIdentifier(),
               !savedIdentifier.isEmpty else {
@@ -642,6 +729,7 @@ public final class CPAQuotaSession {
         managementKeyInput: String,
         rememberInKeychain: Bool
     ) async {
+        defer { synchronizeQuotaWidgetSnapshot() }
         connectionFormError = nil
         statusBannerMessage = nil
 
@@ -821,6 +909,7 @@ public final class CPAQuotaSession {
     }
 
     public func refreshAll(force: Bool = true) async {
+        defer { synchronizeQuotaWidgetSnapshot() }
         guard let store else { return }
         let ownsRound = !isProgressRoundActive
         let round = ownsRound ? beginProgressRound() : 0
@@ -838,11 +927,13 @@ public final class CPAQuotaSession {
     }
 
     public func refreshAccount(_ accountID: String, force: Bool = true) async {
+        defer { synchronizeQuotaWidgetSnapshot() }
         guard let store else { return }
         await store.refresh(accountID: accountID, force: force)
     }
 
     public func loadInitialIfNeeded() async {
+        defer { synchronizeQuotaWidgetSnapshot() }
         guard let store else { return }
         let ownsRound = !isProgressRoundActive
         let round = ownsRound ? beginProgressRound() : 0
@@ -897,6 +988,7 @@ public final class CPAQuotaSession {
     }
 
     public func forgetCurrentConnection() async {
+        defer { synchronizeQuotaWidgetSnapshot() }
         // Invalidate in-flight work before touching storage so a late write cannot publish state.
         operationGeneration &+= 1
         let generation = operationGeneration
@@ -937,6 +1029,8 @@ public final class CPAQuotaSession {
             guard generation == operationGeneration else { return }
         }
         updateSavedServer(nil)
+        widgetPublisher.forgetIdentity()
+        needsWidgetSnapshotClear = true
         store = nil
         currentServer = nil
         isRememberedInKeychain = false
@@ -994,28 +1088,33 @@ public final class CPAQuotaSession {
         return 0
     }
 
-    public func dynamicIslandState(now: Date = Date()) -> DynamicIslandState {
+    @available(*, deprecated, message: "Connection status only; system Live Activities use ActivityKit.")
+    public func dynamicIslandState(now: Date = Date()) -> ConnectionStatusPresentation {
+        connectionStatus(now: now, isExpanded: isIslandExpanded)
+    }
+
+    public func connectionStatus(now: Date = Date(), isExpanded: Bool = false) -> ConnectionStatusPresentation {
         if case .connecting = authState {
-            return DynamicIslandState(
+            return ConnectionStatusPresentation(
                 phase: .syncing(isLoadingInventory: true, completedCount: 0, totalCount: 1),
-                isExpanded: isIslandExpanded
+                isExpanded: isExpanded
             )
         }
         guard let currentServer, let store else {
-            return DynamicIslandState(phase: .unconfigured, isExpanded: isIslandExpanded)
+            return ConnectionStatusPresentation(phase: .unconfigured, isExpanded: isExpanded)
         }
 
         let enabledCount = store.accounts.filter { !$0.isDisabled }.count
         let totalCount = store.accounts.count
 
         if store.isLoading || store.isRefreshing {
-            return DynamicIslandState(
+            return ConnectionStatusPresentation(
                 phase: .syncing(
                     isLoadingInventory: store.isLoading,
                     completedCount: completedEnabledAccountCount(),
                     totalCount: enabledCount
                 ),
-                isExpanded: isIslandExpanded
+                isExpanded: isExpanded
             )
         }
 
@@ -1024,22 +1123,22 @@ public final class CPAQuotaSession {
                let retryAfter = globalError.retryAfter {
                 let remaining = Int(ceil(retryAfter.timeIntervalSince(now)))
                 if remaining > 0 {
-                    return DynamicIslandState(
+                    return ConnectionStatusPresentation(
                         phase: .rateLimited(layer: globalError.layer, remainingSeconds: remaining),
-                        isExpanded: isIslandExpanded
+                        isExpanded: isExpanded
                     )
                 }
             }
             if globalError.kind == .managementUnauthorized || globalError.kind == .managementForbidden {
-                return DynamicIslandState(
+                return ConnectionStatusPresentation(
                     phase: .managementBlocked(kind: globalError.kind),
-                    isExpanded: isIslandExpanded
+                    isExpanded: isExpanded
                 )
             }
             if globalError.kind != .rateLimited {
-                return DynamicIslandState(
+                return ConnectionStatusPresentation(
                     phase: .connectionFailed(kind: globalError.kind),
-                    isExpanded: isIslandExpanded
+                    isExpanded: isExpanded
                 )
             }
         }
@@ -1048,21 +1147,21 @@ public final class CPAQuotaSession {
             if let err = record.error, err.kind == .rateLimited, let retryAfter = err.retryAfter {
                 let remaining = Int(ceil(retryAfter.timeIntervalSince(now)))
                 if remaining > 0 {
-                    return DynamicIslandState(
+                    return ConnectionStatusPresentation(
                         phase: .rateLimited(layer: err.layer, remainingSeconds: remaining),
-                        isExpanded: isIslandExpanded
+                        isExpanded: isExpanded
                     )
                 }
             }
         }
 
-        return DynamicIslandState(
+        return ConnectionStatusPresentation(
             phase: .idle(
                 host: currentServer.identifier,
                 activeCount: enabledCount,
                 totalCount: totalCount
             ),
-            isExpanded: isIslandExpanded
+            isExpanded: isExpanded
         )
     }
 }

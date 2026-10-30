@@ -1,5 +1,6 @@
 .build/
 .swiftpm/
+__pycache__/
 .claude/
 artifacts/*
 !artifacts/first-native-run.json

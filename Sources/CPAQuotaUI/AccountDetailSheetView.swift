@@ -13,256 +13,152 @@ public struct AccountDetailSheetView: View {
     }
 
     public var body: some View {
-        let palette = LiquidGlassPalette(colorScheme: colorScheme)
+        let palette = BrandPalette(colorScheme: colorScheme)
         let record = session.records[account.id]
         let snapshot = record?.snapshot
-        let error = record?.error
-
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                headerSection(palette: palette)
-
-                metadataGrid(snapshot: snapshot, palette: palette)
-
-                if let snapshot {
-                    if !snapshot.windows.isEmpty {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("额度窗口明细 (独立周期，不可相加)")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(palette.textSecondary)
-
-                            ForEach(snapshot.windows) { window in
-                                let pres = WindowPresentation(window: window)
-                                VStack(alignment: .leading, spacing: 6) {
-                                    HStack {
-                                        Text(pres.title)
-                                            .font(.system(size: 13, weight: .semibold))
-                                            .foregroundStyle(palette.textPrimary)
-                                        Spacer()
-                                        Text(pres.durationText)
-                                            .font(.system(size: 11, design: .monospaced))
-                                            .foregroundStyle(palette.textSecondary)
-                                    }
-
-                                    Text(pres.secondaryComparisonText)
-                                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                                        .monospacedDigit()
-                                        .foregroundStyle(palette.accent)
-
-                                    Text(pres.resetTimeText())
-                                        .font(.system(size: 11, design: .monospaced))
-                                        .foregroundStyle(palette.textSecondary)
-                                }
-                                .padding(12)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .liquidGlassPill(cornerRadius: 16)
-                            }
-                        }
-                    }
-
-                    if !snapshot.metrics.isEmpty {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("上游摘要指标 (按返回原单位展示)")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(palette.textSecondary)
-
-                            ForEach(snapshot.metrics.map(MetricPresentation.init)) { metric in
-                                HStack {
-                                    Text(metric.label)
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(palette.textSecondary)
-                                    Spacer()
-                                    Text(metric.formattedValue)
-                                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                                        .monospacedDigit()
-                                        .foregroundStyle(palette.textPrimary)
-                                }
-                                .padding(12)
-                                .liquidGlassPill(cornerRadius: 14)
-                            }
-                        }
-                    }
-
-                    if let creditsPres = CreditsPresentation(credits: snapshot.credits) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text(creditsPres.title)
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundStyle(palette.textPrimary)
-                                Spacer()
-                                Text(creditsPres.valueText)
-                                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                                    .foregroundStyle(palette.accent)
-                            }
-                            Text(creditsPres.footnote)
-                                .font(.system(size: 11))
-                                .foregroundStyle(palette.textMuted)
-                        }
-                        .padding(12)
-                        .liquidGlassPill(cornerRadius: 16)
-                    }
-                }
-
-                if let error {
-                    let pres = ErrorPresentation(error: error, hasPreservedSnapshot: snapshot != nil)
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 6) {
-                            Image(systemName: pres.symbolName)
-                                .font(.system(size: 13, weight: .semibold))
-                            Text("\(pres.title) (\(error.kind.rawValue))")
-                                .font(.system(size: 13, weight: .semibold))
-                        }
-                        .foregroundStyle(palette.statusError)
-
-                        Text(pres.summary)
-                            .font(.system(size: 12))
-                            .foregroundStyle(palette.textSecondary)
-
-                        Text(pres.recoveryAdvice)
-                            .font(.system(size: 11))
-                            .foregroundStyle(palette.textMuted)
-                    }
-                    .padding(14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .liquidGlassCard(cornerRadius: 20)
-                }
-
-                Text(WindowPresentation.resetDisclaimer)
-                    .font(.system(size: 11))
-                    .foregroundStyle(palette.textMuted)
-                    .lineSpacing(2)
-                    .padding(.horizontal, 4)
-
-                HStack(spacing: 10) {
-                    if !account.isDisabled {
-                        Button {
-                            Task {
-                                await session.refreshAccount(account.id, force: true)
-                            }
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "arrow.clockwise")
-                                    .font(.system(size: 12, weight: .semibold))
-                                Text("立即同步最新额度")
-                            }
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Color.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .background(
-                                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                    .fill(palette.accent)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-
-                    Button {
-                        session.selectedAccountIDForDetail = nil
-                    } label: {
-                        Text("收起详情")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(palette.textPrimary)
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 12)
-                            .liquidGlassPill(cornerRadius: 16)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(20)
-        }
-        .background(AmbientGlassCanvasBackground())
-    }
-
-    @ViewBuilder
-    private func headerSection(palette: LiquidGlassPalette) -> some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(account.provider.uppercased())
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(palette.accent)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(palette.accentSoft)
-                        )
-
-                    Text("auth_index: \(account.authIndex ?? "nil")")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(palette.textSecondary)
-                }
-
-                Text(QuotaFormatter.maskEmail(account.displayName, enabled: session.maskEmail))
-                    .font(.system(size: 22, weight: .semibold, design: .serif))
+        let diagnostic = AccountDiagnosticPresentation(
+            account: account, error: record?.error, maskEmail: session.maskEmail
+        )
+        Form {
+            Section {
+                Text(diagnostic.displayName)
+                    .font(QuotaTypography.brandTitle)
                     .foregroundStyle(palette.textPrimary)
+                    .privacySensitive()
+                    .accessibilityAddTraits(.isHeader)
+                QuotaLabeledValue(title: "邮箱", value: diagnostic.email)
+                    .privacySensitive()
+                QuotaLabeledValue(title: "平台", value: account.provider.uppercased())
+                QuotaLabeledValue(title: "套餐", value: snapshot?.plan ?? account.plan ?? "未知", monospaced: false)
+                Label(diagnostic.accountStatus, systemImage: diagnostic.statusSymbol)
+                    .font(.subheadline)
+                    .foregroundStyle(palette.textPrimary)
+            }
+            .listRowBackground(palette.contentSurface)
 
-                Text(QuotaFormatter.maskEmail(account.email, enabled: session.maskEmail))
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(palette.textSecondary)
+            if let snapshot {
+                Section("数据时效") {
+                    QuotaFreshnessLabel(snapshot: snapshot)
+                    if record?.error != nil {
+                        Label("保留上次成功快照，非本次刷新结果", systemImage: "clock.arrow.circlepath")
+                            .font(.subheadline)
+                    }
+                    QuotaLabeledValue(
+                        title: "数据来源",
+                        value: snapshot.source == .live ? "主动查询" : "被动观察",
+                        monospaced: false
+                    )
+                    QuotaLabeledValue(title: "本机获取时间", value: QuotaFormatter.exactTimestampString(snapshot.fetchedAt))
+                    QuotaLabeledValue(title: "上游观察时间", value: QuotaFormatter.exactTimestampString(snapshot.observedAt))
+                }
+                .listRowBackground(palette.contentSurface)
+
+                if !snapshot.windows.isEmpty {
+                    Section {
+                        ForEach(snapshot.windows) { window in
+                            QuotaWindowView(window: WindowPresentation(window: window), displayMode: session.displayMode)
+                                .padding(.vertical, 8)
+                        }
+                    } header: {
+                        Text("额度窗口")
+                    } footer: {
+                        Text(WindowPresentation.resetDisclaimer)
+                    }
+                    .listRowBackground(palette.contentSurface)
+                }
+                if !snapshot.metrics.isEmpty {
+                    Section {
+                        ForEach(snapshot.metrics.map(MetricPresentation.init)) { metric in
+                            QuotaLabeledValue(title: metric.label, value: metric.formattedValue)
+                        }
+                    } header: {
+                        Text("上游摘要指标")
+                    } footer: {
+                        Text("保留上游返回的单位，不将摘要指标转换成不存在的配额百分比。")
+                    }
+                    .listRowBackground(palette.contentSurface)
+                }
+                if let credits = CreditsPresentation(credits: snapshot.credits) {
+                    Section {
+                        QuotaLabeledValue(title: credits.title, value: credits.valueText)
+                    } header: {
+                        Text("附加 Credits")
+                    } footer: {
+                        Text(credits.footnote)
+                    }
+                    .listRowBackground(palette.contentSurface)
+                }
+                if snapshot.windows.isEmpty && snapshot.metrics.isEmpty && snapshot.credits == nil {
+                    Section {
+                        ContentUnavailableView {
+                            Label("上游未提供额度数值", systemImage: "chart.bar")
+                        } description: {
+                            Text("账号已成功响应，但尚无可识别的额度窗口或摘要指标。")
+                        }
+                    }
+                    .listRowBackground(palette.contentSurface)
+                }
+            } else {
+                Section {
+                    ContentUnavailableView {
+                        Label(account.isDisabled ? "账号已停用" : "暂无成功快照", systemImage: "clock")
+                    } description: {
+                        Text(account.isDisabled ? "停用账号不发起额度查询。" : "查询成功后会在此显示窗口、摘要指标与数据时效。")
+                    }
+                }
+                .listRowBackground(palette.contentSurface)
             }
 
-            Spacer()
-
-            Button {
-                session.selectedAccountIDForDetail = nil
-            } label: {
-                Text("关闭")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(palette.textSecondary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .liquidGlassPill(cornerRadius: 14)
+            if let error = record?.error {
+                Section("本次查询状态") {
+                    let presentation = ErrorPresentation(error: error, hasPreservedSnapshot: snapshot != nil)
+                    QuotaErrorNotice(presentation: presentation)
+                    if presentation.isManagementBlocking {
+                        Button {
+                            session.selectedAccountIDForDetail = nil
+                            session.activeTab = .connection
+                        } label: {
+                            Label("前往连接设置", systemImage: "key")
+                                .frame(minHeight: 44)
+                        }
+                        .quotaPrimaryButtonStyle()
+                    }
+                }
+                .listRowBackground(palette.contentSurface)
             }
-            .buttonStyle(.plain)
-        }
-    }
 
-    @ViewBuilder
-    private func metadataGrid(snapshot: QuotaSnapshot?, palette: LiquidGlassPalette) -> some View {
-        LazyVGrid(
-            columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
-            spacing: 8
-        ) {
-            metadataCell(
-                title: "套餐声明 (plan)",
-                value: snapshot?.plan ?? account.plan ?? "未知",
-                palette: palette
-            )
-            metadataCell(
-                title: "数据来源 (source)",
-                value: snapshot.map { $0.source == .live ? ".live (主动查询)" : ".passive (被动观察)" } ?? "无快照",
-                palette: palette
-            )
-            metadataCell(
-                title: "本机获取 (fetchedAt)",
-                value: QuotaFormatter.exactTimestampString(snapshot?.fetchedAt),
-                palette: palette
-            )
-            metadataCell(
-                title: "上游观察 (observedAt)",
-                value: QuotaFormatter.exactTimestampString(snapshot?.observedAt),
-                palette: palette
-            )
+            Section {
+                DisclosureGroup("读取与服务详情") {
+                    QuotaLabeledValue(title: "账号索引", value: account.authIndex ?? "未知")
+                    QuotaLabeledValue(title: "服务报告状态", value: account.status, monospaced: false)
+                    Text(diagnostic.readerDescription)
+                        .font(.subheadline)
+                        .foregroundStyle(palette.textSecondary)
+                    if let error = record?.error {
+                        QuotaLabeledValue(title: "错误类型", value: error.kind.rawValue)
+                    }
+                }
+            }
+            .listRowBackground(palette.contentSurface)
         }
-    }
-
-    @ViewBuilder
-    private func metadataCell(title: String, value: String, palette: LiquidGlassPalette) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title)
-                .font(.system(size: 10))
-                .foregroundStyle(palette.textSecondary)
-            Text(value)
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                .foregroundStyle(palette.textPrimary)
-                .lineLimit(1)
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(BrandCanvasBackground())
+        .navigationTitle("账号详情")
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("完成") { session.selectedAccountIDForDetail = nil }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    Task { await session.refreshAccount(account.id, force: true) }
+                } label: {
+                    Label("刷新此账号", systemImage: "arrow.clockwise")
+                }
+                .disabled(account.isDisabled || session.isBusy)
+                .accessibilityIdentifier("quota.account.refresh")
+            }
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .liquidGlassPill(cornerRadius: 14)
     }
 }
 #endif

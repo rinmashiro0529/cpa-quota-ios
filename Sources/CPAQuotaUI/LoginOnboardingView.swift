@@ -5,221 +5,166 @@ import CPAQuotaKit
 public struct LoginOnboardingView: View {
     @Bindable var session: CPAQuotaSession
     @Environment(\.colorScheme) private var colorScheme
+    @FocusState private var focusedField: Field?
     public let showCloseButton: Bool
+
+    private enum Field: Hashable {
+        case address
+        case managementKey
+    }
 
     public init(session: CPAQuotaSession, showCloseButton: Bool = false) {
         self.session = session
         self.showCloseButton = showCloseButton
     }
 
+    private var isConnecting: Bool {
+        if case .connecting = session.authState { return true }
+        return false
+    }
+
+    private var canSubmit: Bool {
+        !isConnecting
+            && !session.serverAddressDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !session.managementKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     public var body: some View {
-        let palette = LiquidGlassPalette(colorScheme: colorScheme)
-        let isConnecting: Bool = {
-            if case .connecting = session.authState { return true }
-            return false
-        }()
-
-        VStack(spacing: 20) {
-            if showCloseButton {
-                HStack {
-                    Spacer()
-                    Button {
-                        session.isPresentingConnectionSheet = false
-                    } label: {
-                        Text("关闭")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(palette.textSecondary)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .liquidGlassPill(cornerRadius: 16)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-
-            VStack(spacing: 8) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(palette.accent)
-                        .frame(width: 52, height: 52)
-                        .shadow(color: palette.accent.opacity(0.32), radius: 12, x: 0, y: 6)
-
-                    Text("C")
-                        .font(.system(size: 26, weight: .semibold, design: .serif))
-                        .foregroundStyle(Color.white)
-                }
-
-                Text("连接个人 CPA 服务")
-                    .font(.system(size: 24, weight: .semibold, design: .serif))
-                    .foregroundStyle(palette.textPrimary)
-
-                Text("只读查询已授权账号与实时额度窗口。管理凭据仅在验证成功后存入系统 Keychain（WhenUnlockedThisDeviceOnly）。")
-                    .font(.system(size: 12))
-                    .foregroundStyle(palette.textSecondary)
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(3)
-                    .padding(.horizontal, 8)
-            }
-
-            VStack(alignment: .leading, spacing: 16) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("HTTPS 服务地址 (CPAServer)")
-                        .font(.system(size: 11, weight: .semibold))
+        let palette = BrandPalette(colorScheme: colorScheme)
+        Form {
+            Section {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("连接个人 CPA 服务")
+                        .font(QuotaTypography.brandTitle)
+                        .foregroundStyle(palette.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                    Text("查看已授权账号、额度窗口与使用情况。连接验证成功后，可将凭据保存在本机钥匙串。")
+                        .font(.body)
                         .foregroundStyle(palette.textSecondary)
-
-                    TextField("https://cpa.example.com", text: $session.serverAddressDraft)
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                        #endif
-                        .autocorrectionDisabled()
-                        .font(.system(size: 13, design: .monospaced))
-                        .foregroundStyle(palette.textPrimary)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 11)
-                        .liquidGlassPill(cornerRadius: 16)
-
-                    normalizationPreviewText(palette: palette)
                 }
-
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("管理密钥 (ManagementKey)")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(palette.textSecondary)
-
-                        Spacer()
-
-                        Text("非普通推理 API Key")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(palette.accent)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(
-                                Capsule(style: .continuous)
-                                    .fill(palette.accentSoft)
-                            )
-                    }
-
-                    SecureField("输入 CPA 管理 Bearer 密钥", text: $session.managementKeyDraft)
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                        #endif
-                        .autocorrectionDisabled()
-                        .font(.system(size: 13, design: .monospaced))
-                        .foregroundStyle(palette.textPrimary)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 11)
-                        .liquidGlassPill(cornerRadius: 16)
-
-                    Text("安全承诺：ManagementKey 不可 Codable，客户端绝不将密钥写入 UserDefaults、URL、剪贴板日志或崩溃遥测。")
-                        .font(.system(size: 10))
-                        .foregroundStyle(palette.textMuted)
-                        .lineSpacing(2)
-                }
-
-                Toggle(isOn: $session.rememberCredentialsDraft) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("记住此连接")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(palette.textPrimary)
-                        Text("连接验证成功后保存至本机 Keychain，支持随时主动移除")
-                            .font(.system(size: 11))
-                            .foregroundStyle(palette.textSecondary)
-                    }
-                }
-                .tint(palette.accent)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .liquidGlassPill(cornerRadius: 18)
-
-                if let formError = session.connectionFormError {
-                    let pres = ErrorPresentation(error: formError)
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 6) {
-                            Image(systemName: pres.symbolName)
-                                .font(.system(size: 12, weight: .semibold))
-                            Text(pres.title)
-                                .font(.system(size: 12, weight: .semibold))
-                        }
-                        .foregroundStyle(palette.statusError)
-
-                        Text(pres.summary)
-                            .font(.system(size: 11))
-                            .foregroundStyle(palette.textSecondary)
-
-                        Text(pres.recoveryAdvice)
-                            .font(.system(size: 11))
-                            .foregroundStyle(palette.textMuted)
-                    }
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .fill(palette.statusError.opacity(0.10))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .strokeBorder(palette.statusError.opacity(0.28), lineWidth: 0.8)
-                    )
-                }
-
-                Button {
-                    Task {
-                        await session.connect(
-                            serverAddress: session.serverAddressDraft,
-                            managementKeyInput: session.managementKeyDraft,
-                            rememberInKeychain: session.rememberCredentialsDraft
-                        )
-                    }
-                } label: {
-                    HStack(spacing: 8) {
-                        if isConnecting {
-                            ProgressView()
-                                .controlSize(.small)
-                                .tint(Color.white)
-                            Text("正在验证管理密钥并读取账号…")
-                        } else {
-                            Image(systemName: "checkmark.shield")
-                                .font(.system(size: 14, weight: .semibold))
-                            Text("验证连接并进入工作台")
-                        }
-                    }
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 13)
-                    .background(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(palette.accent)
-                            .shadow(color: palette.accent.opacity(0.28), radius: 10, x: 0, y: 4)
-                    )
-                }
-                .buttonStyle(.plain)
-                .disabled(isConnecting)
+                .padding(.vertical, 8)
             }
-            .padding(18)
-            .liquidGlassCard(cornerRadius: 28, prominent: true)
+            .listRowBackground(palette.contentSurface)
+
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("HTTPS 服务地址").font(.subheadline)
+                    TextField("https://cpa.example.com", text: $session.serverAddressDraft)
+                        .font(QuotaTypography.data)
+                        .autocorrectionDisabled()
+                        .focused($focusedField, equals: .address)
+                        .submitLabel(.next)
+                        .accessibilityLabel("HTTPS 服务地址")
+                        .accessibilityIdentifier("connection.server")
+                        #if os(iOS)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        #endif
+                }
+                .disabled(isConnecting)
+                normalizationPreview
+            } header: {
+                Text("服务地址")
+            } footer: {
+                Text("支持根地址与反向代理前缀，也可直接粘贴管理页面地址。")
+            }
+            .listRowBackground(palette.contentSurface)
+
+            Section {
+                SecureField("输入 CPA 管理密钥", text: $session.managementKeyDraft)
+                    .font(QuotaTypography.data)
+                    .autocorrectionDisabled()
+                    .focused($focusedField, equals: .managementKey)
+                    .submitLabel(.go)
+                    .accessibilityLabel("CPA 管理密钥")
+                    .accessibilityIdentifier("connection.key")
+                    .privacySensitive()
+                    .disabled(isConnecting)
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    .textContentType(.password)
+                    #endif
+                Toggle("记住此连接", isOn: $session.rememberCredentialsDraft)
+                    .disabled(isConnecting)
+            } header: {
+                Text("管理凭据")
+            } footer: {
+                Text("使用 CPA 管理密钥，普通推理 API Key 不适用于此处。记住连接后，凭据保存在本机钥匙串，可随时从连接管理中移除。")
+            }
+            .listRowBackground(palette.contentSurface)
+
+            if let error = session.connectionFormError {
+                Section("连接未完成") {
+                    QuotaErrorNotice(presentation: ErrorPresentation(error: error))
+                }
+                .listRowBackground(palette.contentSurface)
+            }
+
+            Section {
+                Button(action: submit) {
+                    Label(isConnecting ? "正在验证连接" : "验证连接并进入工作台", systemImage: "checkmark.shield")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .quotaPrimaryButtonStyle()
+                .disabled(!canSubmit)
+                .accessibilityIdentifier("connection.submit")
+                if isConnecting {
+                    ProgressView("正在验证管理密钥并读取账号")
+                        .accessibilityLabel("正在连接，请稍候")
+                }
+            }
+            .listRowBackground(palette.contentSurface)
+        }
+        .formStyle(.grouped)
+        .scrollDismissesKeyboard(.interactively)
+        .scrollContentBackground(.hidden)
+        .background(BrandCanvasBackground())
+        .navigationTitle(showCloseButton ? "更新连接" : "欢迎使用 CPA Quota")
+        .onSubmit {
+            if focusedField == .address {
+                focusedField = .managementKey
+            } else if canSubmit {
+                submit()
+            }
+        }
+        .toolbar {
+            if showCloseButton {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") {
+                        session.isPresentingConnectionSheet = false
+                    }
+                    .accessibilityLabel("关闭连接设置")
+                }
+            }
         }
     }
 
     @ViewBuilder
-    private func normalizationPreviewText(palette: LiquidGlassPalette) -> some View {
+    private var normalizationPreview: some View {
         let trimmed = session.serverAddressDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            Text("支持根地址、反代前缀，自动还原 /management.html 或 /v0/management 后缀。")
-                .font(.system(size: 10))
-                .foregroundStyle(palette.textMuted)
-        } else {
+        if !trimmed.isEmpty {
             switch CPAQuotaSession.previewNormalizedServer(trimmed) {
             case .success(let normalized):
-                Text("规范化标识: \(normalized.identifier)")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(palette.statusOK)
+                QuotaLabeledValue(title: "将连接至", value: normalized.identifier)
+                    .textSelection(.enabled)
             case .failure(let error):
-                Text(ErrorPresentation(error: error).summary)
-                    .font(.system(size: 10))
-                    .foregroundStyle(palette.statusError)
+                Label(ErrorPresentation(error: error).summary, systemImage: "exclamationmark.triangle")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private func submit() {
+        guard canSubmit else { return }
+        focusedField = nil
+        Task {
+            await session.connect(
+                serverAddress: session.serverAddressDraft,
+                managementKeyInput: session.managementKeyDraft,
+                rememberInKeychain: session.rememberCredentialsDraft
+            )
         }
     }
 }
