@@ -58,12 +58,21 @@ public struct CPAQuotaWidget: Widget {
         AppIntentConfiguration(kind: SharedQuotaWidgetSnapshotStore.widgetKind,
                                intent: QuotaWidgetConfiguration.self, provider: QuotaWidgetProvider()) { entry in
             QuotaWidgetContent(entry: entry)
-                .containerBackground(.background, for: .widget)
+                .containerBackground(for: .widget) { QuotaWidgetCanvas() }
                 .widgetURL(CPAQuotaDeepLink.quotas.url)
         }
         .configurationDisplayName("CPA 配额")
         .description("查看最近观察到的配额与数据时间。请先在应用设置中启用小组件共享。")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge, .accessoryRectangular, .accessoryCircular])
+    }
+}
+
+private struct QuotaWidgetCanvas: View {
+    @Environment(\.colorScheme) private var colorScheme
+    var body: some View {
+        colorScheme == .dark
+            ? Color(red: 0.075, green: 0.071, blue: 0.067)
+            : Color(red: 0.980, green: 0.973, blue: 0.957)
     }
 }
 
@@ -135,6 +144,14 @@ private struct QuotaWidgetContent: View {
         } else if family == .accessoryRectangular {
             rectangular
         } else {
+            ViewThatFits(in: .vertical) {
+                overview.fixedSize(horizontal: false, vertical: true)
+                compactOverview
+            }
+        }
+    }
+
+    private var overview: some View {
             VStack(alignment: .leading, spacing: 8) {
                 Label("配额概况", systemImage: "chart.bar.xaxis")
                     .font(.caption.weight(.semibold))
@@ -153,6 +170,32 @@ private struct QuotaWidgetContent: View {
                 }
                 Spacer(minLength: 0)
             }
+    }
+
+    @ViewBuilder
+    private var compactOverview: some View {
+        if let account = entry.selectedEntries.first {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(account.label).font(.caption).lineLimit(1)
+                HStack(spacing: 8) {
+                    ViewThatFits(in: .horizontal) {
+                        Text(account.formattedValue)
+                            .font(.headline.monospacedDigit())
+                            .fixedSize()
+                        Text("打开查看").font(.caption)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: statusSymbol(account))
+                }
+            }
+            .privacySensitive()
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(account.label)，\(account.windowLabel)，\(account.formattedValue)，\(statusText(account))")
+            .accessibilityValue(account.observedAt.map {
+                "观察于 \($0.formatted(date: .abbreviated, time: .shortened))"
+            } ?? "观察时间未知")
+        } else {
+            Text("打开 CPA 查看配额").font(.caption)
         }
     }
 

@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import CPAQuotaKit
+import CPAQuotaActivity
 
 public struct PersistedMonitoringRecord: Codable, Equatable, Sendable, Identifiable {
     public let sessionID: UUID
@@ -1092,7 +1093,7 @@ public final class MonitoringWorkspaceCoordinator {
         return id
     }
 
-    private static func isValidAccountSelection(_ id: String) -> Bool {
+    nonisolated private static func isValidAccountSelection(_ id: String) -> Bool {
         !id.isEmpty && id.utf8.count <= 128 && id.unicodeScalars.allSatisfy {
             CharacterSet.alphanumerics.contains($0) || "_-@.".unicodeScalars.contains($0)
         }
