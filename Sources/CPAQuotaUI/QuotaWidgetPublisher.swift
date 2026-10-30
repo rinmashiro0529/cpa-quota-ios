@@ -5,12 +5,12 @@ import CPAQuotaActivity
 /// Publishes a privacy-limited read model. The account-to-UUID map stays in app-private preferences.
 @MainActor
 public final class QuotaWidgetPublisher {
-    private let store: SharedQuotaWidgetSnapshotStore
+    private let store: any QuotaWidgetSnapshotWriting
     private let preferences: any PreferencesStore
     private var sourceIdentifier: String?
     private var opaqueIdentifiers: [String: String] = [:]
 
-    public init(store: SharedQuotaWidgetSnapshotStore = .init(),
+    public init(store: any QuotaWidgetSnapshotWriting = SharedQuotaWidgetSnapshotStore(),
                 preferences: any PreferencesStore = UserDefaultsPreferencesStore()) {
         self.store = store
         self.preferences = preferences
@@ -21,6 +21,11 @@ public final class QuotaWidgetPublisher {
         now: Date = Date()
     ) throws {
         if self.sourceIdentifier != sourceIdentifier {
+            do {
+                try store.clear()
+            } catch {
+                throw QuotaWidgetSnapshotError.previousSnapshotClearFailed
+            }
             opaqueIdentifiers = preferences.loadWidgetAccountIdentifiers(for: sourceIdentifier)
                 .filter { UUID(uuidString: $0.value) != nil }
             self.sourceIdentifier = sourceIdentifier

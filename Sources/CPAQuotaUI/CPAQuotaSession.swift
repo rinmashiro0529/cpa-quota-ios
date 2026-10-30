@@ -463,6 +463,7 @@ public final class CPAQuotaSession {
         preferences: any PreferencesStore = UserDefaultsPreferencesStore(),
         monitoringCoordinator: MonitoringWorkspaceCoordinator? = nil,
         widgetSnapshotStore: SharedQuotaWidgetSnapshotStore = .init(),
+        widgetSnapshotWriter: (any QuotaWidgetSnapshotWriting)? = nil,
         clientFactory: @escaping @Sendable (CPAServer, ManagementKey) -> CPAClient = { server, key in
             CPAClient(server: server, managementKey: key)
         }
@@ -471,7 +472,7 @@ public final class CPAQuotaSession {
         self.credentialCoordinator = CredentialStoreCoordinator(store: credentialStore)
         self.preferences = preferences
         self.monitoringCoordinator = monitoringCoordinator ?? MonitoringWorkspaceCoordinator()
-        self.widgetPublisher = QuotaWidgetPublisher(store: widgetSnapshotStore, preferences: preferences)
+        self.widgetPublisher = QuotaWidgetPublisher(store: widgetSnapshotWriter ?? widgetSnapshotStore, preferences: preferences)
         self.clientFactory = clientFactory
         self.themeMode = preferences.loadThemeMode()
         self.displayMode = preferences.loadDisplayMode()
@@ -553,9 +554,13 @@ public final class CPAQuotaSession {
         do {
             try widgetPublisher.publish(sourceIdentifier: currentServer.identifier,
                                         accounts: accounts, records: records)
+            needsWidgetSnapshotClear = false
             widgetSharingNotice = accounts.count > QuotaWidgetSnapshot.maximumEntries
                 ? "小组件共享前 64 个账号的主要读数；完整窗口与指标请在额度总览查看。"
                 : "已共享安全别名与主要读数；小组件刷新由系统安排，过期读数会显示为旧数据。"
+        } catch QuotaWidgetSnapshotError.previousSnapshotClearFailed {
+            needsWidgetSnapshotClear = true
+            widgetSharingNotice = "旧来源的小组件快照暂未清除；请解锁设备后重试。旧读数会按原观察时间过期。"
         } catch {
             widgetSharingNotice = "小组件共享暂不可用。请确认安装包具有共享容器权限；应用内额度不受影响。"
         }
@@ -729,7 +734,6 @@ public final class CPAQuotaSession {
         managementKeyInput: String,
         rememberInKeychain: Bool
     ) async {
-        defer { synchronizeQuotaWidgetSnapshot() }
         connectionFormError = nil
         statusBannerMessage = nil
 
@@ -871,6 +875,7 @@ public final class CPAQuotaSession {
         capUsageCoordinator.bind(client: capClient)
         self.authState = .connected(server: server, isRememberedInKeychain: savedToKeychain)
         self.isPresentingConnectionSheet = false
+        synchronizeQuotaWidgetSnapshot()
         _ = await credentialCoordinator.finalize(commitIntent.version)
         await previousStore?.cancel()
     }

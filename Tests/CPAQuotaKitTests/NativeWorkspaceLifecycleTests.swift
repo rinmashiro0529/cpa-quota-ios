@@ -4,6 +4,22 @@ import Testing
 @testable import CPAQuotaUI
 import CPAQuotaActivity
 
+private final class FaultingWidgetWriter: QuotaWidgetSnapshotWriting, @unchecked Sendable {
+    let store: SharedQuotaWidgetSnapshotStore
+    var failWrite = false
+    var failClear = false
+
+    init(store: SharedQuotaWidgetSnapshotStore) { self.store = store }
+    func write(_ snapshot: QuotaWidgetSnapshot) throws {
+        if failWrite { throw QuotaWidgetSnapshotError.sharedContainerUnavailable }
+        try store.write(snapshot)
+    }
+    func clear() throws {
+        if failClear { throw QuotaWidgetSnapshotError.sharedContainerUnavailable }
+        try store.clear()
+    }
+}
+
 @Suite("Native shell restoration and private widget publishing", .timeLimit(.minutes(1)))
 @MainActor
 struct NativeWorkspaceLifecycleTests {
@@ -151,6 +167,65 @@ struct NativeWorkspaceLifecycleTests {
         #expect(before.entries[0].id != after.entries[0].id)
         #expect(after.entries[0].remainingFraction == nil)
         #expect(after.entries[0].status == .unavailable)
+    }
+
+    @Test
+    func sourceChangeClearsBeforeFailedWriteAndRetriesFailedClear() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let shared = SharedQuotaWidgetSnapshotStore(directoryURL: directory)
+        let writer = FaultingWidgetWriter(store: shared)
+        let publisher = QuotaWidgetPublisher(store: writer, preferences: MemoryPreferencesStore())
+        let account = CPAAccount(id: "account", authIndex: nil, provider: "codex", displayName: "Account")
+        try publisher.publish(sourceIdentifier: "a", accounts: [account], records: [:])
+        let original = try #require(shared.read())
+        writer.failClear = true
+        #expect(throws: QuotaWidgetSnapshotError.previousSnapshotClearFailed) {
+            try publisher.publish(sourceIdentifier: "b", accounts: [account], records: [:])
+        }
+        #expect(shared.read() == original)
+        writer.failClear = false
+        writer.failWrite = true
+        #expect(throws: QuotaWidgetSnapshotError.sharedContainerUnavailable) {
+            try publisher.publish(sourceIdentifier: "b", accounts: [account], records: [:])
+        }
+        #expect(shared.read() == nil)
+        writer.failWrite = false
+        try publisher.publish(sourceIdentifier: "b", accounts: [account], records: [:])
+        #expect(shared.read()?.entries.first?.id != original.entries.first?.id)
+    }
+
+    @Test
+    func connectionFailurePreservesOldSnapshotAndClearFailureIsRetried() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let shared = SharedQuotaWidgetSnapshotStore(directoryURL: directory)
+        let writer = FaultingWidgetWriter(store: shared)
+        let transport = try ScenarioTransport(accounts: [FixtureAccount("private-account")])
+        let session = CPAQuotaSession(
+            credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore(),
+            monitoringCoordinator: isolatedMonitor(), widgetSnapshotWriter: writer,
+            clientFactory: { server, key in CPAClient(server: server, managementKey: key, transport: transport) }
+        )
+        await session.connect(serverAddress: "https://a.invalid", managementKeyInput: "fixture-management", rememberInKeychain: false)
+        session.sharesQuotaWithWidgets = true
+        let original = try #require(shared.read())
+        await transport.setAccountStatus(401)
+        await session.connect(serverAddress: "https://b.invalid", managementKeyInput: "fixture-management", rememberInKeychain: false)
+        #expect(shared.read() == original)
+        await transport.setAccountStatus(200)
+        writer.failClear = true
+        await session.connect(serverAddress: "https://b.invalid", managementKeyInput: "fixture-management", rememberInKeychain: false)
+        #expect(shared.read() == original)
+        #expect(session.widgetSharingNotice?.contains("旧来源") == true)
+        writer.failClear = false
+        await session.applicationDidBecomeActive()
+        let retried = try #require(shared.read())
+        #expect(retried.entries.first?.id != original.entries.first?.id)
+        writer.failWrite = true
+        await session.connect(serverAddress: "https://c.invalid", managementKeyInput: "fixture-management", rememberInKeychain: false)
+        #expect(shared.read() == nil)
+        #expect(session.widgetSharingNotice?.contains("暂不可用") == true)
     }
 
     private func isolatedMonitor() -> MonitoringWorkspaceCoordinator {

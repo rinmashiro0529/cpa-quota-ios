@@ -103,12 +103,8 @@ private struct QuotaWidgetProvider: AppIntentTimelineProvider {
         let now = Date()
         let shared = SharedQuotaWidgetSnapshotStore().read()
         let first = QuotaWidgetTimelineEntry(date: now, snapshot: shared, selectedID: configuration.account?.id)
-        let boundaries = Array(Set(first.selectedEntries.compactMap(\.staleDate).filter { $0 > now })).sorted()
-        // Bounded local timeline, no network or seconds-based polling. Include
-        // the final deadline even when many windows expire at different times.
-        var dates = Array(boundaries.prefix(6))
-        if let last = boundaries.last, !dates.contains(last) { dates.append(last) }
-        let entries = [first] + dates.map {
+        let dates = QuotaWidgetSnapshot.timelineDates(now: now, entries: first.selectedEntries)
+        let entries = dates.map {
             QuotaWidgetTimelineEntry(date: $0, snapshot: shared, selectedID: configuration.account?.id)
         }
         return Timeline(entries: entries, policy: .after(now.addingTimeInterval(900)))

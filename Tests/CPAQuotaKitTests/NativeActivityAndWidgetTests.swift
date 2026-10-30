@@ -84,6 +84,21 @@ struct NativeActivityAndWidgetTests {
         #expect(republished.entries[0].status(at: republished.generatedAt) == .stale)
     }
 
+    @Test func timelineIncludesEveryFutureBoundaryAndRespectsSelection() throws {
+        let now = observed
+        let offsets: [TimeInterval] = [70, 10, 20, 30, 40, 50, 60, 80]
+        let entries = try offsets.map { try entry(observedAt: now, validUntil: now.addingTimeInterval($0)) }
+        let expected: [TimeInterval] = [0, 10, 20, 30, 40, 50, 60, 70, 80]
+        #expect(QuotaWidgetSnapshot.timelineDates(now: now, entries: entries) == expected.map { now.addingTimeInterval($0) })
+        #expect(QuotaWidgetSnapshot.timelineDates(now: now, entries: [entries[0]]) == [now, now.addingTimeInterval(70)])
+        let duplicate = try entry(observedAt: now, validUntil: now.addingTimeInterval(10))
+        let past = try entry(observedAt: now, validUntil: now.addingTimeInterval(-1))
+        #expect(QuotaWidgetSnapshot.timelineDates(now: now, entries: [entries[1], duplicate, past]) == [now, now.addingTimeInterval(10)])
+        let maximum = try (1...64).map { try entry(observedAt: now, validUntil: now.addingTimeInterval(Double($0))) }
+        #expect(QuotaWidgetSnapshot.timelineDates(now: now, entries: maximum).count == 65)
+        #expect(QuotaWidgetSnapshot.timelineDates(now: now, entries: maximum).last == now.addingTimeInterval(64))
+    }
+
     @Test func duplicateOpaqueIDsAndUnboundedSnapshotsAreRejected() throws {
         let id = UUID().uuidString
         let first = try entry(id: id)

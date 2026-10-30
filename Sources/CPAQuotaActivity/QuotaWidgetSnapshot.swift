@@ -7,6 +7,7 @@ public enum QuotaWidgetSnapshotError: Error, Equatable, Sendable {
     case invalidEntry
     case invalidSnapshot
     case sharedContainerUnavailable
+    case previousSnapshotClearFailed
 }
 
 /// A deliberately small, credential-free projection, not a copy of CPAAccount.
@@ -123,6 +124,10 @@ public struct QuotaWidgetSnapshot: Codable, Hashable, Sendable {
         self.entries = entries
     }
 
+    public static func timelineDates(now: Date, entries: [QuotaWidgetEntry]) -> [Date] {
+        [now] + Set(entries.compactMap(\.staleDate).filter { $0 > now }).sorted()
+    }
+
     private enum CodingKeys: String, CodingKey { case version, generatedAt, entries }
 
     public init(from decoder: any Decoder) throws {
@@ -135,9 +140,14 @@ public struct QuotaWidgetSnapshot: Codable, Hashable, Sendable {
     }
 }
 
+public protocol QuotaWidgetSnapshotWriting: Sendable {
+    func write(_ snapshot: QuotaWidgetSnapshot) throws
+    func clear() throws
+}
+
 /// No network or Keychain access. Missing entitlements fail closed instead of
 /// falling back to a non-shared preferences domain or persisting credentials.
-public struct SharedQuotaWidgetSnapshotStore: Sendable {
+public struct SharedQuotaWidgetSnapshotStore: QuotaWidgetSnapshotWriting {
     public static let appGroupIdentifier = "group.icu.nahida.cpaquota"
     public static let widgetKind = "CPAQuotaWidget"
     private static let filename = "quota-widget-snapshot-v1.json"
