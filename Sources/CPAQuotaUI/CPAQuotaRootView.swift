@@ -9,6 +9,7 @@ public struct CPAQuotaRootView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @State private var paths: [CPAWorkspaceTab: NavigationPath] = [:]
+    @State private var deepLinkGeneration: UInt64 = 0
 
     public init(session: CPAQuotaSession) {
         self.session = session
@@ -76,17 +77,22 @@ public struct CPAQuotaRootView: View {
         }
         .onOpenURL { url in
             guard let destination = CPAQuotaDeepLink(url: url) else { return }
+            deepLinkGeneration &+= 1
+            let generation = deepLinkGeneration
+            session.isPresentingConnectionSheet = false
+            session.selectedAccountIDForDetail = nil
+            switch destination {
+            case .quotas:
+                session.activeTab = .quotas
+                paths[.quotas] = NavigationPath()
+            case .monitoring:
+                session.activeTab = .monitoring
+                paths[.monitoring] = NavigationPath()
+            }
             Task {
                 await session.restoreApplicationIfAvailable()
-                session.isPresentingConnectionSheet = false
-                session.selectedAccountIDForDetail = nil
-                switch destination {
-                case .quotas:
-                    session.activeTab = .quotas
-                    paths[.quotas] = NavigationPath()
-                case .monitoring(let sourceID):
-                    session.activeTab = .monitoring
-                    paths[.monitoring] = NavigationPath()
+                guard generation == deepLinkGeneration else { return }
+                if case .monitoring(let sourceID) = destination {
                     await session.monitoringCoordinator.openSourceFromDeepLink(sourceID)
                 }
             }

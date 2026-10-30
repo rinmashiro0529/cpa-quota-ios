@@ -19,6 +19,7 @@ public struct QuotasOverviewTabView: View {
                         Text(mode.title).tag(mode)
                     }
                 }
+                .accessibilityIdentifier("quota.displayMode")
                 Picker("账号筛选", selection: $session.selectedFilter) {
                     ForEach(AccountFilterCategory.allCases) { category in
                         Text(category == .all ? "全部（\(session.accounts.count)）" : category.title)

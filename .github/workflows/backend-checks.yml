@@ -127,11 +127,15 @@ jobs:
             ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= \
             2>&1 | tee "$RUNNER_TEMP/FrontendEvidence/native-tests.log"
       - name: Verify embedded simulator Live Activity extension
+        if: ${{ !cancelled() }}
         run: >-
           python3 -I ci/validate_activity_extension.py
           --app "$RUNNER_TEMP/FrontendDerivedData/Build/Products/Debug-iphonesimulator/CPAQuota.app"
           --platform ios-simulator
       - name: Build Release for physical iOS devices without signing
+        # Preserve an independent compile/link result even when a UI assertion fails.
+        # Both this build and the UI tests remain blocking checks.
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           set -euo pipefail

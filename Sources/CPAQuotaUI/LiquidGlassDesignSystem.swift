@@ -47,7 +47,7 @@ public struct BrandPalette: Sendable {
             : Color(red: 0.580, green: 0.561, blue: 0.529) // #948F87
     }
 
-    // Preserve the original terracotta; foregrounds remain system-managed on glass.
+    // Preserve the original terracotta in both appearances.
     public var accent: Color {
         isDark
             ? Color(red: 0.886, green: 0.502, blue: 0.376) // #E28060
@@ -55,6 +55,13 @@ public struct BrandPalette: Sendable {
     }
 
     public var actionTint: Color { accent }
+
+    /// The original dark brand ink stays readable on either terracotta tint.
+    /// Dark appearance's light textPrimary is intended for dark content surfaces,
+    /// not for a prominent control filled with the lighter accent.
+    public var textOnAccent: Color {
+        Color(red: 0.094, green: 0.090, blue: 0.082)
+    }
 
     /// Opaque content surfaces, deliberately separate from the system control layer.
     public var contentSurface: Color {
@@ -155,6 +162,7 @@ private struct QuotaPrimaryButtonStyleModifier: ViewModifier {
             content
                 .buttonStyle(.glassProminent)
                 .tint(palette.actionTint)
+                .foregroundStyle(palette.textOnAccent)
                 .controlSize(.large)
         } else {
             // The original accent is retained. A readable foreground on a

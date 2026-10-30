@@ -16,44 +16,51 @@ final class CPAQuotaAppUITests: XCTestCase {
         let address = element("connection.server", in: app)
         let key = element("connection.key", in: app)
         let submit = element("connection.submit", in: app)
-        XCTAssertTrue(address.waitForExistence(timeout: 10))
+        expectExists(address, in: app)
         reveal(submit, in: app)
-        XCTAssertFalse(submit.isEnabled, "An empty connection must not be submitted.")
+        verify(!submit.isEnabled, in: app, "An empty connection must not be submitted.")
 
         reveal(address, in: app, upward: false)
-        replaceText(in: address, with: "http://ui-test.invalid")
+        replaceText(in: address, with: "http://ui-test.invalid", app: app)
         reveal(key, in: app)
-        replaceText(in: key, with: "ui-test-valid-key")
+        replaceText(in: key, with: "ui-test-valid-key", app: app)
         reveal(submit, in: app)
         submit.tap()
         let invalidServer = textContaining("服务地址格式无效", in: app)
-        XCTAssertTrue(invalidServer.waitForExistence(timeout: 10))
-        reveal(invalidServer, in: app)
+        reveal(invalidServer, in: app, upward: false, requiresHitTarget: false)
+        verify(invalidServer.label.contains("服务地址格式无效"), in: app,
+               "An HTTP address must produce the actual HTTPS validation error.")
         attach(app, name: "login-invalid-https")
 
         reveal(address, in: app, upward: false)
-        replaceText(in: address, with: "https://ui-test.invalid")
+        replaceText(in: address, with: "https://ui-test.invalid", app: app)
         reveal(key, in: app)
-        replaceText(in: key, with: "ui-test-invalid-key")
+        replaceText(in: key, with: "ui-test-invalid-key", app: app)
         reveal(submit, in: app)
         submit.tap()
         let unauthorized = textContaining("CPA 管理密钥鉴权失败", in: app)
-        XCTAssertTrue(unauthorized.waitForExistence(timeout: 10))
-        reveal(unauthorized, in: app)
-        XCTAssertFalse(element("quota.account.ui-main", in: app).exists)
+        reveal(unauthorized, in: app, upward: false, requiresHitTarget: false)
+        verify(unauthorized.label.contains("CPA 管理密钥鉴权失败"), in: app,
+               "The real management HTTP 401 response must be presented as an authentication failure.")
+        verify(!element("quota.displayMode", in: app).exists, in: app,
+               "A management 401 must not open the quota workspace.")
         attach(app, name: "login-management-401")
 
         reveal(key, in: app, upward: false)
-        replaceText(in: key, with: "ui-test-valid-key")
+        replaceText(in: key, with: "ui-test-valid-key", app: app)
         reveal(submit, in: app)
         submit.tap()
         let account = element("quota.account.ui-main", in: app)
-        XCTAssertTrue(account.waitForExistence(timeout: 15))
+        expectExists(element("quota.displayMode", in: app), in: app, timeout: 15)
         reveal(account, in: app)
-        XCTAssertTrue(app.tabBars.firstMatch.exists)
-        XCTAssertTrue(textContaining("42% 剩余", in: app).waitForExistence(timeout: 10))
-        XCTAssertFalse(textContaining("native@example.com", in: app).exists,
-                       "The default masking preference must apply to accessible text.")
+        verify(nativeTab("quotas", title: "额度总览", in: app).isSelected, in: app,
+               "Successful authentication must return to the selected native quota destination.")
+        let remaining = textContaining("42% 剩余", in: app)
+        reveal(remaining, in: app, requiresHitTarget: false)
+        verify(remaining.label.contains("42% 剩余"), in: app,
+               "The connected workspace must show the parsed fixture's remaining quota.")
+        verify(!textContaining("native@example.com", in: app).exists, in: app,
+               "The default masking preference must apply to accessible text.")
         attach(app, name: "login-connected-quota")
     }
 
@@ -61,16 +68,22 @@ final class CPAQuotaAppUITests: XCTestCase {
     func testFiveNativeTabsAndQuotaDetailKeepTheirSystemNavigation() {
         let app = launch(connected: true)
         defer { app.terminate() }
-        XCTAssertEqual(app.tabBars.firstMatch.buttons.count, 5)
         let tabs = [
             ("quotas", "额度总览"), ("usage", "CAP用量"),
             ("monitoring", "监控与活动"), ("accounts", "账号诊断"),
             ("connection", "连接管理")
         ]
+        // TabView may become a side rail on iOS 27. Verify all five native
+        // destinations without requiring a specific UIKit TabBar hierarchy.
+        for (id, title) in tabs {
+            let tab = nativeTab(id, title: title, in: app)
+            expectExists(tab, in: app, timeout: 5)
+            verify(tab.isHittable, in: app, "The native destination \(title) must be reachable.")
+        }
         for (id, title) in tabs {
             selectTab(id, title: title, in: app)
-            XCTAssertTrue(element("workspace.\(id)", in: app).waitForExistence(timeout: 5))
-            XCTAssertTrue(app.navigationBars.firstMatch.exists)
+            verify(app.navigationBars.firstMatch.exists, in: app,
+                   "Each workspace must retain its native navigation stack.")
             attach(app, name: "tab-\(id)")
         }
 
@@ -78,15 +91,18 @@ final class CPAQuotaAppUITests: XCTestCase {
         let account = element("quota.account.ui-main", in: app)
         reveal(account, in: app)
         account.tap()
-        XCTAssertTrue(app.navigationBars["账号详情"].waitForExistence(timeout: 5))
-        XCTAssertTrue(element("quota.account.refresh", in: app).exists)
+        expectExists(app.navigationBars["账号详情"], in: app, timeout: 5)
+        verify(element("quota.account.refresh", in: app).exists, in: app,
+               "The account detail must retain its refresh action.")
         let remaining = textContaining("42% 剩余", in: app)
-        reveal(remaining, in: app)
-        XCTAssertTrue(remaining.exists)
+        reveal(remaining, in: app, requiresHitTarget: false)
+        verify(remaining.label.contains("42% 剩余"), in: app,
+               "The account detail must show the real parsed remaining percentage.")
         attach(app, name: "quota-detail-multiple-windows")
-        app.navigationBars.buttons["完成"].tap()
-        XCTAssertTrue(account.waitForExistence(timeout: 5))
-        XCTAssertFalse(app.navigationBars["账号详情"].exists)
+        app.buttons["完成"].tap()
+        expectExists(account, in: app, timeout: 5)
+        verify(!app.navigationBars["账号详情"].exists, in: app,
+               "Done must dismiss the native account sheet.")
     }
 
     @MainActor
@@ -105,15 +121,21 @@ final class CPAQuotaAppUITests: XCTestCase {
             reveal(picker, in: app, upward: false)
             picker.tap()
             let option = app.buttons[title]
-            XCTAssertTrue(option.waitForExistence(timeout: 5))
+            expectExists(option, in: app, timeout: 5)
             option.tap()
             let load = element(loadID, in: app)
             reveal(load, in: app)
-            XCTAssertTrue(load.isEnabled)
+            verify(load.isEnabled, in: app, "The selected CAP section must be loadable.")
             load.tap()
-            let loaded = element(loadedID, in: app)
-            XCTAssertTrue(loaded.waitForExistence(timeout: 15), "Parsed content must replace the empty state for \(title).")
-            reveal(loaded, in: app)
+            let loaded = loadedID == "cap.overview.loaded"
+                ? app.staticTexts[loadedID]
+                : element(loadedID, in: app)
+            reveal(loaded, in: app, requiresHitTarget: loadedID == "cap.analytics.loaded")
+            verify(loaded.exists, in: app, "Parsed content must replace the empty state for \(title).")
+            if loadedID == "cap.overview.loaded" {
+                verify(loaded.label.contains("singlePage"), in: app,
+                       "The overview must display the fixture's complete single-page result.")
+            }
             attach(app, name: loadedID)
         }
     }
@@ -124,17 +146,17 @@ final class CPAQuotaAppUITests: XCTestCase {
         defer { app.terminate() }
         selectTab("monitoring", title: "监控与活动", in: app)
         let unconfigured = element("monitoring.unconfigured", in: app)
-        XCTAssertTrue(unconfigured.waitForExistence(timeout: 5))
+        expectExists(unconfigured, in: app, timeout: 5)
         let connectLink = app.buttons["连接监控服务"]
         reveal(connectLink, in: app)
         connectLink.tap()
         let address = element("monitor.bridgeAddress", in: app)
         let token = element("monitor.bridgeToken", in: app)
         let connect = element("monitor.connect", in: app)
-        XCTAssertTrue(address.waitForExistence(timeout: 5))
-        XCTAssertTrue(token.exists)
+        expectExists(address, in: app, timeout: 5)
+        verify(token.exists, in: app, "Monitoring must request its own credential.")
         reveal(connect, in: app)
-        XCTAssertFalse(connect.isEnabled, "A CPA connection must not act as monitoring bridge credentials.")
+        verify(!connect.isEnabled, in: app, "A CPA connection must not act as monitoring bridge credentials.")
         attach(app, name: "monitoring-unconfigured-separate-credentials")
     }
 
@@ -148,20 +170,21 @@ final class CPAQuotaAppUITests: XCTestCase {
 
         chooseAppearance("浅色羊皮纸", picker: appearance, in: app)
         let light = try canvasBrightness(app.screenshot().image)
-        XCTAssertGreaterThan(light, 0.65, "The light setting must render a light content canvas.")
+        verify(light > 0.65, in: app, "The light setting must render a light content canvas; measured \(light).")
         attach(app, name: "settings-light")
 
         chooseAppearance("深色曜石", picker: appearance, in: app)
         let dark = try canvasBrightness(app.screenshot().image)
-        XCTAssertLessThan(dark, 0.25, "The dark setting must render a dark content canvas.")
-        XCTAssertGreaterThan(light - dark, 0.45)
+        verify(dark < 0.25, in: app, "The dark setting must render a dark content canvas; measured \(dark).")
+        verify(light - dark > 0.45, in: app, "The canvas must materially change between light and dark.")
         attach(app, name: "settings-dark")
 
         let sharing = app.switches["settings.widgetSharing"]
         reveal(sharing, in: app)
-        XCTAssertEqual(sharing.value as? String, "0", "Sharing quota with widgets requires an explicit opt-in.")
+        verify(sharing.value as? String == "0", in: app,
+               "Sharing quota with widgets requires an explicit opt-in.")
         let masking = app.switches["settings.maskEmail"]
-        XCTAssertEqual(masking.value as? String, "1")
+        verify(masking.value as? String == "1", in: app, "Email masking must default to enabled.")
     }
 
     @MainActor
@@ -170,7 +193,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         let normalAccount = element("quota.account.ui-main", in: normal)
         reveal(normalAccount, in: normal)
         let normalHeight = normalAccount.frame.height
-        XCTAssertGreaterThanOrEqual(normalHeight, 44)
+        verify(normalHeight >= 44, in: normal, "The normal account button must have a 44-point hit target.")
         normal.terminate()
 
         let app = launch(connected: true, largeText: true)
@@ -180,29 +203,30 @@ final class CPAQuotaAppUITests: XCTestCase {
         }
         let account = element("quota.account.ui-main", in: app)
         reveal(account, in: app)
-        XCTAssertGreaterThan(account.frame.height, normalHeight,
-                             "Largest Dynamic Type must change actual text layout, not only the screenshot name.")
-        XCTAssertTrue(account.isHittable)
+        verify(account.frame.height > normalHeight, in: app,
+               "Largest Dynamic Type must change actual text layout: normal \(normalHeight), large \(account.frame.height).")
+        verify(account.isHittable, in: app, "The enlarged account button must remain tappable.")
         attach(app, name: "quota-accessibility5-portrait")
 
         XCUIDevice.shared.orientation = .landscapeLeft
-        XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 5))
-        XCTAssertGreaterThan(app.frame.width, app.frame.height)
+        expectExists(nativeTab("quotas", title: "额度总览", in: app), in: app, timeout: 5)
+        verify(app.frame.width > app.frame.height, in: app, "The app must actually render in landscape.")
         reveal(account, in: app, upward: false)
-        XCTAssertTrue(account.isHittable)
+        verify(account.isHittable, in: app, "The account button must remain tappable in landscape.")
         account.tap()
-        let close = app.navigationBars.buttons["完成"]
-        XCTAssertTrue(close.waitForExistence(timeout: 5))
-        XCTAssertTrue(close.isHittable)
-        XCTAssertTrue(element("quota.account.refresh", in: app).isHittable)
+        let close = app.buttons["完成"]
+        expectExists(close, in: app, timeout: 5)
+        verify(close.isHittable, in: app, "Done must remain reachable at the largest font in landscape.")
+        verify(element("quota.account.refresh", in: app).isHittable, in: app,
+               "The account refresh action must remain reachable at the largest font in landscape.")
         attach(app, name: "quota-detail-accessibility5-landscape")
         close.tap()
 
         selectTab("connection", title: "连接管理", in: app)
         let masking = app.switches["settings.maskEmail"]
         reveal(masking, in: app)
-        XCTAssertTrue(masking.isHittable)
-        XCTAssertGreaterThanOrEqual(masking.frame.height, 44)
+        verify(masking.isHittable, in: app, "The privacy setting must remain operable in landscape.")
+        verify(masking.frame.height >= 44, in: app, "The privacy setting must retain a 44-point hit target.")
         attach(app, name: "settings-accessibility5-landscape")
     }
 
@@ -213,10 +237,16 @@ final class CPAQuotaAppUITests: XCTestCase {
         app.launchArguments += ["--ui-testing", connected ? "--fixture=connected" : "--fixture=unconfigured"]
         if largeText { app.launchArguments.append("--ui-test-large-text") }
         app.launch()
-        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-        XCTAssertFalse(element("ui-test.preparationFailed", in: app).exists)
+        verify(app.wait(for: .runningForeground, timeout: 10), in: app, "The fixture app must launch in the foreground.")
+        verify(!element("ui-test.preparationFailed", in: app).exists, in: app, "Fixture preparation must succeed.")
         if connected {
-            XCTAssertTrue(element("quota.account.ui-main", in: app).waitForExistence(timeout: 15))
+            // A List does not create every offscreen row. In accessibility5 the
+            // first account starts below the fold; waiting for it without
+            // scrolling incorrectly treats native lazy loading as a failure.
+            expectExists(element("quota.displayMode", in: app), in: app, timeout: 15)
+            reveal(element("quota.account.ui-main", in: app), in: app)
+        } else {
+            expectExists(element("connection.server", in: app), in: app, timeout: 15)
         }
         return app
     }
@@ -234,39 +264,63 @@ final class CPAQuotaAppUITests: XCTestCase {
 
     @MainActor
     private func reveal(_ element: XCUIElement, in app: XCUIApplication, upward: Bool = true,
+                        requiresHitTarget: Bool = true,
                         file: StaticString = #filePath, line: UInt = #line) {
         // A rotation or a restored scroll position may place the target on
         // either side of the viewport. Try the expected direction, then recover.
         for direction in [upward, !upward] {
-            for _ in 0..<8 {
+            for _ in 0..<10 {
                 if element.exists {
                     if element.isHittable { return }
-                    if !element.isEnabled && !element.frame.isEmpty && app.frame.contains(element.frame) { return }
+                    if (!requiresHitTarget || !element.isEnabled), isVisible(element, in: app) { return }
                 }
-                if direction { app.swipeUp() } else { app.swipeDown() }
+                scrollContent(upward: direction, in: app, file: file, line: line)
             }
         }
-        attach(app, name: "unreachable-control")
+        attachDiagnostics(app, name: "unreachable-control")
         XCTFail("Expected control must remain reachable by scrolling: \(element.identifier)", file: file, line: line)
     }
 
     @MainActor
-    private func replaceText(in field: XCUIElement, with text: String) {
+    private func replaceText(in field: XCUIElement, with text: String, app: XCUIApplication,
+                             file: StaticString = #filePath, line: UInt = #line) {
         field.tap()
-        let current = field.value as? String ?? ""
-        if !current.isEmpty {
-            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
+        let previous = field.value as? String ?? ""
+        if !previous.isEmpty, previous != field.placeholderValue {
+            // A center tap places the caret inside an existing URL. Backspacing
+            // its character count from that position leaves a suffix behind.
+            // These one-line fixture values fit the field: tapping its trailing
+            // edge first places the insertion point after the complete value.
+            // This also works for SecureField without exposing the credential.
+            field.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.5)).tap()
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previous.count))
+            let cleared = field.value as? String ?? ""
+            verify(cleared.isEmpty || cleared == field.placeholderValue, in: app,
+                   "The existing field value must be cleared before replacement: \(field.identifier).",
+                   file: file, line: line)
         }
         field.typeText(text)
+        if field.elementType == .textField {
+            verify(field.value as? String == text, in: app,
+                   "The address field must contain exactly the entered fixture URL.", file: file, line: line)
+        }
     }
 
     @MainActor
-    private func selectTab(_ id: String, title: String, in app: XCUIApplication) {
-        let byIdentifier = app.tabBars.buttons.matching(identifier: "tab.\(id)").firstMatch
-        let tab = byIdentifier.exists ? byIdentifier : app.tabBars.buttons[title]
-        XCTAssertTrue(tab.waitForExistence(timeout: 5))
+    private func nativeTab(_ id: String, title: String, in app: XCUIApplication) -> XCUIElement {
+        let byIdentifier = app.buttons.matching(identifier: "tab.\(id)").firstMatch
+        return byIdentifier.exists ? byIdentifier : app.buttons.matching(NSPredicate(format: "label == %@", title)).firstMatch
+    }
+
+    @MainActor
+    private func selectTab(_ id: String, title: String, in app: XCUIApplication,
+                           file: StaticString = #filePath, line: UInt = #line) {
+        let tab = nativeTab(id, title: title, in: app)
+        expectExists(tab, in: app, timeout: 5, file: file, line: line)
+        verify(tab.isHittable, in: app, "The native destination \(title) must be tappable.", file: file, line: line)
         tab.tap()
-        XCTAssertTrue(tab.isSelected)
+        expectExists(element("workspace.\(id)", in: app), in: app, timeout: 5, file: file, line: line)
+        verify(tab.isSelected, in: app, "The native destination \(title) must report its selected state.", file: file, line: line)
     }
 
     @MainActor
@@ -274,9 +328,97 @@ final class CPAQuotaAppUITests: XCTestCase {
         reveal(picker, in: app, upward: false)
         picker.tap()
         let option = app.buttons[title]
-        XCTAssertTrue(option.waitForExistence(timeout: 5))
+        expectExists(option, in: app, timeout: 5)
         option.tap()
-        XCTAssertEqual(picker.value as? String, title)
+        verify(picker.value as? String == title, in: app, "The appearance picker must retain the selected option \(title).")
+    }
+
+    /// Use the actual visible List/Form viewport. A full-app swipe can start on
+    /// a system side rail or the keyboard instead of scrolling app content.
+    @MainActor
+    private func contentContainer(in app: XCUIApplication) -> XCUIElement? {
+        let containers = app.collectionViews.allElementsBoundByIndex
+            + app.tables.allElementsBoundByIndex
+            + app.scrollViews.allElementsBoundByIndex
+        return containers
+            .filter { $0.exists && $0.isHittable && !$0.frame.intersection(app.frame).isEmpty }
+            .max { left, right in
+                let lhs = left.frame.intersection(app.frame)
+                let rhs = right.frame.intersection(app.frame)
+                return lhs.width * lhs.height < rhs.width * rhs.height
+            }
+    }
+
+    @MainActor
+    private func visibleContentFrame(_ container: XCUIElement, in app: XCUIApplication) -> CGRect {
+        var viewport = container.frame.intersection(app.frame)
+        let keyboard = app.keyboards.firstMatch
+        if keyboard.exists, keyboard.frame.intersects(viewport), keyboard.frame.minY > viewport.minY {
+            viewport.size.height = min(viewport.maxY, keyboard.frame.minY) - viewport.minY
+        }
+        return viewport
+    }
+
+    @MainActor
+    private func isVisible(_ element: XCUIElement, in app: XCUIApplication) -> Bool {
+        guard !element.frame.isEmpty, let container = contentContainer(in: app) else { return false }
+        let viewport = visibleContentFrame(container, in: app)
+        let visible = element.frame.intersection(viewport)
+        guard !visible.isEmpty, !visible.isNull else { return false }
+        // Static text and disabled controls still need to be in the viewport;
+        // an offscreen accessibility record alone cannot satisfy this check.
+        return visible.width >= min(element.frame.width, 44)
+            && visible.height >= min(element.frame.height, 44)
+    }
+
+    @MainActor
+    private func scrollContent(upward: Bool, in app: XCUIApplication,
+                               file: StaticString, line: UInt) {
+        guard let container = contentContainer(in: app) else {
+            attachDiagnostics(app, name: "missing-scroll-container")
+            XCTFail("A reachable native List/Form scroll container is required.", file: file, line: line)
+            return
+        }
+        let viewport = visibleContentFrame(container, in: app)
+        guard viewport.width > 44, viewport.height > 80 else {
+            attachDiagnostics(app, name: "obscured-scroll-container")
+            XCTFail("The native content viewport must remain usable above the keyboard.", file: file, line: line)
+            return
+        }
+        let x = viewport.midX - container.frame.minX
+        let top = viewport.minY + viewport.height * 0.25 - container.frame.minY
+        let bottom = viewport.minY + viewport.height * 0.75 - container.frame.minY
+        let origin = container.coordinate(withNormalizedOffset: .zero)
+        let start = origin.withOffset(CGVector(dx: x, dy: upward ? bottom : top))
+        let end = origin.withOffset(CGVector(dx: x, dy: upward ? top : bottom))
+        start.press(forDuration: 0.05, thenDragTo: end)
+    }
+
+    @MainActor
+    private func expectExists(_ element: XCUIElement, in app: XCUIApplication, timeout: TimeInterval = 10,
+                              file: StaticString = #filePath, line: UInt = #line) {
+        verify(element.waitForExistence(timeout: timeout), in: app,
+               "Expected element must exist: \(element.identifier).", file: file, line: line)
+    }
+
+    @MainActor
+    private func verify(_ condition: Bool, in app: XCUIApplication, _ message: String,
+                        file: StaticString = #filePath, line: UInt = #line) {
+        if !condition { attachDiagnostics(app, name: "assertion-failure") }
+        XCTAssertTrue(condition, message, file: file, line: line)
+    }
+
+    @MainActor
+    private func attachDiagnostics(_ app: XCUIApplication, name: String) {
+        attach(app, name: name)
+        let hierarchy = app.debugDescription
+        let attachment = XCTAttachment(string: hierarchy)
+        attachment.name = "\(name)-accessibility-hierarchy"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        // CI artifact quota can prevent an xcresult upload. Keep the same
+        // isolated-fixture hierarchy in the job log so failures remain diagnosable.
+        print("FRONTEND_UI_FAILURE_HIERARCHY_BEGIN \(name)\n\(hierarchy)\nFRONTEND_UI_FAILURE_HIERARCHY_END")
     }
 
     @MainActor

@@ -101,17 +101,29 @@ public struct LoginOnboardingView: View {
             }
 
             Section {
-                Button(action: submit) {
-                    Label(isConnecting ? "正在验证连接" : "验证连接并进入工作台", systemImage: "checkmark.shield")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                }
-                .quotaPrimaryButtonStyle()
-                .disabled(!canSubmit)
-                .accessibilityIdentifier("connection.submit")
-                if isConnecting {
-                    ProgressView("正在验证管理密钥并读取账号")
-                        .accessibilityLabel("正在连接，请稍候")
+                NativeGlassActionGroup {
+                    VStack(spacing: 12) {
+                        Button(action: submit) {
+                            Label(isConnecting ? "正在验证连接" : "验证连接并进入工作台", systemImage: "checkmark.shield")
+                                .font(.headline)
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                        }
+                        .quotaPrimaryButtonStyle()
+                        .disabled(!canSubmit)
+                        .accessibilityIdentifier("connection.submit")
+                        if isConnecting {
+                            ProgressView("正在验证管理密钥并读取账号")
+                                .accessibilityLabel("正在连接，请稍候")
+                            Button {
+                                Task { await session.cancelActiveOperation() }
+                            } label: {
+                                Label("取消连接", systemImage: "xmark")
+                                    .frame(maxWidth: .infinity, minHeight: 44)
+                            }
+                            .quotaSecondaryButtonStyle()
+                            .accessibilityIdentifier("connection.cancel")
+                        }
+                    }
                 }
             }
             .listRowBackground(palette.contentSurface)

@@ -21,6 +21,8 @@
 
 CPAQuotaiOSApp 为正常运行持有唯一 Session，并在各 Window 中复用。CPAQuotaRootView 负责 Tab、每个工作区的路径和 Sheet；页面自己拥有 List、Form 或 ScrollView，不再被一个全局 ScrollView 包裹。
 
+TabView 的位置由系统决定；iPhone Duo 的本次模拟器运行呈现为侧边导航栏。UI 回归按 5 个实际按钮、选中状态和目标工作区验证，不限定底部 TabBar 的内部层级，也不强制覆盖系统 size class。
+
 应用启动合并重复恢复请求，同时恢复 CPA 与独立监控桥接；进入前台重新检查活动权限、现存系统活动和当前远端会话。监控页没有恢复专用的 .task，用户无需先打开该页才能恢复系统活动。
 
 深链仅接受 cpaquota://quotas 与经严格解析的 cpaquota://monitor?source=...。来源别名不会被当作全局唯一身份。只有当前桥接与凭据绑定下唯一匹配的已知记录可以定位；歧义、未知来源或进行中的启动意图不会被 URL 覆盖，也不会自动发起注册。
@@ -41,6 +43,8 @@ BrandPalette 保留原始 RGB 值，例如：
 标题采用系统衬线语义字体；数值采用系统等宽语义字体；不会把字体固定在某个 iPhone 的点数。数据行在可用宽度不足或辅助字号下改为纵向布局。
 
 系统 Tab、导航栏、工具栏、Menu、Sheet 保持原生行为。iOS / macOS 26 及以上的主要与次要按钮使用 .glassProminent / .glass；相邻操作组使用 GlassEffectContainer。内容卡片使用不透明普通内容表面，没有以 blur、Material 或多层高光冒充 Liquid Glass。更早系统采用原生 bordered 控件；iOS 最低版本保持 17.0，macOS 包最低版本保持 14.0。
+
+主要玻璃按钮使用原品牌深墨色作为 textOnAccent，保持赤陶底色原值，同时避免深色外观下白字与较亮赤陶底色的低对比。材质、按压和形变仍由系统 ButtonStyle 提供。
 
 没有定时的装饰粒子或主动持续动画。Reduce Transparency、Reduce Motion 的系统控件行为由系统处理；信息本身用文字、图标和状态共同表达，不能仅靠颜色。配额进度仅在实际比例已知时使用 ProgressView，未知值不会补成 0。
 
@@ -97,7 +101,7 @@ xcodebuild test -project Apple/CPAQuota.xcodeproj -scheme CPAQuota \
   -configuration Debug -destination 'platform=iOS Simulator,id=<实际设备UDID>' \
   -resultBundlePath /tmp/CPAQuota-NativeTests.xcresult \
   -parallel-testing-enabled NO \
-  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=
+  ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=
 ~~~
 
 CI 同时编译 Xcode 26.2 与 27.2，运行 SPM、native unit、XCUITest，再构建 unsigned Release。ci/select_simulator.py 会记录实际运行设备及系统版本，找不到目标 major 的模拟器就失败，不使用旧系统冒充通过。当前 Xcode 27 托管镜像的 27.2 应用可能解析到 Release Candidate 路径；日志会记录真实 xcodebuild 版本与解析路径。SDK 版本与模拟器 runtime 版本分别记录。

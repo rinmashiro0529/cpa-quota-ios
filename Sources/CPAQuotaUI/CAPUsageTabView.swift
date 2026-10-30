@@ -111,11 +111,15 @@ public struct CAPUsageTabView: View {
         if let presentation = coordinator.overviewPresentation {
             let snapshot = presentation.snapshot
             Section("窗口概览") {
-                Label(CAPUsagePresentation.completenessTitle(snapshot.requests.completeness),
-                    systemImage: snapshot.requests.completeness == .singlePage ? "checkmark.circle" : "exclamationmark.circle")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(snapshot.requests.completeness == .singlePage ? palette.statusOK : palette.statusWarn)
-                    .accessibilityIdentifier("cap.overview.loaded")
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Image(systemName: snapshot.requests.completeness == .singlePage ? "checkmark.circle" : "exclamationmark.circle")
+                        .accessibilityHidden(true)
+                    Text(CAPUsagePresentation.completenessTitle(snapshot.requests.completeness))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("cap.overview.loaded")
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(snapshot.requests.completeness == .singlePage ? palette.statusOK : palette.statusWarn)
                 Text(CAPUsagePresentation.completenessSubtitle(snapshot.requests.completeness,
                     itemCount: snapshot.requests.items.count))
                     .font(.footnote).foregroundStyle(.secondary)
