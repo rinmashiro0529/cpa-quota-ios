@@ -28,6 +28,7 @@ public struct AccountDetailSheetView: View {
                     .accessibilityAddTraits(.isHeader)
                 QuotaLabeledValue(title: "邮箱", value: diagnostic.email)
                     .privacySensitive()
+                    .accessibilityIdentifier("quota.detail.email")
                 QuotaLabeledValue(title: "平台", value: account.provider.uppercased())
                 QuotaLabeledValue(title: "套餐", value: snapshot?.plan ?? account.plan ?? "未知", monospaced: false)
                 Label(diagnostic.accountStatus, systemImage: diagnostic.statusSymbol)
@@ -144,6 +145,7 @@ public struct AccountDetailSheetView: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .background(BrandCanvasBackground())
+        .accessibilityIdentifier("quota.detail.form")
         .navigationTitle("账号详情")
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {

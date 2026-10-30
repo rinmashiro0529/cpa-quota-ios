@@ -51,7 +51,7 @@ jobs:
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/quota-monitor.exe" ./cmd/quota-monitor
 
   swift:
-    name: Swift and native UI (Xcode ${{ matrix.xcode }})
+    name: Swift and native UI (Xcode ${{ matrix.xcode }}, ${{ matrix.device }})
     strategy:
       fail-fast: false
       matrix:
@@ -61,11 +61,22 @@ jobs:
             major: '26'
             runtime: '26.2'
             device: 'iPhone 17 Pro'
+            layout: standard-iphone
+            evidence: xcode26-iphone17pro
           - runner: xcode-27
-            xcode: '27.2'
+            xcode: '27.1'
+            major: '27'
+            runtime: '27.0'
+            device: 'iPhone 18 Pro'
+            layout: standard-iphone
+            evidence: xcode27-iphone18pro
+          - runner: xcode-27
+            xcode: '27.1'
             major: '27'
             runtime: '27.1'
             device: 'iPhone Duo'
+            layout: duo-adaptive
+            evidence: xcode27-duo
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     env:
@@ -106,6 +117,7 @@ jobs:
           SIMULATOR_UDID="$(python3 -I ci/select_simulator.py \
             --major "$SIMULATOR_MAJOR" --preferred-runtime "$SIMULATOR_RUNTIME" \
             --preferred-device "$SIMULATOR_DEVICE" \
+            --require-preferred \
             --report "$RUNNER_TEMP/FrontendEvidence/simulator.json")"
           echo "udid=$SIMULATOR_UDID" >> "$GITHUB_OUTPUT"
           cat "$RUNNER_TEMP/FrontendEvidence/simulator.json"
@@ -113,6 +125,8 @@ jobs:
         shell: bash
         env:
           SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
+          TEST_RUNNER_CPA_UI_LAYOUT_POLICY: ${{ matrix.layout }}
+          TEST_RUNNER_CPA_UI_SIMULATOR_DEVICE: ${{ matrix.device }}
         run: |
           set -euo pipefail
           xcodebuild test \
@@ -159,7 +173,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: native-frontend-xcode-${{ matrix.xcode }}-${{ github.run_attempt }}
+          name: native-frontend-${{ matrix.evidence }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/FrontendEvidence
           if-no-files-found: warn
           retention-days: 7

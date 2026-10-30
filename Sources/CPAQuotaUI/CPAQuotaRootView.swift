@@ -7,6 +7,7 @@ import CPAQuotaActivity
 public struct CPAQuotaRootView: View {
     @Bindable var session: CPAQuotaSession
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.scenePhase) private var scenePhase
     @State private var paths: [CPAWorkspaceTab: NavigationPath] = [:]
     @State private var deepLinkGeneration: UInt64 = 0
@@ -57,6 +58,9 @@ public struct CPAQuotaRootView: View {
                 }
             }
             .tint(BrandPalette(colorScheme: colorScheme).actionTint)
+            // Presentations share the current system/host text setting; do not
+            // reset or cap Dynamic Type at the sheet's hosting boundary.
+            .environment(\.dynamicTypeSize, dynamicTypeSize)
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
         }

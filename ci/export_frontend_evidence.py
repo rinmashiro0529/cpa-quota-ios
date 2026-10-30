@@ -80,7 +80,9 @@ for manifest in sorted(export.rglob("*.json")):
 
 previews = args.evidence / "ReviewPreviews"
 previews.mkdir(exist_ok=True)
-budget = 2_000_000
+# Keep all six flows plus normal/large-text detail comparisons reviewable when
+# artifact storage is full, with a hard bound on both count and total log size.
+budget = 4_000_000
 count = 0
 for original in sorted(export.rglob("*.png")):
     if count >= 24:
@@ -107,5 +109,5 @@ for original in sorted(export.rglob("*.png")):
     for start in range(0, len(encoded), 12_000):
         print("FRONTEND_SCREENSHOT_DATA " + encoded[start:start + 12_000])
     print("FRONTEND_SCREENSHOT_END")
-print("FRONTEND_PREVIEW_EXPORT " + json.dumps({"count": count, "maximumEncodedBytes": 2_000_000,
+print("FRONTEND_PREVIEW_EXPORT " + json.dumps({"count": count, "maximumEncodedBytes": 4_000_000,
                                                "fullResultBundleArchived": False}))

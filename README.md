@@ -43,7 +43,7 @@ Rin，监控服务必须由操作者另行配置并运行。`dry_run=true` 仅�
 
 ## Rin，验证与构建
 
-Rin，`.github/workflows/backend-checks.yml` 在 PR 和 `main` 更新时运行 Go test/race/vet、Linux/Windows 构建、Xcode 26.2 / 27.2 的 SwiftPM、iOS Simulator 原生单元与 UI 测试、设备 Release 构建和实际嵌入活动扩展检查。实际 SDK、解析后的 Xcode 路径、模拟器 runtime、xcresult 与截图尝试作为 7 天 CI 附件保存；若附件存储配额不足，CI 明确告警并在日志中保留摘要与有界的截图审阅副本，完整结果包不可用这一限制不会被隐藏；27.2 镜像可能仍标为 Release Candidate，不能据此声称已完成稳定版真机验收。该工作流仅使用 `contents: read`，不签名、不发布、不部署，也不使用真实 CPA/APNs/Apple 账号凭据；包含 macOS 作业，会消耗相应 CI 额度。当前结果应查看对应提交的 [GitHub Actions](https://github.com/rinmashiro0529/cpa-quota-ios/actions)，不能用历史回执替代新提交的检查。既有 `ios-ci.yml` 归档流程仍受原指定 CI 分支限制，并另验收设备平台的扩展产物。
+Rin，`.github/workflows/backend-checks.yml` 在 PR 和 `main` 更新时运行 Go test/race/vet、Linux/Windows 构建、Xcode 26.2 / 正式版 27.1 的 SwiftPM、iOS Simulator 原生单元与 UI 测试、设备 Release 构建和实际嵌入活动扩展检查。模拟器矩阵包含 iPhone 17 Pro / iOS 26.2、iPhone 18 Pro / iOS 27.0、iPhone Duo / iOS 27.1；标准 iPhone 验证真实横屏，Duo 按系统管理的实际窗口形状验证。实际 SDK、解析后的 Xcode 路径、模拟器 runtime、xcresult 与截图尝试作为 7 天 CI 附件保存；若附件存储配额不足，CI 明确告警并在日志中保留摘要与有界的截图审阅副本，完整结果包不可用这一限制不会被隐藏。该工作流仅使用 `contents: read`，不签名、不发布、不部署，也不使用真实 CPA/APNs/Apple 账号凭据；包含 macOS 作业，会消耗相应 CI 额度。当前结果应查看对应提交的 [GitHub Actions](https://github.com/rinmashiro0529/cpa-quota-ios/actions)，不能用历史回执替代新提交的检查。既有 `ios-ci.yml` 归档流程仍受原指定 CI 分支限制，并另验收设备平台的扩展产物。
 
 Rin，在仓库根目录可运行源码接线校验和独立 Go 合成验收；后者输出真实退出码、源码哈希和构建回执到新的 `artifacts/backend-verification/` 目录，不启动真实监控服务。
 

@@ -23,6 +23,8 @@ CPAQuotaiOSApp 为正常运行持有唯一 Session，并在各 Window 中复用�
 
 TabView 的位置由系统决定；iPhone Duo 的本次模拟器运行呈现为侧边导航栏。UI 回归按 5 个实际按钮、选中状态和目标工作区验证，不限定底部 TabBar 的内部层级，也不强制覆盖系统 size class。
 
+Root 将当前 Dynamic Type 环境显式传递到连接与账号详情 Sheet；不限制字号范围。测试会比较普通字号与 accessibility5 的实际详情邮箱行高度，防止只有底层页面放大而弹层仍保留普通字号。
+
 应用启动合并重复恢复请求，同时恢复 CPA 与独立监控桥接；进入前台重新检查活动权限、现存系统活动和当前远端会话。监控页没有恢复专用的 .task，用户无需先打开该页才能恢复系统活动。
 
 深链仅接受 cpaquota://quotas 与经严格解析的 cpaquota://monitor?source=...。来源别名不会被当作全局唯一身份。只有当前桥接与凭据绑定下唯一匹配的已知记录可以定位；歧义、未知来源或进行中的启动意图不会被 URL 覆盖，也不会自动发起注册。
@@ -104,7 +106,15 @@ xcodebuild test -project Apple/CPAQuota.xcodeproj -scheme CPAQuota \
   ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=
 ~~~
 
-CI 同时编译 Xcode 26.2 与 27.2，运行 SPM、native unit、XCUITest，再构建 unsigned Release。ci/select_simulator.py 会记录实际运行设备及系统版本，找不到目标 major 的模拟器就失败，不使用旧系统冒充通过。当前 Xcode 27 托管镜像的 27.2 应用可能解析到 Release Candidate 路径；日志会记录真实 xcodebuild 版本与解析路径。SDK 版本与模拟器 runtime 版本分别记录。
+CI 同时编译 Xcode 26.2 与正式版 27.1，运行 SPM、native unit、XCUITest，再构建 unsigned Release。ci/select_simulator.py 会记录实际运行设备及系统版本，找不到目标 major 的模拟器就失败，不使用旧系统冒充通过。Apple 的 2026-10-15 发布记录和托管镜像清单确认 Xcode 27.1（27A9275）为当前稳定验收基线；开发期间使用的 27.2（27B48）仍是 Release Candidate，只作为额外兼容证据。日志记录真实 xcodebuild 版本、解析路径、SDK 与模拟器 runtime。
+
+| CI 工具链 | Simulator 实际目的地 | 布局验证 |
+| --- | --- | --- |
+| Xcode 26.2 / iOS 26.2 SDK | iPhone 17 Pro / iOS 26.2 | 普通与最大辅助字号、真实宽屏旋转、Sheet 与设置操作可达 |
+| Xcode 27.1 / iOS 27.1 SDK | iPhone 18 Pro / iOS 27.0 | 用最新稳定 SDK 编译，在镜像实际提供的标准 iPhone runtime 验证宽屏旋转 |
+| Xcode 27.1 / iOS 27.1 SDK | iPhone Duo / iOS 27.1 | 系统侧栏、普通与最大辅助字号、设备旋转后实际窗口中的操作可达 |
+
+CI 要求精确匹配表中的机型和 runtime，缺失就失败。Apple 明确说明 Duo 的方向不能推断 App 窗口形状，因此只对标准 iPhone 要求旋转后宽大于高；Duo 不把发送旋转命令算作宽屏已验证。该区别仅存在于测试策略，生产界面依赖实际布局与系统安全区域。Duo 开合、折叠、多窗口及连续改变窗口宽度仍需 Device Hub / 真机补充记录。策略通过官方 TEST_RUNNER_ 环境变量传入测试进程，未知策略失败；duo-adaptive 必须匹配已记录的 iPhone Duo 目的地。
 
 主要新增验证包括：
 
@@ -113,7 +123,7 @@ CI 同时编译 Xcode 26.2 与 27.2，运行 SPM、native unit、XCUITest，再�
 - 授权变化、本机结束与远端失败隔离、系统孤儿活动、歧义深链。
 - CAP 旧连接迟到、缓存原始窗口、空页与溢出、缺桶 / nil / 0、来源分组及加权指标。
 - Debug fixture 经真实客户端解码，验证 401 / 分页 / 缺失数值。
-- 6 条 XCUITest：登录校验与鉴权、5 Tab 与详情、CAP 4 栏目、独立监控凭据、浅深色实际亮度、最大辅助字号实际布局变化与横屏动作可达。
+- 6 条 XCUITest：登录校验与鉴权、5 Tab 与详情、CAP 4 栏目、独立监控凭据、浅深色实际亮度、最大辅助字号在总览及详情的实际布局变化与旋转后动作可达。标准 iPhone 必须进入真实宽屏；Duo 按实际窗口形状验证，不伪称宽屏或全部折叠姿态已覆盖。
 - UI 测试截图以 keepAlways 附件保存在 xcresult。若 GitHub artifact 存储配额阻止上传，CI 明确告警，并在日志中保留测试摘要及有总量上限的 JPEG 审阅副本（附原始 PNG 与副本 SHA256）；这不等于完整 xcresult 已归档。测试与构建步骤仍是阻断门槛，只有附件上传允许带告警继续。亮度和可达断言覆盖关键退化；完整逐像素视觉基线仍需设备审阅后批准，不能仅因生成截图就宣称视觉验收通过。
 
 ## 仍需签名设备完成的验收
@@ -129,7 +139,7 @@ python3 -I ci/export_frontend_evidence.py --restore-log native-job.log --evidenc
 
 以下项目必须保留独立记录，不与模拟器 / 合成测试合并为“已验证”：
 
-1. 正式 iOS 27 SDK / Release 工具链及对应真实设备安装。
+1. 使用匹配的正式签名在 iOS 27 真实设备上安装与运行。
 2. App Group 的签名授权、系统 Widget 编辑与选择、设备锁定时隐私显示。
 3. 真实桥接 + APNs 的 token 轮换、后台更新、被系统结束 / 用户划掉、8 小时活动上限与锁屏残留。
 4. 不支持 Dynamic Island 的机型、不同大小的岛、横屏及多活动竞争时 Compact / Minimal / Expanded 的实际呈现。
@@ -142,6 +152,9 @@ python3 -I ci/export_frontend_evidence.py --restore-log native-job.log --evidenc
 
 ## 官方参考
 
+- [Apple：Xcode 27.1 正式版发布记录](https://developer.apple.com/news/releases/?id=10152026a)
+- [Apple：为 iPhone Duo 准备应用与方向无关的布局](https://developer.apple.com/iphone-duo/prepare/)
+- [Apple：Xcode 测试进程环境变量](https://developer.apple.com/documentation/xcode/environment-variable-reference)
 - [Apple：Adopting Liquid Glass](https://developer.apple.com/documentation/technologyoverviews/adopting-liquid-glass)
 - [Apple：GlassEffectContainer](https://developer.apple.com/documentation/swiftui/glasseffectcontainer)
 - [Apple：Displaying live data with Live Activities](https://developer.apple.com/documentation/ActivityKit/displaying-live-data-with-live-activities)

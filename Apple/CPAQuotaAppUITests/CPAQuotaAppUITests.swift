@@ -188,12 +188,23 @@ final class CPAQuotaAppUITests: XCTestCase {
     }
 
     @MainActor
-    func testLargestDynamicTypeAndLandscapePreservePrimaryActions() {
+    func testLargestDynamicTypeAndDeviceRotationPreservePrimaryActions() async {
         let normal = launch(connected: true)
+        let policy = layoutPolicy(in: normal)
+        let rotationSuffix = policy == .duoAdaptive ? "rotated-system-window" : "landscape"
         let normalAccount = element("quota.account.ui-main", in: normal)
         reveal(normalAccount, in: normal)
         let normalHeight = normalAccount.frame.height
         verify(normalHeight >= 44, in: normal, "The normal account button must have a 44-point hit target.")
+        let normalWindow = await rotateDeviceAndWaitForWindow(in: normal, policy: policy)
+        reveal(normalAccount, in: normal, upward: false)
+        normalAccount.tap()
+        expectExists(normal.buttons["完成"], in: normal, timeout: 5)
+        let normalEmail = element("quota.detail.email", in: normal)
+        reveal(normalEmail, in: normal, requiresHitTarget: false)
+        let normalEmailHeight = normalEmail.frame.height
+        verify(normalEmailHeight > 0, in: normal, "The normal detail email row must have a measurable layout.")
+        attach(normal, name: "quota-detail-normal-\(rotationSuffix)")
         normal.terminate()
 
         let app = launch(connected: true, largeText: true)
@@ -203,31 +214,93 @@ final class CPAQuotaAppUITests: XCTestCase {
         }
         let account = element("quota.account.ui-main", in: app)
         reveal(account, in: app)
-        verify(account.frame.height > normalHeight, in: app,
-               "Largest Dynamic Type must change actual text layout: normal \(normalHeight), large \(account.frame.height).")
+        let largeAccountHeight = account.frame.height
+        verify(largeAccountHeight > normalHeight, in: app,
+               "Largest Dynamic Type must change actual text layout: normal \(normalHeight), large \(largeAccountHeight).")
         verify(account.isHittable, in: app, "The enlarged account button must remain tappable.")
         attach(app, name: "quota-accessibility5-portrait")
 
-        XCUIDevice.shared.orientation = .landscapeLeft
+        let largeWindow = await rotateDeviceAndWaitForWindow(in: app, policy: policy)
         expectExists(nativeTab("quotas", title: "额度总览", in: app), in: app, timeout: 5)
-        verify(app.frame.width > app.frame.height, in: app, "The app must actually render in landscape.")
+        verify(largeWindow.size == normalWindow.size, in: app,
+               "Normal and accessibility5 detail layouts must be compared in the same actual window shape.")
         reveal(account, in: app, upward: false)
-        verify(account.isHittable, in: app, "The account button must remain tappable in landscape.")
+        verify(account.isHittable, in: app, "The account button must remain tappable after device rotation.")
         account.tap()
         let close = app.buttons["完成"]
         expectExists(close, in: app, timeout: 5)
-        verify(close.isHittable, in: app, "Done must remain reachable at the largest font in landscape.")
+        let largeEmail = element("quota.detail.email", in: app)
+        reveal(largeEmail, in: app, requiresHitTarget: false)
+        let largeEmailHeight = largeEmail.frame.height
+        print("FRONTEND_DYNAMIC_TYPE normalAccountHeight=\(normalHeight) largeAccountHeight=\(largeAccountHeight) normalEmailHeight=\(normalEmailHeight) largeEmailHeight=\(largeEmailHeight) normalWindow=\(normalWindow) largeWindow=\(largeWindow) policy=\(policy.rawValue)")
+        verify(largeEmailHeight > normalEmailHeight, in: app,
+               "The sheet must inherit accessibility5: normal email height \(normalEmailHeight), large \(largeEmailHeight).")
+        verify(close.isHittable, in: app, "Done must remain reachable at the largest font after device rotation.")
         verify(element("quota.account.refresh", in: app).isHittable, in: app,
-               "The account refresh action must remain reachable at the largest font in landscape.")
-        attach(app, name: "quota-detail-accessibility5-landscape")
+               "The account refresh action must remain reachable at the largest font after device rotation.")
+        attach(app, name: "quota-detail-accessibility5-\(rotationSuffix)")
         close.tap()
 
         selectTab("connection", title: "连接管理", in: app)
         let masking = app.switches["settings.maskEmail"]
         reveal(masking, in: app)
-        verify(masking.isHittable, in: app, "The privacy setting must remain operable in landscape.")
+        verify(masking.isHittable, in: app, "The privacy setting must remain operable after device rotation.")
         verify(masking.frame.height >= 44, in: app, "The privacy setting must retain a 44-point hit target.")
-        attach(app, name: "settings-accessibility5-landscape")
+        attach(app, name: "settings-accessibility5-\(rotationSuffix)")
+    }
+
+    private enum UILayoutPolicy: String {
+        case standardIPhone = "standard-iphone"
+        case duoAdaptive = "duo-adaptive"
+    }
+
+    @MainActor
+    private func layoutPolicy(in app: XCUIApplication) -> UILayoutPolicy {
+        let environment = ProcessInfo.processInfo.environment
+        let raw = environment["CPA_UI_LAYOUT_POLICY"] ?? UILayoutPolicy.standardIPhone.rawValue
+        guard let policy = UILayoutPolicy(rawValue: raw) else {
+            verify(false, in: app, "Unknown UI layout policy: \(raw).")
+            return .standardIPhone
+        }
+        if policy == .duoAdaptive {
+            verify(environment["CPA_UI_SIMULATOR_DEVICE"] == "iPhone Duo", in: app,
+                   "The adaptive-window policy is only valid for the explicitly selected iPhone Duo simulator.")
+        }
+        return policy
+    }
+
+    @MainActor
+    private func rotateDeviceAndWaitForWindow(in app: XCUIApplication, policy: UILayoutPolicy) async -> CGRect {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let deadline = Date.now.addingTimeInterval(5)
+        var previous = CGRect.null
+        var stableSamples = 0
+        var frame = app.frame
+        var settled = false
+        repeat {
+            frame = app.frame
+            stableSamples = frame == previous ? stableSamples + 1 : 0
+            previous = frame
+            let expectedShape = policy == .duoAdaptive || frame.width > frame.height
+            if !frame.isEmpty, stableSamples >= 2, expectedShape {
+                settled = true
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+        } while Date.now < deadline
+
+        verify(XCUIDevice.shared.orientation == .landscapeLeft, in: app,
+               "The simulator must accept the requested physical device orientation.")
+        verify(settled, in: app,
+               "Rotation must settle to a valid window for \(policy.rawValue); actual frame \(frame).")
+        if policy == .standardIPhone {
+            verify(frame.width > frame.height, in: app,
+                   "A standard iPhone must actually render a wide landscape window.")
+        }
+        // Duo can retain a portrait-shaped inner display after physical
+        // rotation. Record that actual shape rather than claiming a wide app.
+        print("FRONTEND_ROTATION policy=\(policy.rawValue) frame=\(frame) physicalOrientation=\(XCUIDevice.shared.orientation.rawValue)")
+        return frame
     }
 
     @MainActor
@@ -340,7 +413,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         let containers = app.collectionViews.allElementsBoundByIndex
             + app.tables.allElementsBoundByIndex
             + app.scrollViews.allElementsBoundByIndex
-        return containers
+        let visibleContainers = containers
             .filter {
                 guard $0.exists else { return false }
                 // UIKit can report the CollectionView itself as non-hittable
@@ -351,6 +424,11 @@ final class CPAQuotaAppUITests: XCTestCase {
                 let viewport = visibleContentFrame($0, in: app)
                 return !viewport.isNull && viewport.width > 44 && viewport.height > 80
             }
+        // A presented form can be smaller than the still-visible tab content.
+        // Its stable screen identity prevents scrolling the background list
+        // while seeking a lazily-created accessibility-size detail row.
+        let detailForms = visibleContainers.filter { $0.identifier == "quota.detail.form" }
+        return (detailForms.isEmpty ? visibleContainers : detailForms)
             .max { left, right in
                 let lhs = visibleContentFrame(left, in: app)
                 let rhs = visibleContentFrame(right, in: app)
