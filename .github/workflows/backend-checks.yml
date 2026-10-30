@@ -146,11 +146,19 @@ jobs:
           python3 -I ci/validate_activity_extension.py \
             --app "$RUNNER_TEMP/ReleaseDerivedData/Build/Products/Release-iphoneos/CPAQuota.app" \
             --platform ios
-      - name: Preserve test results and screenshots
+      - name: Record native test summary
         if: always()
+        run: python3 -I ci/export_frontend_evidence.py --evidence "$RUNNER_TEMP/FrontendEvidence"
+      - name: Preserve test results and screenshots
+        id: evidence_upload
+        if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: native-frontend-xcode-${{ matrix.xcode }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/FrontendEvidence
           if-no-files-found: warn
           retention-days: 7
+      - name: Preserve review previews when artifact storage is unavailable
+        if: always() && steps.evidence_upload.outcome == 'failure'
+        run: python3 -I ci/export_frontend_evidence.py --evidence "$RUNNER_TEMP/FrontendEvidence" --log-previews

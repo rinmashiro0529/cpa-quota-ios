@@ -408,6 +408,8 @@ public final class MonitoringWorkspaceCoordinator {
     public func stopLocalActivityDisplay() async {
         guard !isEndingLocalActivity,
               let activityID = attachedActivityID ?? liveActivityDriver.activeActivityID else { return }
+        let expectedConnectionGeneration = connectionGeneration
+        let expectedConfigurationGeneration = configurationGeneration
         isEndingLocalActivity = true
         defer { isEndingLocalActivity = false; refreshLocalActivityInventory() }
         if let intent = pendingIntent, !intent.wasSubmitted, intent.activityID == activityID,
@@ -426,6 +428,13 @@ public final class MonitoringWorkspaceCoordinator {
             localActivitySnapshot = nil
         }
         await liveActivityDriver.endActivity(activityID: activityID, immediate: true)
+        if attachedActivityID == activityID {
+            attachedActivityID = nil
+            localActivitySnapshot = nil
+        }
+        guard connectionGeneration == expectedConnectionGeneration,
+              configurationGeneration == expectedConfigurationGeneration,
+              attachedActivityID == nil else { return }
         bridgeStatusNotice = "已停止本机实时活动显示。远端监控未因此取消；如需结束采集，请另选“停止监控”。"
     }
 

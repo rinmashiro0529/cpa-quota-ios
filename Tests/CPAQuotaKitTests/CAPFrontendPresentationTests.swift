@@ -82,6 +82,29 @@ struct CAPFrontendPresentationTests {
         #expect(result.series.allSatisfy { $0.points.count == 1 })
     }
 
+    @Test func trendCountsUseNumericConversionInsteadOfFloatingPointBitPatterns() throws {
+        let cases: [(json: String, expected: Double)] = [
+            ("0", 0),
+            ("12", 12),
+            ("9007199254740992", 9_007_199_254_740_992),
+            // Double rounds UInt64.max to 2^64; the exact integer remains in the data table.
+            ("18446744073709551615", 18_446_744_073_709_551_616)
+        ]
+        for sample in cases {
+            let rows = try decode([CAPUsageStatRow].self, """
+            [{"hour":"2026-10-30T10:00:00Z","requests":\(sample.json),
+              "output_tokens":\(sample.json),"total_tokens":\(sample.json),"average_latency_ns":2500000}]
+            """)
+            let presentation = CAPTrendPresentation(rows: CAPRowBuilder.rows(rows,
+                window: CAPUsageWindow(now: now), scope: "numeric-conversion", identity: CAPRowBuilder.statIdentity))
+            let point = try #require(presentation.series.first?.points.first)
+            #expect(CAPTrendMetric.requests.value(point) == sample.expected)
+            #expect(CAPTrendMetric.outputTokens.value(point) == sample.expected)
+            #expect(CAPTrendMetric.totalTokens.value(point) == sample.expected)
+            #expect(CAPTrendMetric.averageLatency.value(point) == 2.5)
+        }
+    }
+
     @Test func requestIdentityIncludesWindowPageAndDuplicateOccurrence() throws {
         let page = try decode(CAPUsageRequestPage.self,
             #"{"total":2,"offset":0,"limit":50,"items":[{"sequence":1,"model":"m"},{"sequence":1,"model":"m"}]}"#)

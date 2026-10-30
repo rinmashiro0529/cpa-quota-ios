@@ -343,6 +343,32 @@ struct MonitoringWorkspaceReliabilityTests {
         #expect(driver.startCount == 1)
     }
 
+    @Test func endingOldLocalActivityCannotClearANewBridgeActivityOrNotice() async throws {
+        let first = WorkspaceMonitorTransport()
+        let second = WorkspaceMonitorTransport()
+        let gate = WorkspaceGate()
+        let driver = WorkspaceActivityDriver(endGate: gate)
+        let coordinator = workspace(transport: first, second: second, driver: driver)
+        await connect(coordinator)
+        drafts(coordinator)
+        await coordinator.startOrReconcileMonitoringSession()
+        let ending = Task { await coordinator.stopLocalActivityDisplay() }
+        await gate.waitUntilEntered()
+        await connect(coordinator, host: "second.invalid", token: "second-fixture-token")
+        drafts(coordinator)
+        await coordinator.startOrReconcileMonitoringSession()
+        let currentNotice = coordinator.bridgeStatusNotice
+        #expect(coordinator.localActivityID == "activity-2")
+        await gate.open()
+        await ending.value
+        #expect(driver.endedIDs == ["activity-1"])
+        #expect(driver.activeActivityID == "activity-2")
+        #expect(coordinator.localActivityID == "activity-2")
+        #expect(coordinator.bridgeStatusNotice == currentNotice)
+        #expect(await first.count(method: "DELETE") == 0)
+        #expect(await second.count(method: "DELETE") == 0)
+    }
+
     @Test func localEndWhileWaitingForTokenCancelsOnlyTheUnsubmittedIntent() async throws {
         let transport = WorkspaceMonitorTransport()
         let driver = WorkspaceActivityDriver(initialToken: nil)
@@ -529,10 +555,12 @@ private final class WorkspaceActivityDriver: SystemLiveActivityDriver {
     private let tokenDuringStart: String?
     private let tokenDuringRestore: String?
     private let endDuringStart: Bool
+    private let endGate: WorkspaceGate?
     init(initialToken: String? = "aa11", tokenDuringStart: String? = nil,
-         tokenDuringRestore: String? = nil, endDuringStart: Bool = false) {
+         tokenDuringRestore: String? = nil, endDuringStart: Bool = false, endGate: WorkspaceGate? = nil) {
         self.initialToken = initialToken; self.tokenDuringStart = tokenDuringStart
         self.tokenDuringRestore = tokenDuringRestore; self.endDuringStart = endDuringStart
+        self.endGate = endGate
     }
     func startActivity(sourceID: String, initialSnapshot: MonitoringSnapshot?,
         onPushTokenUpdate: @escaping @MainActor (String, String) -> Void,
@@ -566,6 +594,8 @@ private final class WorkspaceActivityDriver: SystemLiveActivityDriver {
         if sources[activityID] != nil { updatedIDs.append(activityID) }
     }
     func endActivity(activityID: String, immediate: Bool) async {
+        if activeActivityID == activityID { activeActivityID = nil; latestPushTokenHex = nil }
+        await endGate?.wait()
         if sources.removeValue(forKey: activityID) != nil { endedIDs.append(activityID) }
         if activeActivityID == activityID { activeActivityID = nil; latestPushTokenHex = nil }
     }

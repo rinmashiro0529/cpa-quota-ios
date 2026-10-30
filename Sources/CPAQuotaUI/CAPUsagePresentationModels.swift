@@ -148,10 +148,12 @@ enum CAPTrendMetric: String, CaseIterable, Identifiable, Sendable {
     var unit: String { self == .averageLatency ? "毫秒" : rawValue }
 
     func value(_ point: CAPTrendPoint) -> Double? {
+        // A bare Double.init function reference can select init(bitPattern:)
+        // for UInt64. Use explicit numeric conversion for every counter.
         switch self {
-        case .requests: point.row.counters.requests.map(Double.init)
-        case .outputTokens: point.row.counters.outputTokens.map(Double.init)
-        case .totalTokens: point.row.counters.totalTokens.map(Double.init)
+        case .requests: point.row.counters.requests.map { Double($0) }
+        case .outputTokens: point.row.counters.outputTokens.map { Double($0) }
+        case .totalTokens: point.row.counters.totalTokens.map { Double($0) }
         case .averageLatency: point.row.averageLatencyNs.map { Double($0) / 1_000_000 }
         }
     }

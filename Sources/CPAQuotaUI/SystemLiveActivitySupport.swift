@@ -170,6 +170,9 @@ public final class DefaultSystemLiveActivityDriver: SystemLiveActivityDriver {
         if activeActivityID == activityID { detachActivity() }
         #if canImport(ActivityKit) && os(iOS)
         await Self.endSystemActivity(activityID: activityID, immediate: immediate)
+        // Reconciliation may have reattached this exact activity while the
+        // system end was suspended. Never detach a different, newly started ID.
+        if activeActivityID == activityID { detachActivity() }
         #endif
     }
 
