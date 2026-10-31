@@ -1,5 +1,5 @@
 version: 1
-bundleID: dev.rin.cpaquota
+bundleID: icu.nahida.cpaquota
 product: CPAQuotaApp
 infoPath: AppInfo.plist
 skipLSP: true

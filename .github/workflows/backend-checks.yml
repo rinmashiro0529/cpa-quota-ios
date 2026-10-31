@@ -26,6 +26,9 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+      - name: Run offline operator tooling regressions
+        working-directory: ${{ github.workspace }}
+        run: python3 -I -B -m unittest discover -s tools/tests -p 'test_*.py'
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
         with:

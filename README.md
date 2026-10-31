@@ -2,6 +2,8 @@
 
 Rin，本工程包含原生 Swift 6 后端包 `CPAQuotaKit`、SwiftUI 前端模块 `CPAQuotaUI`、共享活动模块 `CPAQuotaActivity` 以及 App 入口 `CPAQuotaApp`。后端负责连接个人 CPA、枚举已有账号、读取并归一化额度、缓存最后成功结果、管理并发/取消以及通过系统 Keychain 保存管理凭据；前端通过 `@MainActor @Observable` 状态驱动额度、CAP 用量、监控、账号与连接工作台。前端现使用 5 个原生 Tab / NavigationStack、系统控件与可用系统上的 Liquid Glass 按钮。旧应用内仿灵动岛及浮动自绘 TabBar 已移除；真正的系统 Live Activity 和常规配额 Widget 由独立 `CPAQuotaActivityExtension` 承载。
 
+Rin，本次主线整理保留完整原生前端、Widget 切源/过期边界修复及构建基线合并 `6dff18b`，并将通用构建与部署材料纳入同一仓库；不需要从旧功能分支挑选代码。源码、构建产物、签名身份和运行中的部署是不同交付层次：本仓库不保存真实密钥、描述文件、生产配置、SDK 或已签 IPA。历史验证与当前待验收项见 [主线集成状态](docs/MAIN_INTEGRATION_STATUS.md)。
+
 ## Rin，当前交付与启用状态
 
 | 层次 | 当前状态 | 边界 |
@@ -51,6 +53,7 @@ Rin，在仓库根目录可运行源码接线校验和独立 Go 合成验收；�
 python -I -X utf8 -B ci/validate_source_layout.py --root .
 python -I -X utf8 -B ci/test_source_layout.py
 python -I -X utf8 -B ci/test_activity_extension.py
+python -I -B -m unittest discover -s tools/tests -p "test_*.py"
 python -I -X utf8 -B tools/test_monitor_backend.py --project .
 ```
 
@@ -62,7 +65,9 @@ python -I -X utf8 tools/test_backend_nwd.py --project . --mode device --target C
 python -I -X utf8 tools/test_backend_nwd.py --project . --mode simulator --target CPAQuotaApp
 ```
 
-Rin，NWD 工具为每次运行创建新目录并校验归档 SHA256，不覆盖旧构建、不清理共享缓存、不重启容器。Darwin SDK 交叉编译不等于 Xcode Simulator 测试、签名归档或真机运行；原生测试由上述 Apple CI 单独验证，真实设备行为仍需另行验收。
+Rin，NWD 工具为每次运行创建新目录并校验归档 SHA256，不覆盖旧构建、不清理共享缓存、不重启容器。上述 `device`/`simulator` 命令只编译指定 Swift target，不等于完整 App 与扩展打包。完整设备构建、SDK 输入与产物检查、Xcode 双 bundle 签名的入口和限制见 [iOS 构建和签名](docs/NWD_IPA_BUILD.md)；独立 Go 的离线 Linux 构建和受控安装模板见 [监控部署](docs/MONITOR_DEPLOYMENT.md)。两类新工具的 `--help`、准备和离线检查都不代表已经执行远端构建或部署。
+
+Rin，Darwin SDK 交叉编译不等于 Xcode Simulator 测试、签名归档或真机运行；原生测试由上述 Apple CI 单独验证，真实设备行为仍需另行验收。
 
 ## Rin，接入、升级与回退边界
 
@@ -76,6 +81,10 @@ Rin，PR #1 的功能与 PR #2 的可靠性修复应作为完整组合维护，�
 
 | 文件 | 内容 |
 | --- | --- |
+| [主线集成状态](docs/MAIN_INTEGRATION_STATUS.md) | 功能基线、验证证据与尚未验收项 |
+| [iOS 构建和签名](docs/NWD_IPA_BUILD.md) | 完整 App/扩展准备、SDK 输入核对、Linux 构建和 Xcode 签名 |
+| [监控部署](docs/MONITOR_DEPLOYMENT.md) | 离线 Go 构建、隔离服务与共享/独立 HTTPS 模板 |
+| [实时活动启用与排障](docs/LIVE_ACTIVITY_SETUP.md) | 来源、账号选择、实时活动授权、按钮条件与推送边界 |
 | [原生前端实现与审阅](docs/NATIVE_FRONTEND_IMPLEMENTATION.md) | 页面迁移、系统活动、小组件安全边界、测试与签名设备验收 |
 | [前端接入合同](docs/FRONTEND_INTEGRATION.md) | public Interface、状态、取消、错误与单位 |
 | [CAP Usage 后端](docs/CAP_USAGE_BACKEND.md) | 统计鉴权、窗口、加权 TPS、分页与详情状态 |

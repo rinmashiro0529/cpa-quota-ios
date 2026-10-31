@@ -26,3 +26,11 @@ Services/QuotaMonitor/state.enc
 Services/QuotaMonitor/*.exe
 Services/QuotaMonitor/quota-monitor
 Services/QuotaMonitor/**/.test-work/
+credentials/
+.private/
+.envrc
+*.local.json
+*secrets-backup*
+monitor-bridge-token.txt
+cpa-management-key.txt
+operator-config.json
