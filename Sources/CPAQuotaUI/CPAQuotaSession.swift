@@ -442,6 +442,15 @@ public final class CPAQuotaSession {
     }
 
     public private(set) var widgetSharingNotice: String?
+    private var publishedWidgetSource: String?
+    private var publishedWidgetAliases: [String: String] = [:]
+
+    public func widgetAlias(for account: CPAAccount) -> String? {
+        guard sharesQuotaWithWidgets, let currentServer,
+              publishedWidgetSource == currentServer.identifier,
+              let identity = try? QuotaWidgetPublisher.identity(for: account) else { return nil }
+        return publishedWidgetAliases[identity]
+    }
 
     @ObservationIgnored private let credentialStore: any CredentialStore
     @ObservationIgnored private let credentialCoordinator: CredentialStoreCoordinator
@@ -541,6 +550,8 @@ public final class CPAQuotaSession {
 
     private func synchronizeQuotaWidgetSnapshot(reportClearFailure: Bool = false) {
         guard sharesQuotaWithWidgets, let currentServer, store != nil else {
+            publishedWidgetSource = nil
+            publishedWidgetAliases = [:]
             do {
                 try widgetPublisher.clear()
                 needsWidgetSnapshotClear = false
@@ -551,9 +562,15 @@ public final class CPAQuotaSession {
             }
             return
         }
+        if publishedWidgetSource != currentServer.identifier {
+            publishedWidgetSource = nil
+            publishedWidgetAliases = [:]
+        }
         do {
             try widgetPublisher.publish(sourceIdentifier: currentServer.identifier,
                                         accounts: accounts, records: records)
+            publishedWidgetSource = currentServer.identifier
+            publishedWidgetAliases = widgetPublisher.publishedAliases
             needsWidgetSnapshotClear = false
             widgetSharingNotice = accounts.count > QuotaWidgetSnapshot.maximumEntries
                 ? "小组件共享前 64 个账号的主要读数；完整窗口与指标请在额度总览查看。"
@@ -1112,6 +1129,11 @@ public final class CPAQuotaSession {
         let enabledCount = store.accounts.filter { !$0.isDisabled }.count
         let totalCount = store.accounts.count
 
+        if let error = store.error,
+           error.kind == .managementUnauthorized || error.kind == .managementForbidden {
+            return ConnectionStatusPresentation(phase: .managementBlocked(kind: error.kind), isExpanded: isExpanded)
+        }
+
         if store.isLoading || store.isRefreshing {
             return ConnectionStatusPresentation(
                 phase: .syncing(
@@ -1133,12 +1155,6 @@ public final class CPAQuotaSession {
                         isExpanded: isExpanded
                     )
                 }
-            }
-            if globalError.kind == .managementUnauthorized || globalError.kind == .managementForbidden {
-                return ConnectionStatusPresentation(
-                    phase: .managementBlocked(kind: globalError.kind),
-                    isExpanded: isExpanded
-                )
             }
             if globalError.kind != .rateLimited {
                 return ConnectionStatusPresentation(

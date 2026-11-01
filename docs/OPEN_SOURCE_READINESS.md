@@ -6,7 +6,8 @@ Rin，本表记录资料整改和仍待验收事项，不表示开源验收通�
 
 - Rin，所有者已选择 MIT，并声明有权授权源码和 AppIcon；这是所有者声明，不是独立权属鉴定。许可证见 [LICENSE](../LICENSE)，第三方材料和其他潜在权利仍需核查。
 - Rin，已补充 [安全政策](../SECURITY.md) 和 [贡献指南](../CONTRIBUTING.md)，公开资料中的指定环境标识已泛化；Git 历史不会因此改变。
-- Rin，已取得 3 个草稿 Release 共 19 个附件的清单，包含 IPA、xcarchive、日志等；当前 Actions artifacts 的 `total_count=0`。清单不等于内容检查，历史 Actions 日志和已过期产物不在此结论内。
+- Rin，2026-11-01 首次清点时，已取得 3 个草稿 Release 共 19 个附件的清单，包含 IPA、xcarchive、日志等；当时 Actions artifacts 的 `total_count=0`，这是历史观察，不是实时数量。Release 清单不等于内容检查，历史 Actions 日志和已过期产物不在此结论内。
+- Rin，同日提交 `9dc2184` 的 Actions 运行 `41291688548` 实际通过四个作业并产生三份 CI 产物；其中仅一份完成了 digest、摘要与六张截图的有限核验。这不替代旧 Release 附件检查，也不覆盖后续业务整改；本表不是动态产物台账，旧 CI 结果不能充当新源码的原生验收。
 
 ## Rin，公开前仍待验证
 

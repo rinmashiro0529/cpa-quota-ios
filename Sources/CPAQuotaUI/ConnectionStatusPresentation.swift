@@ -95,6 +95,28 @@ public struct ConnectionStatusPresentation: Equatable, Sendable {
         }
     }
 
+    /// Text consumed by the connection settings page, not a claim that TLS implies authorization.
+    public var connectionPageText: String {
+        switch phase {
+        case .unconfigured: "未连接"
+        case .idle: "已连接"
+        case .syncing: "正在同步"
+        case .rateLimited: "限流冷却中"
+        case .managementBlocked(let kind): "管理鉴权已阻断：\(Self.connectionFailureLabel(kind))"
+        case .connectionFailed(let kind): "连接异常：\(Self.connectionFailureLabel(kind))"
+        }
+    }
+
+    public var connectionPageRecovery: String? {
+        switch phase {
+        case .managementBlocked:
+            "请更新服务地址或管理密钥，并显式重新连接；原连接的鉴权熔断不会自动解除。"
+        case .connectionFailed:
+            "请检查网络或服务地址后重试。"
+        default: nil
+        }
+    }
+
     public var progressFraction: Double {
         switch phase {
         case .unconfigured:

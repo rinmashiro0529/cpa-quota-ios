@@ -24,7 +24,7 @@ public struct ConnectionManagementTabView: View {
                 QuotaLabeledValue(title: "凭据保存", value: storageStatus, monospaced: false)
                 if let error = session.connectionFormError {
                     QuotaErrorNotice(presentation: ErrorPresentation(error: error))
-                } else if let message = session.statusBannerMessage {
+                } else if let message = session.connectionStatus().connectionPageRecovery ?? session.statusBannerMessage {
                     Label(message, systemImage: "info.circle")
                         .font(.subheadline)
                         .foregroundStyle(palette.textSecondary)
@@ -141,7 +141,7 @@ public struct ConnectionManagementTabView: View {
     private var connectionStatus: String {
         switch session.authState {
         case .connecting: "正在验证连接"
-        case .connected: "已通过 HTTPS 连接"
+        case .connected: session.connectionStatus().connectionPageText
         case .unconfigured: session.savedServer != nil ? "已保存，当前未连接" : "未连接"
         }
     }

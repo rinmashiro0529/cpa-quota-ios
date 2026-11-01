@@ -15,6 +15,7 @@ private actor WorkspaceCAPTransport: HTTPTransport {
     private var captured: [URLRequest] = []
     private var cancelledCalls = 0
     private var failingSuffix: String?
+    private var throwingSuffix: String?
 
     init(gatedSuffix: String? = nil, gates: [TestGate] = [], throwAfterFirstGate: Bool = false) {
         self.gatedSuffix = gatedSuffix
@@ -25,6 +26,7 @@ private actor WorkspaceCAPTransport: HTTPTransport {
     func requests() -> [URLRequest] { captured }
     func cancelledCount() -> Int { cancelledCalls }
     func fail(_ suffix: String?) { failingSuffix = suffix }
+    func throwOn(_ suffix: String?) { throwingSuffix = suffix }
 
     func send(_ request: URLRequest) async throws -> HTTPResponse {
         captured.append(request)
@@ -36,6 +38,7 @@ private actor WorkspaceCAPTransport: HTTPTransport {
             if index == 0, throwAfterFirstGate { throw CPAError(.network) }
         }
         if Task.isCancelled { cancelledCalls += 1 }
+        if let throwingSuffix, path.hasSuffix(throwingSuffix) { throw CPAError(.network) }
         if let failingSuffix, path.hasSuffix(failingSuffix) {
             return HTTPResponse(statusCode: 503, headers: [:], body: Data())
         }
@@ -247,6 +250,140 @@ struct CAPWorkspaceReliabilityTests {
         #expect(coordinator.requestPage?.offset == 0)
         await coordinator.refreshManagementStats()
         #expect(coordinator.managementStatsWindow == later)
+    }
+
+    @Test func groupPageFallbackValidationAndFailurePreserveFixedWindow() async throws {
+        let transport = WorkspaceCAPTransport()
+        let coordinator = try coordinator(transport)
+        let first = CAPUsageWindow(now: now)
+        let later = CAPUsageWindow(now: now.addingTimeInterval(86_400))
+        await coordinator.refreshGroupPage(window: first, groupOffset: 0, groupLimit: 100)
+        #expect(await transport.requests().count == 4)
+        let original = try #require(coordinator.store?.details)
+        await coordinator.refreshGroupPage(window: first, groupOffset: 100, groupLimit: 100)
+        #expect(await transport.requests().count == 5)
+        #expect(coordinator.store?.details?.groupOffset == 100)
+        await coordinator.refreshGroupPage(window: first, groupOffset: -1, groupLimit: 100)
+        #expect(await transport.requests().count == 5)
+        #expect(coordinator.store?.detailsError != nil)
+        #expect(coordinator.store?.details?.groupOffset == 100)
+        await coordinator.refreshGroupPage(window: first, groupOffset: 100, groupLimit: 0)
+        #expect(await transport.requests().count == 5)
+        #expect(coordinator.store?.detailsError != nil)
+        await coordinator.refreshGroupPage(window: first, groupOffset: 200, groupLimit: 100)
+        #expect(coordinator.store?.details?.groupOffset == 200)
+        #expect(await transport.requests().count == 6)
+        await transport.fail("/stats/groups")
+        await coordinator.refreshGroupPage(window: first, groupOffset: 300, groupLimit: 100)
+        #expect(coordinator.store?.details?.groupOffset == 200)
+        #expect(coordinator.store?.detailsError != nil)
+        await coordinator.refreshGroupPage(window: later, groupOffset: 0, groupLimit: 100)
+        let retained = try #require(coordinator.store?.details)
+        #expect(retained.window == first)
+        #expect(retained.initial.generatedAt == original.initial.generatedAt)
+        #expect(retained.trends.generatedAt == original.trends.generatedAt)
+        #expect(retained.costs.generatedAt == original.costs.generatedAt)
+        let zone = try #require(TimeZone(secondsFromGMT: 0))
+        #expect(CAPUsagePresentation.windowBadgeText(retained.window, timeZone: zone) ==
+                "窗口 · 2027-01-15 07:30–2027-01-15 08:00")
+        await transport.fail(nil)
+        let before = await transport.requests().count
+        await coordinator.refreshGroupPage(window: later, groupOffset: 0, groupLimit: 100)
+        #expect(await transport.requests().count == before + 4)
+        #expect(coordinator.store?.details?.window == later)
+    }
+
+    @Test(arguments: [false, true])
+    func olderGroupCompletionCannotOverwriteOrCancelNewerPage(lateFailure: Bool) async throws {
+        let baselineGate = TestGate(), oldGate = TestGate(), newGate = TestGate()
+        await baselineGate.open()
+        let transport = WorkspaceCAPTransport(gatedSuffix: "/stats/groups", gates: [baselineGate, oldGate, newGate],
+                                              throwAfterFirstGate: false)
+        let coordinator = try coordinator(transport)
+        let window = CAPUsageWindow(now: now)
+        await coordinator.refreshDetails(window: window)
+        let old = Task { await coordinator.refreshGroupPage(window: window, groupOffset: 100, groupLimit: 100) }
+        await oldGate.waitForArrivals()
+        let newer = Task { await coordinator.refreshGroupPage(window: window, groupOffset: 200, groupLimit: 100) }
+        await newGate.waitForArrivals()
+        if lateFailure { await transport.throwOn("/stats/groups") }
+        await oldGate.open()
+        await old.value
+        #expect(coordinator.store?.isLoadingDetails == true)
+        #expect(coordinator.store?.details?.groupOffset == 0)
+        #expect(coordinator.store?.detailsError == nil)
+        await transport.throwOn(nil)
+        await newGate.open()
+        await newer.value
+        #expect(coordinator.store?.details?.groupOffset == 200)
+        #expect(coordinator.store?.detailsError == nil)
+    }
+
+    @Test(arguments: [false, true])
+    func fullRefreshAndGroupPageShareOneCompetitionDomain(fullIsNewer: Bool) async throws {
+        let baselineGate = TestGate(), oldGate = TestGate(), newGate = TestGate()
+        await baselineGate.open()
+        let transport = WorkspaceCAPTransport(gatedSuffix: "/stats/groups", gates: [baselineGate, oldGate, newGate])
+        let coordinator = try coordinator(transport)
+        let window = CAPUsageWindow(now: now)
+        await coordinator.refreshDetails(window: window)
+        let old = Task {
+            if fullIsNewer {
+                await coordinator.refreshGroupPage(window: window, groupOffset: 100, groupLimit: 100)
+            } else {
+                await coordinator.refreshDetails(window: window, groupOffset: 100, groupLimit: 100)
+            }
+        }
+        await oldGate.waitForArrivals()
+        let newer = Task {
+            if fullIsNewer {
+                await coordinator.refreshDetails(window: window, groupOffset: 200, groupLimit: 100)
+            } else {
+                await coordinator.refreshGroupPage(window: window, groupOffset: 200, groupLimit: 100)
+            }
+        }
+        await newGate.waitForArrivals()
+        await oldGate.open()
+        await old.value
+        #expect(coordinator.store?.isLoadingDetails == true)
+        #expect(coordinator.store?.details?.groupOffset == 0)
+        await newGate.open()
+        await newer.value
+        #expect(coordinator.store?.details?.groupOffset == 200)
+        #expect(coordinator.store?.detailsError == nil)
+    }
+
+    @Test(arguments: [0, 1, 2], [false, true])
+    func groupPageCancellationRebindAndModeChangeRejectLateResults(action: Int, lateFailure: Bool) async throws {
+        let baselineGate = TestGate(), gate = TestGate()
+        await baselineGate.open()
+        let transport = WorkspaceCAPTransport(gatedSuffix: "/stats/groups", gates: [baselineGate, gate])
+        let coordinator = try coordinator(transport)
+        let window = CAPUsageWindow(now: now)
+        await coordinator.refreshDetails(window: window)
+        let previousStore = try #require(coordinator.store)
+        let task = Task { await coordinator.refreshGroupPage(window: window, groupOffset: 100, groupLimit: 100) }
+        await gate.waitForArrivals()
+        if action == 0 {
+            coordinator.cancelAll()
+        } else if action == 1 {
+            let client = CAPUsageClient(server: try CPAServer(baseURL: "https://b.example.test"),
+                                        managementKey: try ManagementKey("synthetic-b"), transport: WorkspaceCAPTransport())
+            coordinator.bind(client: client)
+        } else {
+            coordinator.resourceAccess = .managementKey
+        }
+        if lateFailure { await transport.throwOn("/stats/groups") }
+        await gate.open()
+        await task.value
+        #expect(previousStore.details?.groupOffset == 0)
+        #expect(previousStore.detailsError == nil)
+        if action != 0 {
+            #expect(coordinator.store !== previousStore)
+            #expect(coordinator.store?.details == nil)
+        } else {
+            #expect(coordinator.store?.details?.groupOffset == 0)
+        }
     }
 
     @Test(arguments: WorkspaceOperation.allCases)

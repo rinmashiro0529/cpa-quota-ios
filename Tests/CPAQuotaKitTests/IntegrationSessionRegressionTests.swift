@@ -353,6 +353,92 @@ struct IntegrationSessionRegressionTests {
     }
 
     @Test
+    func managementBlockWinsWhileRefreshIsStillLoading() async throws {
+        let transport = try ScenarioTransport(accounts: [FixtureAccount("account-1")])
+        let session = makeSession(transport: transport, credentials: ScriptedCredentialStore(),
+                                  preferences: MemoryPreferencesStore())
+        await session.connect(serverAddress: "https://projection.example", managementKeyInput: "management-key", rememberInKeychain: false)
+        await transport.setAccountStatus(401)
+        let gate = TestGate()
+        await transport.setInventoryGate(gate)
+        let refresh = Task { await session.refreshAll(force: true) }
+        await gate.waitForArrivals()
+        let store = try #require(session.store)
+        #expect(store.isLoading)
+        let observed = ObservedMetadataChange()
+        withObservationTracking {
+            _ = store.refreshOperation
+        } onChange: {
+            MainActor.assumeIsolated {
+                if store.isLoading, store.error?.kind == .managementUnauthorized,
+                   session.connectionStatus().connectionPageText.contains("管理鉴权已阻断") {
+                    observed.record()
+                }
+            }
+        }
+        await gate.open()
+        await refresh.value
+        #expect(observed.wasObserved)
+    }
+
+    @Test
+    func connectingNewContextTakesPrecedenceOverExistingManagementBlock() async throws {
+        let transport = try ScenarioTransport(accounts: [FixtureAccount("account-1")])
+        let session = makeSession(transport: transport, credentials: ScriptedCredentialStore(),
+                                  preferences: MemoryPreferencesStore())
+        await session.connect(serverAddress: "https://projection.example", managementKeyInput: "management-key", rememberInKeychain: false)
+        await transport.setAccountStatus(401)
+        await session.refreshAll(force: true)
+        #expect(session.connectionStatus().connectionPageText.contains("管理鉴权已阻断"))
+        await transport.setAccountStatus(200)
+        let gate = TestGate()
+        await transport.setInventoryGate(gate)
+        let reconnect = Task {
+            await session.connect(serverAddress: "https://new.example", managementKeyInput: "new-key", rememberInKeychain: false)
+        }
+        await gate.waitForArrivals()
+        if case .connecting = session.authState {} else { Issue.record("Expected connecting state") }
+        #expect(session.connectionStatus().phase == .syncing(isLoadingInventory: true, completedCount: 0, totalCount: 1))
+        #expect(session.connectionStatus().connectionPageRecovery == nil)
+        await gate.open()
+        await reconnect.value
+    }
+
+    @Test
+    func managementRejectionUpdatesConnectionPageUntilExplicitReconnect() async throws {
+        for status in [401, 403] {
+            let transport = try ScenarioTransport(accounts: [FixtureAccount("account-1")])
+            let session = makeSession(transport: transport, credentials: ScriptedCredentialStore(),
+                                      preferences: MemoryPreferencesStore())
+            await session.connect(serverAddress: "https://projection.example", managementKeyInput: "management-key", rememberInKeychain: false)
+            await transport.setAccountStatus(status)
+            await session.refreshAll(force: true)
+            let expected: CPAError.Kind = status == 401 ? .managementUnauthorized : .managementForbidden
+            #expect(session.connectionStatus().phase == .managementBlocked(kind: expected))
+            #expect(session.connectionStatus().connectionPageText.contains("管理鉴权已阻断"))
+            #expect(session.connectionStatus().connectionPageRecovery?.contains("重新连接") == true)
+            await transport.setAccountStatus(200)
+            await session.refreshAll(force: true)
+            #expect(session.connectionStatus().phase == .managementBlocked(kind: expected))
+            await session.connect(serverAddress: "https://projection.example", managementKeyInput: "new-management-key", rememberInKeychain: false)
+            #expect(session.connectionStatus().connectionPageText == "已连接")
+        }
+    }
+
+    @Test
+    func upstreamUnauthorizedDoesNotBecomeManagementBlock() async throws {
+        let transport = try ScenarioTransport(accounts: [FixtureAccount("account-1")])
+        let session = makeSession(transport: transport, credentials: ScriptedCredentialStore(),
+                                  preferences: MemoryPreferencesStore())
+        await session.connect(serverAddress: "https://projection.example", managementKeyInput: "management-key", rememberInKeychain: false)
+        await transport.setReply(FixtureReply(upstreamStatus: 401), for: "index-account-1")
+        await session.refreshAll(force: true)
+        #expect(session.records["account-1"]?.error?.kind == .upstreamUnauthorized)
+        #expect(session.connectionStatus().connectionPageText == "已连接")
+        #expect(session.connectionStatus().connectionPageRecovery == nil)
+    }
+
+    @Test
     func globalNetworkFailureIsNotProjectedAsIdleReady() async throws {
         let base = try ScenarioTransport(accounts: [FixtureAccount("account-1")])
         let transport = FaultInjectingTransport(base: base)
@@ -377,7 +463,7 @@ struct IntegrationSessionRegressionTests {
         await session.refreshAll(force: true)
         #expect(session.store?.error?.kind == .network)
 
-        let state = session.dynamicIslandState()
+        let state = session.connectionStatus()
         #expect(state.phase == .connectionFailed(kind: .network))
         #expect(state.compactLeadingText == "连接异常")
         #expect(state.compactTrailingText == "网络")
@@ -412,7 +498,7 @@ struct IntegrationSessionRegressionTests {
 
         #expect(session.isBusy)
         #expect(session.completedEnabledAccountCount() < session.accounts.count)
-        #expect(session.dynamicIslandState().progressFraction < 1.0)
+        #expect(session.connectionStatus().progressFraction < 1.0)
 
         await requestGate.open()
         await refreshTask.value
@@ -571,8 +657,10 @@ struct IntegrationSessionRegressionTests {
 
         #expect(session.authState == .connected(server: server, isRememberedInKeychain: true))
         #expect(session.store?.error?.kind == .network)
-        #expect(session.dynamicIslandState().phase == .connectionFailed(kind: .network))
-        #expect(session.dynamicIslandState().expandedTitle != "CPA 额度连接就绪")
+        #expect(session.connectionStatus().phase == .connectionFailed(kind: .network))
+        #expect(session.connectionStatus().expandedTitle != "CPA 额度连接就绪")
+        #expect(session.connectionStatus().connectionPageText == "连接异常：网络")
+        #expect(session.connectionStatus().connectionPageRecovery != nil)
     }
 
     @Test
@@ -668,8 +756,8 @@ struct IntegrationSessionRegressionTests {
 
         #expect(session.authState == .connecting(serverIdentifier: "https://restore-explicit-cancel.example"))
         #expect(session.isBusy)
-        #expect(session.dynamicIslandState().canCancel)
-        #expect(session.dynamicIslandState().progressFraction == 0.0)
+        #expect(session.connectionStatus().canCancel)
+        #expect(session.connectionStatus().progressFraction == 0.0)
 
         await session.cancelActiveOperation()
         await loadGate.open()
@@ -848,7 +936,7 @@ struct IntegrationSessionRegressionTests {
 
     @Test
     func inventorySyncDoesNotClaimACompletionPercentage() {
-        let state = DynamicIslandState(
+        let state = ConnectionStatusPresentation(
             phase: .syncing(isLoadingInventory: true, completedCount: 0, totalCount: 0),
             isExpanded: false
         )
@@ -858,11 +946,11 @@ struct IntegrationSessionRegressionTests {
 
     @Test
     func zeroOfKnownQuotaRequestsHasZeroProgress() {
-        let state = DynamicIslandState(
+        let state = ConnectionStatusPresentation(
             phase: .syncing(isLoadingInventory: false, completedCount: 0, totalCount: 3),
             isExpanded: false
         )
-        let partial = DynamicIslandState(
+        let partial = ConnectionStatusPresentation(
             phase: .syncing(isLoadingInventory: false, completedCount: 1, totalCount: 3),
             isExpanded: false
         )

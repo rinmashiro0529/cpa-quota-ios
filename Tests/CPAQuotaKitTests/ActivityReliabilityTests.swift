@@ -159,6 +159,23 @@ struct ActivityReliabilityTests {
         #expect(try !last.accepts(snapshot(sequence: 0)))
     }
 
+    @Test func remoteSnapshotCanMatchLocalPlaceholderWithoutLosingStaleOrTerminalStatus() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let pending = try MonitoringAccount(id: "pending", label: "等待读数", provider: "cpa",
+                                            windowID: "pending", windowLabel: "等待服务端", status: .unavailable)
+        let remote = try MonitoringSnapshot(sequence: 0, phase: .partial, generatedAt: now,
+                                            expiresAt: now, accounts: [pending])
+        let decoded = try JSONDecoder().decode(MonitoringSnapshot.self, from: remote.activityContentData())
+        #expect(decoded == remote)
+        #expect(CPAQuotaActivityPresentation.status(snapshot: decoded, account: pending, isStale: true) == "数据已过期")
+        for phase in [MonitoringSnapshot.Phase.stopped, .expired] {
+            let terminal = try MonitoringSnapshot(sequence: 0, phase: phase, generatedAt: now,
+                                                  expiresAt: now, accounts: [pending])
+            #expect(CPAQuotaActivityPresentation.status(snapshot: terminal, account: pending, isStale: true)
+                    == (phase == .stopped ? "已停止" : "已到期"))
+        }
+    }
+
     @Test func retainedValuesNeverConcealStaleOrTerminalStatus() throws {
         let account = try account()
         #expect(try CPAQuotaActivityPresentation.status(snapshot: snapshot(), account: account, isStale: true) == "数据已过期")

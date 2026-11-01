@@ -116,6 +116,8 @@ public protocol PreferencesStore: Sendable {
     func saveSharesQuotaWithWidgets(_ enabled: Bool)
     func loadWidgetAccountIdentifiers(for sourceIdentifier: String) -> [String: String]
     func saveWidgetAccountIdentifiers(_ identifiers: [String: String], for sourceIdentifier: String)
+    func loadWidgetAccountAliases(for sourceIdentifier: String) -> [String: Int]
+    func saveWidgetAccountIdentifiers(_ identifiers: [String: String], aliases: [String: Int], for sourceIdentifier: String)
     func clearWidgetAccountIdentifiers()
 }
 
@@ -125,6 +127,10 @@ public extension PreferencesStore {
     func saveSharesQuotaWithWidgets(_ enabled: Bool) {}
     func loadWidgetAccountIdentifiers(for sourceIdentifier: String) -> [String: String] { [:] }
     func saveWidgetAccountIdentifiers(_ identifiers: [String: String], for sourceIdentifier: String) {}
+    func loadWidgetAccountAliases(for sourceIdentifier: String) -> [String: Int] { [:] }
+    func saveWidgetAccountIdentifiers(_ identifiers: [String: String], aliases: [String: Int], for sourceIdentifier: String) {
+        saveWidgetAccountIdentifiers(identifiers, for: sourceIdentifier)
+    }
     func clearWidgetAccountIdentifiers() {}
 }
 
@@ -137,6 +143,7 @@ public final class MemoryPreferencesStore: PreferencesStore, @unchecked Sendable
     private var sharesQuotaWithWidgets: Bool
     private var widgetSourceIdentifier: String?
     private var widgetAccountIdentifiers: [String: String] = [:]
+    private var widgetAccountAliases: [String: Int] = [:]
 
     public init(
         serverIdentifier: String? = nil,
@@ -219,9 +226,20 @@ public final class MemoryPreferencesStore: PreferencesStore, @unchecked Sendable
     }
 
     public func saveWidgetAccountIdentifiers(_ identifiers: [String: String], for sourceIdentifier: String) {
+        saveWidgetAccountIdentifiers(identifiers, aliases: [:], for: sourceIdentifier)
+    }
+
+    public func loadWidgetAccountAliases(for sourceIdentifier: String) -> [String: Int] {
+        lock.lock()
+        defer { lock.unlock() }
+        return widgetSourceIdentifier == sourceIdentifier ? widgetAccountAliases : [:]
+    }
+
+    public func saveWidgetAccountIdentifiers(_ identifiers: [String: String], aliases: [String: Int], for sourceIdentifier: String) {
         lock.lock()
         widgetSourceIdentifier = sourceIdentifier
         widgetAccountIdentifiers = identifiers
+        widgetAccountAliases = aliases
         lock.unlock()
     }
 
@@ -229,6 +247,7 @@ public final class MemoryPreferencesStore: PreferencesStore, @unchecked Sendable
         lock.lock()
         widgetSourceIdentifier = nil
         widgetAccountIdentifiers = [:]
+        widgetAccountAliases = [:]
         lock.unlock()
     }
 }
@@ -250,6 +269,38 @@ public final class UserDefaultsPreferencesStore: PreferencesStore, @unchecked Se
         let version: Int
         let sourceIdentifier: String
         let identifiers: [String: String]
+        let aliases: [String: Int]
+
+        init(version: Int, sourceIdentifier: String, identifiers: [String: String], aliases: [String: Int]) {
+            self.version = version
+            self.sourceIdentifier = sourceIdentifier
+            self.identifiers = identifiers
+            self.aliases = aliases
+        }
+
+        private enum CodingKeys: String, CodingKey { case version, sourceIdentifier, identifiers, aliases }
+        private struct AliasKey: CodingKey {
+            var stringValue: String
+            var intValue: Int? { nil }
+            init?(stringValue: String) { self.stringValue = stringValue }
+            init?(intValue: Int) { return nil }
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            version = try container.decode(Int.self, forKey: .version)
+            sourceIdentifier = try container.decode(String.self, forKey: .sourceIdentifier)
+            identifiers = try container.decode([String: String].self, forKey: .identifiers)
+            if let values = try? container.nestedContainer(keyedBy: AliasKey.self, forKey: .aliases) {
+                var decoded: [String: Int] = [:]
+                for key in values.allKeys {
+                    if let value = try? values.decode(Int.self, forKey: key) { decoded[key.stringValue] = value }
+                }
+                aliases = decoded
+            } else {
+                aliases = [:]
+            }
+        }
     }
 
     public init(suiteName: String? = nil, keyPrefix: String = "CPAQuotaUI.") {
@@ -326,9 +377,20 @@ public final class UserDefaultsPreferencesStore: PreferencesStore, @unchecked Se
         return record.identifiers
     }
 
+    public func loadWidgetAccountAliases(for sourceIdentifier: String) -> [String: Int] {
+        guard let data = defaults.data(forKey: keyPrefix + Keys.widgetIdentityRecord),
+              let record = try? JSONDecoder().decode(WidgetIdentityRecord.self, from: data),
+              record.version == 1, record.sourceIdentifier == sourceIdentifier else { return [:] }
+        return record.aliases
+    }
+
     public func saveWidgetAccountIdentifiers(_ identifiers: [String: String], for sourceIdentifier: String) {
-        // Publish source and IDs as one value; a process exit cannot pair a new map with an old source.
-        let record = WidgetIdentityRecord(version: 1, sourceIdentifier: sourceIdentifier, identifiers: identifiers)
+        saveWidgetAccountIdentifiers(identifiers, aliases: [:], for: sourceIdentifier)
+    }
+
+    public func saveWidgetAccountIdentifiers(_ identifiers: [String: String], aliases: [String: Int], for sourceIdentifier: String) {
+        // Publish source, IDs and aliases as one value.
+        let record = WidgetIdentityRecord(version: 1, sourceIdentifier: sourceIdentifier, identifiers: identifiers, aliases: aliases)
         guard let data = try? JSONEncoder().encode(record) else { return }
         defaults.set(data, forKey: keyPrefix + Keys.widgetIdentityRecord)
     }

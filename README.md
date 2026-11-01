@@ -71,6 +71,16 @@ Rin，NWD 工具为每次运行创建新目录并校验归档 SHA256，不覆盖
 
 Rin，Darwin SDK 交叉编译不等于 Xcode Simulator 测试、签名归档或真机运行；原生测试由上述 Apple CI 单独验证，真实设备行为仍需另行验收。
 
+### Rin，显式目标的只读实服探针
+
+Rin，`tools/live_probe.py` 只运行目标容器中已构建的 `.build/linux/debug/cpa-quota-probe`，不替你构建或部署。使用前必须确认已获目标访问授权，并显式指定 SSH 主机、容器和容器内绝对工作目录；脚本不再使用历史默认目的地。以下主机、容器和凭据文件均为占位符，示例不会自动执行。
+
+```powershell
+python -I -B tools/live_probe.py --server https://cpa.example.test --credential-file LOCAL_CREDENTIAL_FILE --host BUILD_HOST --container BUILD_CONTAINER --workdir /work/cpa-quota-ios
+```
+
+Rin，凭据文件必须仅含一个管理密钥。文件内容只经 SSH stdin 传给远端进程，不放入参数、环境变量或常规输出；不要将凭据文件提交到仓库。容器名和主机别名经过校验，工作目录必须是无控制字符的绝对 POSIX 路径。`--help` 和工具回归不读取真实凭据、不连接远端；相关回归以模拟文件和进程边界验证参数、引用、超时及脱敏，不证明实服接入已验收。
+
 ## Rin，接入、升级与回退边界
 
 Rin，同一管理连接的 401/403 保护不能通过 force、重载清单或已有成功缓存绕过；429 尊重截止时间。修复凭据或管理权限后，应显式创建新的连接上下文重新验证，而不是清除保护或删除上游账号。插件监控仅使用稳定的 `summary-key:<key>`；旧位置选择器必须迁移，没有稳定 key 的指标不能通过猜测数组位置接入。
