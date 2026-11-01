@@ -10,7 +10,7 @@
   "digest_algorithm": "SHA256 of UTF-8 newline-joined sorted path + space + lowercase file SHA256; no trailing newline",
   "build_source_archive": "source-20261025-221119.tar",
   "build_source_archive_sha256": "8a27db32bf8728cf1b1db12d63e7eef4bf58fcb5937f5e5e8816da91a9add094",
-  "comparison_scope": "Package.swift, Sources/**/*.swift, Tests/**/*.swift on the local machine, NWD build workspace and the final build source archive",
+  "comparison_scope": "Package.swift, Sources/**/*.swift, Tests/**/*.swift on the local machine, isolated build workspace and the final build source archive",
   "secret_check_scope": "Generated project files including build logs and uncompressed source archives; the actual management key was read only into local verifier memory for byte equality checks and was not printed",
   "provided_certificate_private_key_password_or_profile_read": false,
   "reference_entitlements_metadata_read_by_context_agent": true,

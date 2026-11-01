@@ -1,8 +1,10 @@
 # Rin，CPA Quota 集成修复验证
 
-Rin，历史记录说明：以下内容保留 2026-10-26 集成阶段的验证结果和当时的边界，不表示当前版本尚未完成后续原生 CI 或独立开发签名安装。后续原生工程位于 `Apple/CPAQuota.xcodeproj`，使用独立 Bundle ID `icu.nahida.cpaquota`；提交 `47890575edcf0d32ec078dc2a21e8376eb1d108e` 已由 [GitHub 原生 CI 40374759742](https://github.com/rinmashiro0529/cpa-quota-ios/actions/runs/40374759742) 使用 Xcode 26.2 / iOS SDK 26.2 验证。下文的旧 Bundle ID、SDK stamp、138 项 Linux 测试和未签名状态只对应当时的 NWD 集成构建，不替代后续原生 CI 证据。原始详细日志与归档仅保留在本地，不随源码上传。
+Rin，公开资料中的环境标识已泛化；历史日志、回执和归档仅存原验证环境，不保证读者可以下载。
 
-Rin，本记录对应独立集成副本 `Z:\控制台\cpa-quota-ios-integration-20261026`。原项目 `Z:\控制台\cpa-quota-ios`、云盘原 ZIP 和只读前端交付保持独立；本次不包含签名、安装、Git 提交推送或 Google Drive 回传。
+Rin，历史记录说明：以下内容保留 2026-10-26 集成阶段的验证结果和当时的边界，不表示当前版本尚未完成后续原生 CI 或独立开发签名安装。后续原生工程位于 `Apple/CPAQuota.xcodeproj`，使用独立 Bundle ID `icu.nahida.cpaquota`；提交 `47890575edcf0d32ec078dc2a21e8376eb1d108e` 已由 [GitHub 原生 CI 40374759742](https://github.com/rinmashiro0529/cpa-quota-ios/actions/runs/40374759742) 使用 Xcode 26.2 / iOS SDK 26.2 验证。下文的旧 Bundle ID、SDK stamp、138 项 Linux 测试和未签名状态只对应当时 Linux 构建环境中的集成构建，不替代后续原生 CI 证据。原始详细日志与归档仅保留在本地，不随源码上传。
+
+Rin，本记录对应原验证环境中的独立集成副本。原项目、云盘原 ZIP 和只读前端交付保持独立；本次不包含签名、安装、Git 提交推送或 Google Drive 回传。
 
 ## Rin，原始交付与范围
 
@@ -12,7 +14,7 @@ Rin，本记录对应独立集成副本 `Z:\控制台\cpa-quota-ios-integration-
 | 原交付 | 52 文件、37 Swift 文件；原测试 111 项、16 套件 |
 | 后端原始 commit | `fd9c6c2f758656ace7c9606b750a79e6486368d9` |
 | 保持不变 | 原 Kit、Probe 和后端测试 20 个 Swift 文件；6 个核心设计文件 |
-| 授权范围 | 会话/凭据生命周期、真实状态展示、相关回归及现有 NWD 工具链的未签名 App 打包 |
+| 授权范围 | 会话/凭据生命周期、真实状态展示、相关回归及当时 Linux 构建环境工具链的未签名 App 打包 |
 
 Rin，三栏页面、根路由、悬浮导航、字体配色和深浅双模沿用原设计。核心设计文件为 `LiquidGlassDesignSystem.swift`、`AppearanceAndPreferences.swift`、`CPAQuotaRootView.swift`、`FloatingGlassTabBar.swift`、`LoginOnboardingView.swift` 和 `AccountDetailSheetView.swift`。状态伴生栏是应用内 SwiftUI 组件，不是系统 Live Activity/ActivityKit。
 
@@ -58,7 +60,7 @@ Rin，恢复检查还定位到本项目专用测试目录的一个孤立子进�
 
 ## Rin，最终验证矩阵
 
-Rin，最终验收使用唯一冻结构建 `artifacts/integration/build-20261026-141005/`，远端为 `/opt/ios-builder/work/cpa-quota-ios-integration-20261026/run-20261026-141005`。六个构建步骤全部退出码 0；以下均为该次实际结果，不复用旧候选。
+Rin，最终验收使用唯一冻结构建 `artifacts/integration/build-20261026-141005/`，远端为独立构建目录。六个构建步骤全部退出码 0；以下均为该次实际结果，不复用旧候选。
 
 | 验证 | 实际结果 | 证据（相对该构建目录） |
 | --- | --- | --- |
@@ -77,7 +79,7 @@ Rin，App 的 Bundle ID 为 `dev.rin.cpaquota`，显示名 `CPA Quota`，包类�
 
 | 校验对象 | SHA256 |
 | --- | --- |
-| 最终 NWD 构建输入 `source.tar` | `6f3853c24baec19494030b3c00693a0d8fd87f584ad2e6058aa9c19c34f59ed8` |
+| 最终 Linux 构建环境的构建输入 `source.tar` | `6f3853c24baec19494030b3c00693a0d8fd87f584ad2e6058aa9c19c34f59ed8` |
 | 39 个 Swift 文件的集合摘要 | `01c278f1083776475e1abf921851b62ad81f80333bd92a7c609c4c3882581cd2` |
 | App 可执行文件 | `6c263be26b6090d6e39ef9ec3bed2718ff91233695faaf108b2d6641ee92ffd3` |
 | `unsigned-app.tar` | `a7cd6f6abe6ded010111f927de050b57ec5e6f5c4781da430c9f1291f53da5c1` |
@@ -90,10 +92,10 @@ Rin，源码身份校验另做了旧候选负控：`build-20261026-120900` 虽�
 ## Rin，复现命令
 
 ```powershell
-& "Z:\控制台\cpa-quota-ios-integration-20261026\tools\Build-NWD.ps1" -Mode All
+python -I -X utf8 tools/test_backend_nwd.py --project . --host BUILD_HOST --container BUILD_CONTAINER --mode test
 ```
 
-Rin，脚本只用 NWD 既有 `ios-builder`，每次建立新的 `run-时间戳` 目录；验证归属标记和上传 SHA256，不覆盖原后端构建目录。各步骤有显式超时、逐步日志和退出码，测试、设备编译、模拟器编译及打包串行执行。没有新增或升级依赖、SDK、链接器或工具链。
+Rin，原完整验收通过 `tools/Build-NWD.ps1 -Mode All` 执行，该命令仅作历史记录。上面的命令是当前工具的测试示例，不是历史完整打包矩阵的复现；需替换主机和容器占位符。历史运行建立独立目录并校验上传 SHA256，未新增或升级依赖、SDK、链接器或工具链。
 
 ## Rin，未验证边界
 
@@ -103,6 +105,6 @@ Rin，进度采用不改 Kit 的保守计数：相同重复错误或复用缓存
 
 ## Rin，本地交付与回退
 
-Rin，本地交付目录为 `artifacts/integration/release-20261026-141005/`，不是云盘发布位置。入口 `DELIVERY.md` 和 `delivery-manifest.json` 对应完整源码 ZIP、仅新增/修改文件 ZIP、逐文件 diff、未签名 App 归档及 `verification/` 证据。完整源码包不包含 `.git`、构建缓存、原始 TDD 日志或个人签名材料，保留原交付已有的 6 份脱敏 JSON。源码 ZIP 校验全部文件内容与 manifest 一致；差异 ZIP 校验仅包含列出的新增/修改文件和 diff；App TAR 再核对成员路径、可执行文件哈希和 plist。
+Rin，历史本地交付仅存原验证环境，不是公开下载入口。入口 `DELIVERY.md` 和 `delivery-manifest.json` 对应完整源码 ZIP、仅新增/修改文件 ZIP、逐文件 diff、未签名 App 归档及 `verification/` 证据。完整源码包不包含 `.git`、构建缓存、原始 TDD 日志或个人签名材料，保留原交付已有的 6 份脱敏 JSON。源码 ZIP 校验全部文件内容与 manifest 一致；差异 ZIP 校验仅包含列出的新增/修改文件和 diff；App TAR 再核对成员路径、可执行文件哈希和 plist。
 
 Rin，回退不需要删除或 Git reset：停止使用集成副本，切回保留的原项目或原始前端交付即可。差异包用于在原前端交付的另一个副本上应用本次修改，不应直接覆盖原后端目录；完整源码 ZIP 更适合作为继续开发入口。原始前端仍保留本报告所述已修缺陷，回退是源码基线恢复而非推荐使用有缺陷版本。

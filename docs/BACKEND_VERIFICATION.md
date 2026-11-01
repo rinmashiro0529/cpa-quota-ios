@@ -1,5 +1,7 @@
 # Rin，后端实现与验证回执
 
+Rin，公开资料中的环境标识已泛化；文中本地回执和二进制仅存原验证环境，除明确列出的仓库摘要外不保证可以下载。
+
 Rin，本文件记录本地分支 `feature/backend-monitoring-20261028` 的最终源码验收证据。App 业务后端与独立 Go 服务已完成本轮编码、合成回归和构建；真实部署、Apple/APNs 身份、设备活动与前端呈现仍未验收，不能宣称系统灵动岛功能已经上线。
 
 ## Rin，权限与交付范围
@@ -15,7 +17,7 @@ Rin，App 业务后端包括 CAP 只读资源、固定30分钟窗口、逐模型
 | 完整 Swift Testing 回归 | 233项、38套件通过，exit 0 |
 | 归档 SHA256 | `82783e9f365cda5f4b001d04ca2425674eecf88bd09c94d615edc4e42589b589` |
 | 完整回执 | `artifacts/backend-verification/20261028-155108-d3da4208-test/result.json` |
-| 远端隔离目录 | `/tmp/cpa-quota-backend-4qnajdnw` |
+| 远端隔离目录 | 原验证环境中的隔离目录 |
 | 原生测试接线 | 32个 SwiftPM 测试文件、32个原生测试文件，无遗漏/悬空/重复/额外非测试源 |
 | Swift 源计数 | 74（包含 Package.swift，与既有计数合同一致） |
 | 接线校验器单元检查 | 5项通过 |
@@ -23,9 +25,9 @@ Rin，App 业务后端包括 CAP 只读资源、固定30分钟窗口、逐模型
 | 最终 iOS simulator 交叉编译 | CPAQuotaApp及依赖通过，exit 0；`20261028-155315-0435a234-simulator/result.json` |
 
 ```powershell
-python -I -X utf8 tools/test_backend_nwd.py --project <project> --mode test
-python -I -X utf8 tools/test_backend_nwd.py --project <project> --mode device --target CPAQuotaApp
-python -I -X utf8 tools/test_backend_nwd.py --project <project> --mode simulator --target CPAQuotaApp
+python -I -X utf8 tools/test_backend_nwd.py --project <project> --host BUILD_HOST --container BUILD_CONTAINER --mode test
+python -I -X utf8 tools/test_backend_nwd.py --project <project> --host BUILD_HOST --container BUILD_CONTAINER --mode device --target CPAQuotaApp
+python -I -X utf8 tools/test_backend_nwd.py --project <project> --host BUILD_HOST --container BUILD_CONTAINER --mode simulator --target CPAQuotaApp
 python -I -X utf8 -B ci/validate_source_layout.py --root <project>
 python -I -X utf8 -B ci/test_source_layout.py
 ```
@@ -34,7 +36,7 @@ Rin，上述三次最终 Swift 运行使用完全相同的归档 SHA256；设备
 
 Rin，这些结果是 Linux Swift Testing 与 Darwin SDK 交叉编译，不是 Xcode Simulator 测试运行、原生签名归档或实际设备行为验收。
 
-Rin，工具将当前 Sources/Tests、Package 和独立 JSON 合同向量打成新归档，验证 SHA256 后放入 NWD 既有 ios-builder 的新目录；使用 flock 串行、`-j 2` 和编译警告视为错误。没有复用覆盖旧工作目录、删除共享构建缓存或重启容器。SwiftPM 关于 `--build-system native` 的弃用提示是工具级警告，命令实际 exit 0；不是未披露的测试失败。
+Rin，工具将当前 Sources/Tests、Package 和独立 JSON 合同向量打成新归档，验证 SHA256 后放入历史 Linux 构建环境容器中的新目录；使用 flock 串行、`-j 2` 和编译警告视为错误。没有复用覆盖旧工作目录、删除共享构建缓存或重启容器。SwiftPM 关于 `--build-system native` 的弃用提示是工具级警告，命令实际 exit 0；不是未披露的测试失败。
 
 ## Rin，修复与测试依据
 

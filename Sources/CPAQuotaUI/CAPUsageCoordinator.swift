@@ -140,6 +140,14 @@ public final class CAPUsageWorkspaceCoordinator {
     }
 
     public func refreshDetails(window: CAPUsageWindow? = nil, groupOffset: Int = 0, groupLimit: Int = 100) async {
+        await loadDetails(window: window, groupOffset: groupOffset, groupLimit: groupLimit, groupsOnly: false)
+    }
+
+    public func refreshGroupPage(window: CAPUsageWindow, groupOffset: Int, groupLimit: Int) async {
+        await loadDetails(window: window, groupOffset: groupOffset, groupLimit: groupLimit, groupsOnly: true)
+    }
+
+    private func loadDetails(window: CAPUsageWindow?, groupOffset: Int, groupLimit: Int, groupsOnly: Bool) async {
         guard let store, !Task.isCancelled else { return }
         detailsTask?.cancel()
         let requestID = UUID()
@@ -147,7 +155,11 @@ public final class CAPUsageWorkspaceCoordinator {
         let window = window ?? store.snapshot?.window ?? activeWindow
         let currentGen = generation
         let task = Task { @MainActor in
-            await store.refreshDetails(window: window, groupOffset: groupOffset, groupLimit: groupLimit)
+            if groupsOnly {
+                await store.refreshGroupPage(window: window, groupOffset: groupOffset, groupLimit: groupLimit)
+            } else {
+                await store.refreshDetails(window: window, groupOffset: groupOffset, groupLimit: groupLimit)
+            }
             guard !Task.isCancelled, self.generation == currentGen,
                   self.detailsRequestID == requestID, self.store === store,
                   store.detailsError == nil, let snapshot = store.details else { return }
@@ -267,8 +279,9 @@ public enum CAPUsagePresentation {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.timeZone = timeZone
-        formatter.dateFormat = "HH:mm"
-        return "近 30 分钟 · 截至 \(formatter.string(from: window.end)) (\(formatter.string(from: window.start))–\(formatter.string(from: window.end)))"
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return "窗口 · \(formatter.string(from: window.start))–\(formatter.string(from: window.end))"
     }
 
     public static func streamLabel(_ stream: Bool?) -> String {

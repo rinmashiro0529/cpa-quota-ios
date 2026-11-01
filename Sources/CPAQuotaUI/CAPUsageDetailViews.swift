@@ -430,14 +430,14 @@ struct CAPGroupsView: View {
             count: snapshot.groups.items.count, total: snapshot.groups.total)
         return HStack {
             Button("上一页", systemImage: "chevron.backward") {
-                Task { await coordinator.refreshDetails(window: snapshot.window,
+                Task { await coordinator.refreshGroupPage(window: snapshot.window,
                     groupOffset: max(0, snapshot.groupOffset - snapshot.groupLimit), groupLimit: snapshot.groupLimit) }
             }
             .disabled(snapshot.groupOffset <= 0 || coordinator.store?.isLoadingDetails == true)
             Spacer()
             Button("下一页", systemImage: "chevron.forward") {
                 guard let next else { return }
-                Task { await coordinator.refreshDetails(window: snapshot.window, groupOffset: next, groupLimit: snapshot.groupLimit) }
+                Task { await coordinator.refreshGroupPage(window: snapshot.window, groupOffset: next, groupLimit: snapshot.groupLimit) }
             }
             .disabled(next == nil || coordinator.store?.isLoadingDetails == true)
         }

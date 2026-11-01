@@ -38,6 +38,15 @@ public final class CAPUsageStore {
     }
 
     public func refreshDetails(window: CAPUsageWindow, groupOffset: Int = 0, groupLimit: Int = 100) async {
+        await loadDetails(window: window, groupOffset: groupOffset, groupLimit: groupLimit, groupsOnly: false)
+    }
+
+    public func refreshGroupPage(window: CAPUsageWindow, groupOffset: Int, groupLimit: Int) async {
+        await loadDetails(window: window, groupOffset: groupOffset, groupLimit: groupLimit, groupsOnly: true)
+    }
+
+    private func loadDetails(window: CAPUsageWindow, groupOffset: Int, groupLimit: Int, groupsOnly: Bool) async {
+        let baseline = groupsOnly && details?.window == window ? details : nil
         let token = UUID()
         detailsGeneration = token
         detailsTask?.cancel()
@@ -47,6 +56,12 @@ public final class CAPUsageStore {
         let access = access
         let task = Task {
             guard groupOffset >= 0, (1...500).contains(groupLimit) else { throw CAPUsageError.invalidResponse }
+            if let baseline {
+                let groups = try await client.loadGroups(window: window, offset: groupOffset, limit: groupLimit, access: access)
+                try Task.checkCancellation()
+                return CAPUsageDetailSnapshot(window: window, groupOffset: groupOffset, groupLimit: groupLimit,
+                                              initial: baseline.initial, trends: baseline.trends, groups: groups, costs: baseline.costs)
+            }
             let initial = try await client.loadInitialStats(window: window, access: access)
             let trends = try await client.loadTrends(window: window, access: access)
             let groups = try await client.loadGroups(window: window, offset: groupOffset, limit: groupLimit, access: access)
@@ -65,14 +80,11 @@ public final class CAPUsageStore {
             details = result
         } catch is CancellationError {
         } catch let failure as CAPUsageError {
-            guard detailsGeneration == token else { return }
-            detailsError = failure
+            if !Task.isCancelled, detailsGeneration == token { detailsError = failure }
         } catch let failure as CPAError {
-            guard detailsGeneration == token else { return }
-            detailsError = .management(failure)
+            if !Task.isCancelled, detailsGeneration == token { detailsError = .management(failure) }
         } catch {
-            guard detailsGeneration == token else { return }
-            detailsError = .network
+            if !Task.isCancelled, detailsGeneration == token { detailsError = .network }
         }
         if detailsGeneration == token {
             detailsTask = nil

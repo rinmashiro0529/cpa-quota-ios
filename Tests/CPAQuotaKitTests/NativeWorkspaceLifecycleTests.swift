@@ -1,8 +1,16 @@
 import Foundation
+import Observation
 import Testing
 @testable import CPAQuotaKit
 @testable import CPAQuotaUI
 import CPAQuotaActivity
+
+private final class WidgetAliasObservation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var changed = false
+    func record() { lock.withLock { changed = true } }
+    var wasObserved: Bool { lock.withLock { changed } }
+}
 
 private final class FaultingWidgetWriter: QuotaWidgetSnapshotWriting, @unchecked Sendable {
     let store: SharedQuotaWidgetSnapshotStore
@@ -79,14 +87,33 @@ struct NativeWorkspaceLifecycleTests {
                               managementKeyInput: "fixture-management", rememberInKeychain: false)
         #expect(sharedStore.read() == nil)
         #expect(!session.sharesQuotaWithWidgets)
+        let account = try #require(session.accounts.first)
+        #expect(session.widgetAlias(for: account) == nil)
+        #expect(preferences.loadWidgetAccountIdentifiers(for: "https://quota.invalid").isEmpty)
+        let publishedChange = WidgetAliasObservation()
+        withObservationTracking {
+            _ = session.widgetAlias(for: account)
+        } onChange: {
+            publishedChange.record()
+        }
         session.sharesQuotaWithWidgets = true
+        #expect(session.widgetAlias(for: account) == "账号 1")
         let snapshot = try #require(sharedStore.read())
         #expect(snapshot.entries.count == 1)
         #expect(snapshot.entries[0].label == "账号 1")
         let fraction = try #require(snapshot.entries[0].remainingFraction)
         #expect(abs(fraction - 0.42) < 0.000_001)
         #expect(preferences.loadSharesQuotaWithWidgets())
+        #expect(publishedChange.wasObserved)
+        let revokedChange = WidgetAliasObservation()
+        withObservationTracking {
+            _ = session.widgetAlias(for: account)
+        } onChange: {
+            revokedChange.record()
+        }
         session.sharesQuotaWithWidgets = false
+        #expect(revokedChange.wasObserved)
+        #expect(session.widgetAlias(for: account) == nil)
         #expect(sharedStore.read() == nil)
         #expect(!preferences.loadSharesQuotaWithWidgets())
     }
@@ -114,6 +141,153 @@ struct NativeWorkspaceLifecycleTests {
         #expect(result.entries[0].status == .unavailable)
         #expect(result.entries[0].remainingFraction == 1)
         #expect(result.entries[0].windowLabel == "5 小时窗口")
+    }
+
+    @Test
+    func successfulRetryPublishesObservableAliasWhileSharingRemainsEnabled() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let shared = SharedQuotaWidgetSnapshotStore(directoryURL: directory)
+        let writer = FaultingWidgetWriter(store: shared)
+        let transport = try ScenarioTransport(accounts: [FixtureAccount("private-account")])
+        let session = CPAQuotaSession(
+            credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore(),
+            monitoringCoordinator: isolatedMonitor(), widgetSnapshotWriter: writer,
+            clientFactory: { server, key in CPAClient(server: server, managementKey: key, transport: transport) }
+        )
+        await session.connect(serverAddress: "https://quota.invalid",
+                              managementKeyInput: "fixture-management", rememberInKeychain: false)
+        let account = try #require(session.accounts.first)
+        writer.failWrite = true
+        session.sharesQuotaWithWidgets = true
+        #expect(session.widgetAlias(for: account) == nil)
+        let publishedChange = WidgetAliasObservation()
+        withObservationTracking {
+            _ = session.widgetAlias(for: account)
+        } onChange: {
+            publishedChange.record()
+        }
+        writer.failWrite = false
+        await session.refreshAll(force: true)
+        #expect(publishedChange.wasObserved)
+        #expect(session.sharesQuotaWithWidgets)
+        #expect(session.widgetAlias(for: account) == "账号 1")
+        #expect(shared.read()?.entries.first?.label == "账号 1")
+    }
+
+    @Test
+    func oldAndMalformedAliasRecordsKeepIdentifiersAcrossDefaultsRestart() throws {
+        let suite = "widget-test-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let key = "test.widgetIdentityRecordV1"
+        let uuid = UUID().uuidString
+        for aliases in [nil, "invalid"] as [String?] {
+            var object: [String: Any] = ["version": 1, "sourceIdentifier": "source", "identifiers": ["identity": uuid]]
+            if let aliases { object["aliases"] = aliases }
+            defaults.set(try JSONSerialization.data(withJSONObject: object), forKey: key)
+            let preferences = UserDefaultsPreferencesStore(suiteName: suite, keyPrefix: "test.")
+            #expect(preferences.loadWidgetAccountIdentifiers(for: "source") == ["identity": uuid])
+            #expect(preferences.loadWidgetAccountAliases(for: "source").isEmpty)
+        }
+        let mixed: [String: Any] = ["version": 1, "sourceIdentifier": "source", "identifiers": ["identity": uuid],
+                                    "aliases": [uuid: 3, "invalid": "bad"]]
+        defaults.set(try JSONSerialization.data(withJSONObject: mixed), forKey: key)
+        let preferences = UserDefaultsPreferencesStore(suiteName: suite, keyPrefix: "test.")
+        #expect(preferences.loadWidgetAccountIdentifiers(for: "source") == ["identity": uuid])
+        #expect(preferences.loadWidgetAccountAliases(for: "source") == [uuid: 3])
+        preferences.saveWidgetAccountIdentifiers(["identity": uuid], aliases: [uuid: 3], for: "source")
+        let restored = UserDefaultsPreferencesStore(suiteName: suite, keyPrefix: "test.")
+        #expect(restored.loadWidgetAccountIdentifiers(for: "source") == ["identity": uuid])
+        #expect(restored.loadWidgetAccountAliases(for: "source") == [uuid: 3])
+    }
+
+    @Test
+    func corruptAliasesAreRepairedWithoutChangingRetainedUUIDs() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let shared = SharedQuotaWidgetSnapshotStore(directoryURL: directory)
+        let preferences = MemoryPreferencesStore()
+        let a = CPAAccount(id: "a", authIndex: nil, provider: "codex", displayName: "A")
+        let b = CPAAccount(id: "b", authIndex: nil, provider: "codex", displayName: "B")
+        try QuotaWidgetPublisher(store: shared, preferences: preferences)
+            .publish(sourceIdentifier: "source", accounts: [a, b], records: [:])
+        let original = try #require(shared.read())
+        let firstID = original.entries[0].id
+        let secondID = original.entries[1].id
+        let identifiers = preferences.loadWidgetAccountIdentifiers(for: "source")
+        preferences.saveWidgetAccountIdentifiers(identifiers, aliases: [firstID: 7, secondID: 7], for: "source")
+        try QuotaWidgetPublisher(store: shared, preferences: preferences)
+            .publish(sourceIdentifier: "source", accounts: [a, b], records: [:])
+        let snapshot = try #require(shared.read())
+        #expect(snapshot.entries.map(\.id) == [firstID, secondID])
+        #expect(Set(snapshot.entries.map(\.label)).count == 2)
+        #expect(preferences.loadWidgetAccountIdentifiers(for: "source") == identifiers)
+        #expect(Set(preferences.loadWidgetAccountAliases(for: "source").values).count == 2)
+    }
+
+    @Test
+    func widgetCapacityAndRemovalRetainOnlyCurrentIdentities() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let shared = SharedQuotaWidgetSnapshotStore(directoryURL: directory)
+        let preferences = MemoryPreferencesStore()
+        let publisher = QuotaWidgetPublisher(store: shared, preferences: preferences)
+        let accounts = (0..<65).map { CPAAccount(id: "id-\($0)", authIndex: nil, provider: "codex", displayName: "Account") }
+        try publisher.publish(sourceIdentifier: "source", accounts: accounts, records: [:])
+        let initial = try #require(shared.read())
+        #expect(initial.entries.count == 64)
+        #expect(Set(initial.entries.map(\.label)).count == 64)
+        let secondID = initial.entries[1].id
+        try publisher.publish(sourceIdentifier: "source", accounts: Array(accounts.dropFirst()), records: [:])
+        let updated = try #require(shared.read())
+        #expect(updated.entries.first?.id == secondID)
+        #expect(updated.entries.first?.label == "账号 2")
+        #expect(updated.entries.last?.label == "账号 1")
+        #expect(preferences.loadWidgetAccountIdentifiers(for: "source").count == 64)
+        #expect(preferences.loadWidgetAccountAliases(for: "source").count == 64)
+    }
+
+    @Test
+    func defaultsPublisherRestartPreservesReorderedAliases() throws {
+        let suite = "widget-test-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let shared = SharedQuotaWidgetSnapshotStore(directoryURL: directory)
+        let a = CPAAccount(id: "a", authIndex: nil, provider: "codex", displayName: "A")
+        let b = CPAAccount(id: "b", authIndex: nil, provider: "codex", displayName: "B")
+        try QuotaWidgetPublisher(store: shared, preferences: UserDefaultsPreferencesStore(suiteName: suite))
+            .publish(sourceIdentifier: "source", accounts: [a, b], records: [:])
+        let before = try #require(shared.read())
+        try QuotaWidgetPublisher(store: shared, preferences: UserDefaultsPreferencesStore(suiteName: suite))
+            .publish(sourceIdentifier: "source", accounts: [b, a], records: [:])
+        let after = try #require(shared.read())
+        #expect(after.entries[0].id == before.entries[1].id)
+        #expect(after.entries[0].label == "账号 2")
+        #expect(after.entries[1].label == "账号 1")
+    }
+
+    @Test
+    func widgetAliasesSurviveReorderingAndPublisherRestart() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let shared = SharedQuotaWidgetSnapshotStore(directoryURL: directory)
+        let preferences = MemoryPreferencesStore()
+        let first = CPAAccount(id: "first", authIndex: nil, provider: "codex", displayName: "First")
+        let second = CPAAccount(id: "second", authIndex: nil, provider: "codex", displayName: "Second")
+        try QuotaWidgetPublisher(store: shared, preferences: preferences)
+            .publish(sourceIdentifier: "source", accounts: [first, second], records: [:])
+        let before = try #require(shared.read())
+        try QuotaWidgetPublisher(store: shared, preferences: preferences)
+            .publish(sourceIdentifier: "source", accounts: [second, first], records: [:])
+        let after = try #require(shared.read())
+        #expect(before.entries[0].label == "账号 1")
+        #expect(before.entries[1].label == "账号 2")
+        #expect(after.entries[0].id == before.entries[1].id)
+        #expect(after.entries[0].label == "账号 2")
+        #expect(after.entries[1].label == "账号 1")
     }
 
     @Test
@@ -170,6 +344,34 @@ struct NativeWorkspaceLifecycleTests {
     }
 
     @Test
+    func failedWriteDoesNotCommitNewAliasOrIdentity() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let shared = SharedQuotaWidgetSnapshotStore(directoryURL: directory)
+        let writer = FaultingWidgetWriter(store: shared)
+        let preferences = MemoryPreferencesStore()
+        let publisher = QuotaWidgetPublisher(store: writer, preferences: preferences)
+        let a = CPAAccount(id: "a", authIndex: nil, provider: "codex", displayName: "A")
+        let b = CPAAccount(id: "b", authIndex: nil, provider: "codex", displayName: "B")
+        try publisher.publish(sourceIdentifier: "source", accounts: [a], records: [:])
+        let before = try #require(shared.read())
+        let oldIDs = preferences.loadWidgetAccountIdentifiers(for: "source")
+        let oldAliases = preferences.loadWidgetAccountAliases(for: "source")
+        writer.failWrite = true
+        #expect(throws: QuotaWidgetSnapshotError.sharedContainerUnavailable) {
+            try publisher.publish(sourceIdentifier: "source", accounts: [a, b], records: [:])
+        }
+        #expect(shared.read() == before)
+        #expect(preferences.loadWidgetAccountIdentifiers(for: "source") == oldIDs)
+        #expect(preferences.loadWidgetAccountAliases(for: "source") == oldAliases)
+        writer.failWrite = false
+        try publisher.publish(sourceIdentifier: "source", accounts: [a, b], records: [:])
+        let retried = try #require(shared.read())
+        #expect(retried.entries[0].id == before.entries[0].id)
+        #expect(retried.entries.map(\.label) == ["账号 1", "账号 2"])
+    }
+
+    @Test
     func sourceChangeClearsBeforeFailedWriteAndRetriesFailedClear() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -209,6 +411,8 @@ struct NativeWorkspaceLifecycleTests {
         )
         await session.connect(serverAddress: "https://a.invalid", managementKeyInput: "fixture-management", rememberInKeychain: false)
         session.sharesQuotaWithWidgets = true
+        let account = try #require(session.accounts.first)
+        #expect(session.widgetAlias(for: account) == "账号 1")
         let original = try #require(shared.read())
         await transport.setAccountStatus(401)
         await session.connect(serverAddress: "https://b.invalid", managementKeyInput: "fixture-management", rememberInKeychain: false)
@@ -225,6 +429,7 @@ struct NativeWorkspaceLifecycleTests {
         writer.failWrite = true
         await session.connect(serverAddress: "https://c.invalid", managementKeyInput: "fixture-management", rememberInKeychain: false)
         #expect(shared.read() == nil)
+        #expect(session.widgetAlias(for: account) == nil)
         #expect(session.widgetSharingNotice?.contains("暂不可用") == true)
     }
 

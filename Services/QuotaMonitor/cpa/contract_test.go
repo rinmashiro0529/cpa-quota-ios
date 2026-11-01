@@ -493,3 +493,81 @@ func waitFor(t *testing.T, started <-chan struct{}, count int) {
 		}
 	}
 }
+
+func TestPluginObservationValidationAndRetainedCache(t *testing.T) {
+	cases := []struct {
+		name, fields string
+		want         int64
+		invalid      bool
+	}{
+		{"missing", "", 1800000000, false},
+		{"historical", `,"observed_at":1799999900`, 1799999900, false},
+		{"current", `,"observedAt":1800000000`, 1800000000, false},
+		{"future boundary", `,"observed_at":1800000060`, 1800000060, false},
+		{"matching aliases", `,"observed_at":1800000000,"observedAt":1800000000`, 1800000000, false},
+		{"conflict", `,"observed_at":1800000000,"observedAt":1799999999`, 0, true},
+		{"future", `,"observed_at":1800000061`, 0, true},
+		{"zero", `,"observed_at":0`, 0, true},
+		{"negative", `,"observed_at":-1`, 0, true},
+		{"null", `,"observed_at":null`, 0, true},
+		{"string", `,"observed_at":"1800000000"`, 0, true},
+		{"fraction", `,"observed_at":1800000000.5`, 0, true},
+		{"fraction below float precision", `,"observed_at":1800000000.00000001`, 0, true},
+		{"milliseconds", `,"observed_at":1800000000000`, 0, true},
+		{"huge", `,"observed_at":1e30`, 0, true},
+		{"calendar bound", `,"observed_at":253402300800`, 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var phase atomic.Int32
+			client, _ := contractClient(t, func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/v0/management/auth-files":
+					writeJSON(w, `{"files":[{"id":"p","auth_index":"ix","provider":"freetier"}]}`)
+				case "/v0/management/quota/providers":
+					http.NotFound(w, r)
+				case "/v0/management/quota/fetch":
+					if phase.Load() == 0 {
+						writeJSON(w, `{"summary":[{"key":"requests","value":25,"unit":"requests"}],"observed_at":1799999900}`)
+					} else {
+						writeJSON(w, `{"summary":[{"key":"requests","value":50,"unit":"requests"}]`+tc.fields+`}`)
+					}
+				default:
+					http.NotFound(w, r)
+				}
+			}, []Account{{ID: "p", Provider: "freetier", Selection: "summary-key:requests", Reader: "plugin"}})
+			first := client.Collect(context.Background())["p"]
+			if first.Status != "ok" {
+				t.Fatalf("initial response: %+v", first)
+			}
+			phase.Store(1)
+			got := client.Collect(context.Background())["p"]
+			if tc.invalid {
+				if got.Status != "stale" || got.ObservedAt != first.ObservedAt || got.ExpiresAt != first.ExpiresAt || got.Result.Value == nil || *got.Result.Value != 25 {
+					t.Fatalf("invalid response did not preserve cache: first=%+v got=%+v", first, got)
+				}
+			} else if got.Status != "ok" || got.ObservedAt != tc.want || got.ExpiresAt != tc.want+600 || got.Result.Value == nil || *got.Result.Value != 50 {
+				t.Fatalf("unexpected response: %+v", got)
+			}
+		})
+	}
+}
+
+func TestInvalidPluginObservationWithoutCacheFails(t *testing.T) {
+	client, _ := contractClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v0/management/auth-files":
+			writeJSON(w, `{"files":[{"id":"p","auth_index":"ix","provider":"freetier"}]}`)
+		case "/v0/management/quota/providers":
+			http.NotFound(w, r)
+		case "/v0/management/quota/fetch":
+			writeJSON(w, `{"summary":[{"key":"requests","value":50,"unit":"requests"}],"observed_at":0}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}, []Account{{ID: "p", Provider: "freetier", Selection: "summary-key:requests", Reader: "plugin"}})
+	got := client.Collect(context.Background())["p"]
+	if got.Status != "failed" || got.ObservedAt != 0 || got.ExpiresAt != 0 || got.Result.Value != nil {
+		t.Fatalf("invalid uncached observation accepted: %+v", got)
+	}
+}

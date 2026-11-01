@@ -1,7 +1,7 @@
-"""Run the already-built NWD Swift probe without putting a management key in argv or env."""
+"""Run an already-built Swift probe at an explicit destination; credentials use stdin only."""
 import argparse
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shlex
 import subprocess
@@ -12,21 +12,30 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--server", required=True)
     parser.add_argument("--credential-file", type=Path, required=True)
-    parser.add_argument("--host", default="NWD")
+    parser.add_argument("--host", required=True)
+    parser.add_argument("--container", required=True)
+    parser.add_argument("--workdir", required=True)
     args = parser.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.@/-]*", args.host):
         raise ValueError("Invalid SSH alias")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", args.container):
+        raise ValueError("Invalid container name")
+    if not PurePosixPath(args.workdir).is_absolute() or any(
+        ord(c) < 32 or 127 <= ord(c) < 160 for c in args.workdir
+    ):
+        raise ValueError("Expected an absolute POSIX work directory without control characters")
     if not re.fullmatch(r"https://[A-Za-z0-9.:[\]/_%~-]+", args.server):
         raise ValueError("Expected a plain HTTPS base address")
     secret = args.credential_file.read_text(encoding="utf-8-sig").strip()
     if not secret or len(secret.encode()) > 4096 or any(ord(c) < 32 or ord(c) == 127 for c in secret):
         raise ValueError("Credential file must contain one management key")
     probe_command = (
-        "set -e; ulimit -c 0; exec /work/cpa-quota-ios/.build/linux/debug/cpa-quota-probe "
+        "set -e; ulimit -c 0; exec .build/linux/debug/cpa-quota-probe "
         + shlex.quote(args.server)
     )
     command = (
-        "docker exec -i -w /work/cpa-quota-ios ios-builder sh -c "
+        "docker exec -i -w " + shlex.quote(args.workdir)
+        + " " + shlex.quote(args.container) + " sh -c "
         + shlex.quote(probe_command)
     )
     result = subprocess.run(

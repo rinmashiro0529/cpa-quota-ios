@@ -899,6 +899,8 @@ func (s *Service) apply(source string, ids []string, readings map[string]Reading
 	if !s.availableLocked() {
 		return
 	}
+	previous := make(map[string]sessionRecord)
+	updates := make(map[string]sessionRecord)
 	for _, id := range ids {
 		record, found := s.state.Sessions[id]
 		if !found || record.Status != "active" || record.SourceID != source {
@@ -906,6 +908,9 @@ func (s *Service) apply(source string, ids []string, readings map[string]Reading
 		}
 		if s.opt.Now().Unix() >= record.ExpiresAt {
 			s.expireLocked(&record)
+			if !s.availableLocked() {
+				return
+			}
 			continue
 		}
 		snapshot := s.snapshot(record, readings)
@@ -922,9 +927,12 @@ func (s *Service) apply(source string, ids []string, readings map[string]Reading
 			sequence = record.Snapshot.Sequence + 1
 		}
 		snapshot.Sequence = sequence
-		if record.AccountIdentities == nil {
-			record.AccountIdentities = map[string]string{}
+		previous[id] = record
+		identities := make(map[string]string, len(record.AccountIdentities))
+		for account, identity := range record.AccountIdentities {
+			identities[account] = identity
 		}
+		record.AccountIdentities = identities
 		for _, account := range record.AccountIDs {
 			if identity := readings[account].Identity; identity != "" {
 				record.AccountIdentities[account] = identity
@@ -938,10 +946,21 @@ func (s *Service) apply(source string, ids []string, readings map[string]Reading
 			next = s.opt.Now().Unix() + int64(refreshSpacing/time.Second)
 		}
 		record.NextRefresh = &next
+		updates[id] = record
+	}
+	if len(updates) == 0 {
+		return
+	}
+	for id, record := range updates {
 		s.state.Sessions[id] = record
-		if s.persistLocked() != nil {
-			return
+	}
+	if s.persistLocked() != nil {
+		for id, record := range previous {
+			s.state.Sessions[id] = record
 		}
+		return
+	}
+	for _, record := range updates {
 		s.queueNotificationLocked(record, "update")
 	}
 }

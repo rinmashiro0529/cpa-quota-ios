@@ -1,6 +1,8 @@
 # CPA 额度查询 iOS App
 
-Rin，请基于私人仓库 https://github.com/rinmashiro0529/cpa-quota-ios 中已有的原生后端，完成用于查询个人 CPA 账号额度的 iOS App 前端及必要的 App 集成。用户已确定界面全部使用 SwiftUI；后端最低支持 iOS 17，使用 Swift 6。
+Rin，本文是历史需求记录，描述的是当时状态，不是当前源码下载、构建或操作入口；当前状态请参见 [README](README.md)。
+
+Rin，请基于当时仓库中已有的原生后端，完成用于查询个人 CPA 账号额度的 iOS App 前端及必要的 App 集成。用户已确定界面全部使用 SwiftUI；后端最低支持 iOS 17，使用 Swift 6。
 
 ## App 的功能
 
@@ -35,6 +37,6 @@ Rin，这是只读额度查询 App，不包含 OAuth 新登录、添加或启停
 
 Rin，仓库目前是后端 Swift Package，不是已包含界面和签名的完整 App，也没有新的服务器需要部署。真实 iPhone、模拟器运行时和 Keychain 实机读写尚未验证；库编译成功不能视为完整 App 已运行成功。
 
-Rin，既有开发约定是本机编写代码、在 NWD 现有环境编译，环境事实与原机签名材料位置见 `docs/BACKEND_CONTEXT.md`。GitHub 仓库不包含真实服务凭据、证书、描述文件、原始构建日志或构建归档；取得仓库访问权不意味着已有 NWD 或原机访问权。
+Rin，当时采用本地编写代码和独立 Linux/Darwin SDK 环境编译；环境事实和签名材料检查边界见 `docs/BACKEND_CONTEXT.md`。取得仓库访问权不意味着取得原构建环境或签名材料访问权。
 
 Rin，本任务不预设页面划分、导航、布局、组件、视觉风格或交互形式。

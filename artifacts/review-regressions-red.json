@@ -1,7 +1,7 @@
 {
   "stage": "independent-review-regressions-red",
   "date": "2026-10-25",
-  "machine": "NWD ios-builder",
+  "machine": "build-host build-container",
   "source_compilation": "passed with warnings-as-errors",
   "swift_testing_tests": 99,
   "suites": 15,

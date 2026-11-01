@@ -120,6 +120,20 @@ struct CAPFrontendPresentationTests {
         #expect(first.rows[0].id != CAPRequestPagePresentation(page: nextPage, window: window).rows[0].id)
     }
 
+    @Test func windowBadgeShowsBothAbsoluteDatesInInjectedTimeZone() throws {
+        let zone = try #require(TimeZone(secondsFromGMT: 8 * 3600))
+        let parser = ISO8601DateFormatter()
+        let cases = [
+            ("2026-10-30T04:00:00Z", "窗口 · 2026-10-30 11:30–2026-10-30 12:00"),
+            ("2026-10-30T16:15:00Z", "窗口 · 2026-10-30 23:45–2026-10-31 00:15"),
+            ("2026-12-31T16:15:00Z", "窗口 · 2026-12-31 23:45–2027-01-01 00:15")
+        ]
+        for (end, expected) in cases {
+            let date = try #require(parser.date(from: end))
+            #expect(CAPUsagePresentation.windowBadgeText(CAPUsageWindow(now: date), timeZone: zone) == expected)
+        }
+    }
+
     @Test func paginationStopsAtEmptyLastOrOverflowingPages() {
         #expect(CAPPageNavigation.nextOffset(offset: 0, limit: 50, count: 50, total: 100) == 50)
         #expect(CAPPageNavigation.nextOffset(offset: 50, limit: 50, count: 50, total: 100) == nil)

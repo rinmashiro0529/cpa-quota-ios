@@ -1,7 +1,7 @@
 {
   "stage": "initial-native-tests",
-  "machine": "NWD",
-  "container": "ios-builder",
+  "machine": "build-host",
+  "container": "build-container",
   "swift_version": "6.4.1",
   "warnings_as_errors": true,
   "build_succeeded": true,
@@ -14,6 +14,6 @@
   "expected_secondary_reset_unix_seconds": 1793520213,
   "actual_secondary_reset": null,
   "overall_exit_code": 1,
-  "verified_diagnosis": "The original inventory fixture omitted the secondary reset-at and reset-after signals while expecting a secondary reset date. NWD's archived first-run fixture and the corrected local fixture were compared; the expected assertion was not weakened.",
+  "verified_diagnosis": "The original inventory fixture omitted the secondary reset-at and reset-after signals while expecting a secondary reset date. The build environment's archived first-run fixture and the corrected local fixture were compared; the expected assertion was not weakened.",
   "note": "The XCTest compatibility runner reported zero tests; the actual Swift Testing runner executed 79 tests. This failure is preserved even after the log is replaced by a subsequent run."
 }

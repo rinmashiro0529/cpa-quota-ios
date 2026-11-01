@@ -9,6 +9,20 @@ public final class QuotaWidgetPublisher {
     private let preferences: any PreferencesStore
     private var sourceIdentifier: String?
     private var opaqueIdentifiers: [String: String] = [:]
+    private var aliases: [String: Int] = [:]
+
+    var publishedAliases: [String: String] {
+        var result: [String: String] = [:]
+        for (identity, uuid) in opaqueIdentifiers {
+            if let number = aliases[uuid] { result[identity] = "账号 \(number)" }
+        }
+        return result
+    }
+
+    static func identity(for account: CPAAccount) throws -> String {
+        let components: [String?] = [account.id, account.provider, account.authIndex]
+        return String(decoding: try JSONEncoder().encode(components), as: UTF8.self)
+    }
 
     public init(store: any QuotaWidgetSnapshotWriting = SharedQuotaWidgetSnapshotStore(),
                 preferences: any PreferencesStore = UserDefaultsPreferencesStore()) {
@@ -28,11 +42,20 @@ public final class QuotaWidgetPublisher {
             }
             opaqueIdentifiers = preferences.loadWidgetAccountIdentifiers(for: sourceIdentifier)
                 .filter { UUID(uuidString: $0.value) != nil }
+            aliases = preferences.loadWidgetAccountAliases(for: sourceIdentifier)
             self.sourceIdentifier = sourceIdentifier
         }
-        let snapshot = try projection(accounts: accounts, records: records, now: now)
-        try store.write(snapshot)
-        preferences.saveWidgetAccountIdentifiers(opaqueIdentifiers, for: sourceIdentifier)
+        let previousIdentifiers = opaqueIdentifiers
+        let previousAliases = aliases
+        do {
+            let snapshot = try projection(accounts: accounts, records: records, now: now)
+            try store.write(snapshot)
+        } catch {
+            opaqueIdentifiers = previousIdentifiers
+            aliases = previousAliases
+            throw error
+        }
+        preferences.saveWidgetAccountIdentifiers(opaqueIdentifiers, aliases: aliases, for: sourceIdentifier)
     }
 
     public func clear() throws {
@@ -42,6 +65,7 @@ public final class QuotaWidgetPublisher {
     public func forgetIdentity() {
         preferences.clearWidgetAccountIdentifiers()
         opaqueIdentifiers.removeAll()
+        aliases.removeAll()
         sourceIdentifier = nil
     }
 
@@ -53,16 +77,33 @@ public final class QuotaWidgetPublisher {
         let visible = try accounts.prefix(QuotaWidgetSnapshot.maximumEntries).map { account in
             // An ordered JSON array distinguishes nil from an empty index and cannot collide
             // through delimiters in server-provided values. This key stays app-private.
-            let components: [String?] = [account.id, account.provider, account.authIndex]
-            let identity = String(decoding: try JSONEncoder().encode(components), as: UTF8.self)
+            let identity = try Self.identity(for: account)
             return (account: account, identity: identity)
         }
         let retainedIDs = Set(visible.map(\.identity))
         opaqueIdentifiers = opaqueIdentifiers.filter { retainedIDs.contains($0.key) }
-        let entries = try visible.enumerated().map { index, item in
+        for item in visible where opaqueIdentifiers[item.identity] == nil {
+            opaqueIdentifiers[item.identity] = UUID().uuidString
+        }
+        let retainedUUIDs = Set(opaqueIdentifiers.values)
+        var used = Set<Int>()
+        var validAliases: [String: Int] = [:]
+        for uuid in retainedUUIDs.sorted() {
+            if let number = aliases[uuid], (1...QuotaWidgetSnapshot.maximumEntries).contains(number), used.insert(number).inserted {
+                validAliases[uuid] = number
+            }
+        }
+        for item in visible {
+            guard let uuid = opaqueIdentifiers[item.identity], validAliases[uuid] == nil,
+                  let number = (1...QuotaWidgetSnapshot.maximumEntries).first(where: { !used.contains($0) }) else { continue }
+            validAliases[uuid] = number
+            used.insert(number)
+        }
+        aliases = validAliases
+        let entries = try visible.map { item in
             let account = item.account
-            let opaqueID = opaqueIdentifiers[item.identity] ?? UUID().uuidString
-            opaqueIdentifiers[item.identity] = opaqueID
+            let opaqueID = opaqueIdentifiers[item.identity]!
+            let alias = aliases[opaqueID]!
             let record = records[account.id].flatMap { candidate in
                 candidate.account.provider == account.provider
                     && candidate.account.authIndex == account.authIndex ? candidate : nil
@@ -85,7 +126,7 @@ public final class QuotaWidgetPublisher {
             }
             return try QuotaWidgetEntry(
                 id: opaqueID,
-                label: "账号 \(index + 1)",
+                label: "账号 \(alias)",
                 provider: Self.providerLabel(account.provider),
                 windowLabel: Self.windowLabel(window, hasMetric: metric != nil),
                 remainingFraction: window?.remainingFraction,

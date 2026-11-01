@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"math/big"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -382,7 +383,11 @@ func (o *Origin) readAccount(ctx context.Context, account Account) (reading Read
 			return o.retained(account, "failed")
 		}
 	} else {
-		observed = pluginObserved(response)
+		var valid bool
+		observed, valid = pluginObserved(response, o.now().Unix())
+		if !valid {
+			return o.retained(account, "failed")
+		}
 	}
 	if upstreamStatus == http.StatusTooManyRequests {
 		return o.cool(account.ID, upstreamHeader)
@@ -627,17 +632,32 @@ func identityOwner(file map[string]any) string {
 	return ""
 }
 
-func pluginObserved(body []byte) int64 {
-	var root map[string]any
+func pluginObserved(body []byte, now int64) (int64, bool) {
+	var root map[string]json.RawMessage
 	if json.Unmarshal(body, &root) != nil {
-		return 0
+		return 0, false
 	}
+	var observed int64
 	for _, key := range []string{"observed_at", "observedAt"} {
-		if value, ok := numberValue(root[key]); ok && value > 0 {
-			return int64(value)
+		raw, present := root[key]
+		if !present {
+			continue
 		}
+		value, err := strconv.ParseFloat(string(raw), 64)
+		if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value <= 0 || value >= 253402300800 || value > float64(now)+60 {
+			return 0, false
+		}
+		exact, ok := new(big.Rat).SetString(string(raw))
+		if !ok || !exact.IsInt() {
+			return 0, false
+		}
+		seconds := exact.Num().Int64()
+		if seconds <= 0 || seconds >= 253402300800 || seconds > now+60 || (observed != 0 && observed != seconds) {
+			return 0, false
+		}
+		observed = seconds
 	}
-	return 0
+	return observed, true
 }
 
 func numberValue(value any) (float64, bool) {

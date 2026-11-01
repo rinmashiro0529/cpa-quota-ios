@@ -1,6 +1,8 @@
 # Rin，iOS 构建和签名
 
-Rin，本仓库提供离线源码准备、显式 Linux 本地构建及 App/Widget 结构检查。新通用入口已在既有 NWD 的 Swift 6.4.1、iPhoneOS27.1 SDK 环境完成一次真实构建，产出未签名的主 App 与扩展，并核对 frontend、linker、SDK 配置和源文件前后摘要；这不等于所有工具版本组合都已兼容。准备、预检和结构检查不会联网、编译、签名、安装或访问设备；只有显式调用 `build` 才会启动本地 xtool 和 Swift。本轮没有使用新入口签名或进行真机验收。
+Rin，历史主机标识已泛化；远端测试工具的 `--host BUILD_HOST --container BUILD_CONTAINER` 参数见 [README](../README.md)，本页 Linux 本地构建与 macOS Xcode 签名是不同路径。
+
+Rin，本仓库提供离线源码准备、显式 Linux 本地构建及 App/Widget 结构检查。新通用入口已在历史 Linux 构建主机的 Swift 6.4.1、iPhoneOS27.1 SDK 环境完成一次真实构建，产出未签名的主 App 与扩展，并核对 frontend、linker、SDK 配置和源文件前后摘要；这不等于所有工具版本组合都已兼容。准备、预检和结构检查不会联网、编译、签名、安装或访问设备；只有显式调用 `build` 才会启动本地 xtool 和 Swift。本轮没有使用新入口签名或进行真机验收。
 
 ## Rin，准备隔离源码
 
