@@ -1,7 +1,7 @@
 {
   "date": "2026-10-25",
-  "machine": "NWD",
-  "container": "ios-builder",
+  "machine": "build-host",
+  "container": "build-container",
   "swift_version": "6.4.1",
   "ios_sdk": "iPhoneOS27.1.sdk",
   "attempts": [

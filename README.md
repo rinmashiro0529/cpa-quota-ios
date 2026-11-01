@@ -1,5 +1,7 @@
 # CPA Quota iOS App & Backend (`CPAQuotaKit` + `CPAQuotaUI` + `CPAQuotaActivity`)
 
+Rin，许可见 [MIT 许可证](LICENSE)，安全问题报告见 [SECURITY](SECURITY.md)，贡献要求见 [CONTRIBUTING](CONTRIBUTING.md)，公开前未完成事项见 [公开准备检查表](docs/OPEN_SOURCE_READINESS.md)。
+
 Rin，本工程包含原生 Swift 6 后端包 `CPAQuotaKit`、SwiftUI 前端模块 `CPAQuotaUI`、共享活动模块 `CPAQuotaActivity` 以及 App 入口 `CPAQuotaApp`。后端负责连接个人 CPA、枚举已有账号、读取并归一化额度、缓存最后成功结果、管理并发/取消以及通过系统 Keychain 保存管理凭据；前端通过 `@MainActor @Observable` 状态驱动额度、CAP 用量、监控、账号与连接工作台。前端现使用 5 个原生 Tab / NavigationStack、系统控件与可用系统上的 Liquid Glass 按钮。旧应用内仿灵动岛及浮动自绘 TabBar 已移除；真正的系统 Live Activity 和常规配额 Widget 由独立 `CPAQuotaActivityExtension` 承载。
 
 Rin，本次主线整理保留完整原生前端、Widget 切源/过期边界修复及构建基线合并 `6dff18b`，并将通用构建与部署材料纳入同一仓库；不需要从旧功能分支挑选代码。源码、构建产物、签名身份和运行中的部署是不同交付层次：本仓库不保存真实密钥、描述文件、生产配置、SDK 或已签 IPA。历史验证与当前待验收项见 [主线集成状态](docs/MAIN_INTEGRATION_STATUS.md)。
@@ -57,12 +59,12 @@ python -I -B -m unittest discover -s tools/tests -p "test_*.py"
 python -I -X utf8 -B tools/test_monitor_backend.py --project .
 ```
 
-Rin，已配置 NWD SSH 和既有 `ios-builder` 的环境可使用仓库内工具执行隔离测试与交叉编译，无需引用其他工程目录的脚本。
+Rin，已配置 SSH 的 Linux 构建主机及 Darwin SDK 容器环境可使用仓库内工具执行隔离测试与交叉编译，无需引用其他工程目录的脚本。将 `BUILD_HOST` 和 `BUILD_CONTAINER` 分别替换为自己的 SSH 主机别名和容器名称，不依赖脚本的历史默认值。
 
 ```powershell
-python -I -X utf8 tools/test_backend_nwd.py --project . --mode test
-python -I -X utf8 tools/test_backend_nwd.py --project . --mode device --target CPAQuotaApp
-python -I -X utf8 tools/test_backend_nwd.py --project . --mode simulator --target CPAQuotaApp
+python -I -X utf8 tools/test_backend_nwd.py --project . --host BUILD_HOST --container BUILD_CONTAINER --mode test
+python -I -X utf8 tools/test_backend_nwd.py --project . --host BUILD_HOST --container BUILD_CONTAINER --mode device --target CPAQuotaApp
+python -I -X utf8 tools/test_backend_nwd.py --project . --host BUILD_HOST --container BUILD_CONTAINER --mode simulator --target CPAQuotaApp
 ```
 
 Rin，NWD 工具为每次运行创建新目录并校验归档 SHA256，不覆盖旧构建、不清理共享缓存、不重启容器。上述 `device`/`simulator` 命令只编译指定 Swift target，不等于完整 App 与扩展打包。完整设备构建、SDK 输入与产物检查、Xcode 双 bundle 签名的入口和限制见 [iOS 构建和签名](docs/NWD_IPA_BUILD.md)；独立 Go 的离线 Linux 构建和受控安装模板见 [监控部署](docs/MONITOR_DEPLOYMENT.md)。两类新工具的 `--help`、准备和离线检查都不代表已经执行远端构建或部署。
@@ -97,4 +99,4 @@ Rin，PR #1 的功能与 PR #2 的可靠性修复应作为完整组合维护，�
 | [开发资料](docs/BACKEND_CONTEXT.md) | 开发前收集的 CPA/构建/签名资料及边界 |
 | [集成历史回执](docs/INTEGRATION_VERIFICATION.md) | 既有集成修复与验证限制 |
 | [原后端验证基线](docs/VERIFICATION.md) | 早期实服与编译记录，不代表当前提交重跑 |
-| [原始前端交接](FRONTEND_PROMPT.md) | 历史 Drive 交接要求，不是当前源码下载入口 |
+| [原始前端交接](FRONTEND_PROMPT.md) | 历史需求记录，不是当前源码下载入口 |

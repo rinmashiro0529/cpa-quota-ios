@@ -1,7 +1,7 @@
 {
   "date": "2026-10-25",
-  "machine": "NWD",
-  "container": "ios-builder",
+  "machine": "build-host",
+  "container": "build-container",
   "swift_version": "6.4.1",
   "build_source_archive": "source-20261025-221119.tar",
   "build_source_archive_sha256": "8a27db32bf8728cf1b1db12d63e7eef4bf58fcb5937f5e5e8816da91a9add094",

@@ -1,6 +1,6 @@
 {
   "date": "2026-10-25",
-  "runner": "NWD ios-builder: final compiled cpa-quota-probe",
+  "runner": "build-host build-container: final compiled cpa-quota-probe",
   "build_source_archive_sha256": "8a27db32bf8728cf1b1db12d63e7eef4bf58fcb5937f5e5e8816da91a9add094",
   "authentication": "Existing management key through encrypted SSH stdin; no key in argv, environment, or remote credential files; probe core dumps disabled",
   "accounts": 4,
