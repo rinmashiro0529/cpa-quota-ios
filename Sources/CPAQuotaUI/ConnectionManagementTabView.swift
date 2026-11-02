@@ -67,9 +67,9 @@ public struct ConnectionManagementTabView: View {
             .listRowBackground(palette.contentSurface)
 
             Section {
-                Toggle("账号邮箱局部脱敏", isOn: $session.maskEmail)
+                Toggle("隐藏部分邮箱地址", isOn: $session.maskEmail)
                     .accessibilityIdentifier("settings.maskEmail")
-                Toggle("允许小组件显示配额", isOn: $session.sharesQuotaWithWidgets)
+                Toggle("在小组件中显示额度", isOn: $session.sharesQuotaWithWidgets)
                     .accessibilityIdentifier("settings.widgetSharing")
                 if let notice = session.widgetSharingNotice {
                     Label(notice, systemImage: "info.circle")

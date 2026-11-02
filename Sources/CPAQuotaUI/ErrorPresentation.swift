@@ -37,7 +37,7 @@ public struct ErrorPresentation: Equatable, Sendable {
         switch error.kind {
         case .invalidServer:
             self.title = "服务地址格式无效"
-            self.summary = "请输入合法的 HTTPS CPA 服务地址，不得包含内嵌用户名密码、Query 参数、Fragment 片段或相对点路径。"
+            self.summary = "请输入以 https:// 开头的 CPA 服务地址，不要包含用户名、密码、额外参数或相对路径。"
             self.recoveryAdvice = "请检查并修正服务地址后重新连接；系统会自动还原 /management.html 或 /v0/management 后缀。"
             self.symbolName = "link.badge.plus"
             self.severity = .warning
@@ -100,7 +100,7 @@ public struct ErrorPresentation: Equatable, Sendable {
 
         case .accountDisabled:
             self.title = "账号已停用"
-            self.summary = "该账号在 CPA 服务中处于停用状态，客户端按合同跳过上游查询。"
+            self.summary = "该账号在 CPA 服务中已停用，因此未查询额度。"
             self.recoveryAdvice = "本应用为只读查询工具，不会自动启用账号；如需启用请在 CPA 服务端管理页操作。"
             self.symbolName = "pause.circle"
             self.severity = .neutral
@@ -110,7 +110,7 @@ public struct ErrorPresentation: Equatable, Sendable {
         case .unsupportedProvider:
             self.title = "平台暂未支持"
             self.summary = "当前没有匹配该平台（Provider）的内置或插件额度读取器。"
-            self.recoveryAdvice = "客户端按合同如实显示未支持状态，不会伪造零额度或无限额度。"
+            self.recoveryAdvice = "暂不支持读取该平台的额度。"
             self.symbolName = "cube.transparent"
             self.severity = .neutral
             self.preservesManagementKey = true
@@ -173,7 +173,7 @@ public struct ErrorPresentation: Equatable, Sendable {
 
         case .invalidResponse:
             self.title = "响应数据结构不兼容"
-            self.summary = "服务端返回了无法解析的响应格式（已按安全规范屏蔽原始响应正文）。"
+            self.summary = "服务端返回了无法识别的数据。"
             self.recoveryAdvice = "请确认 CPA 与插件版本是否符合当前数据合同。\(snapshotNote)"
             self.symbolName = "doc.questionmark"
             self.severity = .warning

@@ -1,5 +1,7 @@
 # CPA Quota 集成修复验证
 
+> **历史记录**：首次提交 2026-10-27（`3abffeb`）；本文可能包含后续补充，仅反映所述时期及版本，测试结果不代表当前提交。当前入口见 [README](../README.md)。
+
 公开资料中的环境标识已泛化；历史日志、回执和归档仅存原验证环境，不保证读者可以下载。
 
 历史记录说明：以下内容保留 2026-10-26 集成阶段的验证结果和当时的边界，不表示当前版本尚未完成后续原生 CI 或独立开发签名安装。后续原生工程位于 `Apple/CPAQuota.xcodeproj`，使用独立 Bundle ID `icu.nahida.cpaquota`；提交 `47890575edcf0d32ec078dc2a21e8376eb1d108e` 已由 [GitHub 原生 CI 40374759742](https://github.com/rinmashiro0529/cpa-quota-ios/actions/runs/40374759742) 使用 Xcode 26.2 / iOS SDK 26.2 验证。下文的旧 Bundle ID、SDK stamp、138 项 Linux 测试和未签名状态只对应当时 Linux 构建环境中的集成构建，不替代后续原生 CI 证据。原始详细日志与归档仅保留在本地，不随源码上传。
@@ -87,7 +89,7 @@ App 的 Bundle ID 为 `dev.rin.cpaquota`，显示名 `CPA Quota`，包类型 `AP
 
 最终构建只记录到 SwiftPM 的 `--build-system native` 弃用告警，未见历史候选中的平台链接器告警；没有降低 Swift 编译警告等级。验证说明和交付清单在构建结束后补录，因此构建输入归档与源码 ZIP 的文档时间点不同；参与编译的全部 Swift 文件及 `Package.swift`、`xtool.yml`、`AppInfo.plist` 身份已实际核验一致。
 
-源码身份校验另做了旧候选负控：`build-20261026-120900` 虽然六个步骤都曾通过，当前校验仍因 `compiled_swift_sources_match_local=false` 返回失败；主会话核对该预期失败后确认负控通过。记录为 `artifacts/integration/negative-control-old-candidate.json`，其中的 135 项历史测试不是最终测试数量。
+源码身份校验另做了旧候选负控：`build-20261026-120900` 虽然六个步骤都曾通过，当前校验仍因 `compiled_swift_sources_match_local=false` 返回失败；核对该预期失败后确认负控通过。记录为 `artifacts/integration/negative-control-old-candidate.json`，其中的 135 项历史测试不是最终测试数量。
 
 ## 复现命令
 

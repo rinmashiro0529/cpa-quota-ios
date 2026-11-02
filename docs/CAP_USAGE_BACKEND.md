@@ -13,7 +13,7 @@ if let client = await session.makeCAPUsageClient() {
 
 优先从当前 `CPAQuotaSession` / `CPAQuotaStore` / `CPAClient` 的 `makeCAPUsageClient()` 派生，以复用传输、时钟及同一管理请求协调器。View 不需要也不应重新读取管理密钥。创建返回时校验活动连接；已经交出的客户端引用不会因为之后切换连接而自动失效，上层必须取消旧请求并丢弃旧客户端与 Store。
 
-资源认证必须由部署方明确选择。`.anonymous` 不携带 Authorization，`.managementKey` 显式使用当前管理 Bearer。不会先匿名失败后偷偷重发管理密钥，也不建立 full-mode capability、解密或读取调用方原始 API Key。管理统计始终使用管理认证。资源反向代理与鉴权是否允许移动端直连仍需部署验收，不能根据 management 路由推断。
+资源认证必须由部署方明确选择。`.anonymous` 不携带 Authorization，`.managementKey` 显式使用当前管理 Bearer。不会在匿名请求失败后自动改用管理密钥，也不建立 full-mode capability、解密或读取调用方原始 API Key。管理统计始终使用管理认证。资源反向代理与鉴权是否允许移动端直连仍需部署验收，不能根据 management 路由推断。
 
 ## 只读接口
 
@@ -31,7 +31,7 @@ if let client = await session.makeCAPUsageClient() {
 
 ## 窗口与速度
 
-`CAPUsageWindow(now:)` 生成 `[floor(now/60)*60-1800, floor(now/60)*60)`，即截至最后完整分钟的近30分钟；上层应显示“截至 HH:mm”。此处 now 是调用方提供的可信时钟，公开资源并未提供独立服务器时钟同步协议。`generated_at` 是插件生成响应时间，不是每次请求观察时间；`bucket_seconds` 明确时间桶分辨率，不能冒充秒级完整数据。
+`CAPUsageWindow(now:)` 生成 `[floor(now/60)*60-1800, floor(now/60)*60)`，即截至最后完整分钟的近 30 分钟；上层应显示“截至 HH:mm”。此处 now 是调用方提供的可信时钟，公开资源并未提供独立服务器时钟同步协议。`generated_at` 是插件生成响应时间，不是每次请求观察时间；`bucket_seconds` 明确时间桶分辨率，不能冒充秒级完整数据。
 
 ```text
 严格加权生成 TPS = sum(有效输出 Token) / (sum(latency_ns - ttft_ns) / 1e9)
@@ -44,11 +44,11 @@ if let client = await session.makeCAPUsageClient() {
 
 CPA 账号清单身份（id/name/auth_index 与嵌套 Codex account ID）优先使用字符串。此处数字身份仅接受可证明无损的安全整数；小数、布尔值、浮点来源及超出 ±(2^53−1) 的数值身份拒绝，不通过 Double 舍入后制造另一个 ID。大整数必须由上游以字符串传输。度量值仍按其原有数值合同解析，此限制不会把用量、金额等字段整体改为字符串；CAP 请求 sequence 仍按 UInt64 合同解码，不适用这一账号身份限制。
 
-100 Token/2秒和900 Token/30秒的已知向量结果为31.25 Token/s，不是单请求速率的算术平均40，也不是1000/1800的窗口吞吐。`average_latency_ns` 与 `average_ttft_ns` 的样本集合可能不同，不能相减推导生成时长。失败请求的部分用量仍属于用量数据，但不纳入成功生成 TPS。
+100 Token/2 秒和 900 Token/30 秒的已知向量结果为 31.25 Token/s，不是单请求速率的算术平均40，也不是1000/1800的窗口吞吐。`average_latency_ns` 与 `average_ttft_ns` 的样本集合可能不同，不能相减推导生成时长。失败请求的部分用量仍属于用量数据，但不纳入成功生成 TPS。
 
 ## 分页与保守完整性
 
-每页最多500条，自动集合最多10页、5000条，单响应最多4MiB，累计请求页预算8MiB。下一页大小未知时预留整个单响应上限，因此可能在达到8MiB之前保守停止；不会为追求“完整”自动读取全历史或数据库备份。
+每页最多 500 条，自动集合最多 10 页、5000 条，单响应最多 4 MiB，累计请求页预算 8 MiB。下一页大小未知时预留整个单响应上限，因此可能在达到 8 MiB 之前保守停止；不会为追求“完整”自动读取全历史或数据库备份。
 
 | 标记 | 真实含义 |
 | --- | --- |

@@ -4,4 +4,4 @@
 
 请勿在公开 issue、讨论或日志中提交真实凭据、令牌、账号信息、生产配置或未脱敏日志；复现应只使用合成数据，并提供可复现问题所需的最小信息。
 
-可查看仓库的 [Security 页面](https://github.com/rinmashiro0529/cpa-quota-ios/security)：只有该页面确实提供私密漏洞报告按钮时，才使用该按钮私密报告。仓库目前仍为私有，尚未确认 private vulnerability reporting 已启用；在维护者提供并验证私密渠道前，请勿提交秘密。维护者必须在公开前提供可验证的私密报告渠道，不应将公开 issue 作为替代。
+可查看仓库的 [Security 页面](https://github.com/rinmashiro0529/cpa-quota-ios/security)：只有该页面确实提供私密漏洞报告按钮时，才使用该按钮私密报告。仓库目前仍为私有；GitHub 的 private vulnerability reporting 文档适用于公开仓库，当前没有经验证的替代私密报告渠道；在维护者提供并验证私密渠道前，请勿提交秘密。维护者必须在公开前提供可验证的私密报告渠道，不应将公开 issue 作为替代。

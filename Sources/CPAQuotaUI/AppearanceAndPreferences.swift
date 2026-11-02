@@ -40,8 +40,8 @@ public enum QuotaDisplayMode: String, CaseIterable, Codable, Sendable, Identifia
 
     public var title: String {
         switch self {
-        case .remaining: "剩余可用比例 (Remaining)"
-        case .used: "已用额度比例 (Used)"
+        case .remaining: "剩余比例"
+        case .used: "已用比例"
         }
     }
 
@@ -65,7 +65,7 @@ public enum CPAWorkspaceTab: String, CaseIterable, Codable, Sendable, Identifiab
     public var title: String {
         switch self {
         case .quotas: "额度总览"
-        case .usage: "CAP用量"
+        case .usage: "CAP 用量"
         case .monitoring: "监控与活动"
         case .accounts: "账号诊断"
         case .connection: "连接管理"

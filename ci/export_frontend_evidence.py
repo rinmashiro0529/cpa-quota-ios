@@ -9,6 +9,7 @@ from pathlib import Path
 parser = argparse.ArgumentParser()
 parser.add_argument("--evidence", type=Path, required=True)
 parser.add_argument("--log-previews", action="store_true")
+parser.add_argument("--export-screenshots", action="store_true")
 parser.add_argument("--restore-log", type=Path,
                     help="Recover checksum-verified review JPEGs from a downloaded GitHub job log")
 args = parser.parse_args()
@@ -42,9 +43,15 @@ if args.restore_log:
     raise SystemExit(0)
 
 result = args.evidence / "NativeTests.xcresult"
+if result.is_symlink():
+    raise SystemExit("Symlinked result bundles are not supported for screenshot export")
 if not result.exists():
     print("No native xcresult exists for this run; no native test or screenshot pass is claimed.")
     raise SystemExit(0)
+
+for entry in result.rglob("*"):
+    if entry.is_symlink():
+        raise SystemExit("Symlinks in result bundles are not supported for screenshot export")
 
 summary = subprocess.run(
     ["xcrun", "xcresulttool", "get", "test-results", "summary", "--path", str(result)],
@@ -53,31 +60,107 @@ summary = subprocess.run(
 if summary.returncode == 0:
     data = json.loads(summary.stdout)
     (args.evidence / "native-test-summary.json").write_text(json.dumps(data, indent=2) + "\n")
-    print("FRONTEND_TEST_SUMMARY " + json.dumps(data, separators=(",", ":")))
+    count_fields = ("totalTestCount", "passedTests", "failedTests", "skippedTests",
+                    "testsCount", "testsPassed", "testsFailed", "testsSkipped")
+    counts = {key: data[key] for key in count_fields
+              if isinstance(data.get(key), int) and not isinstance(data[key], bool)}
+    print("FRONTEND_TEST_SUMMARY " + json.dumps(counts, separators=(",", ":")))
+    if not counts:
+        print("::warning::No recognized test counts were present in the result summary.")
 else:
     print("::warning::xcresult summary could not be exported; consult the native xcodebuild log.")
-    print(summary.stderr[-4000:])
 
+
+if not (args.log_previews or args.export_screenshots):
+    raise SystemExit(0)
+
+# Bind reuse to the full result bundle contents, not just the evidence directory.
+fingerprint = hashlib.sha256()
+for entry in sorted(result.rglob("*")):
+    if entry.is_symlink():
+        raise SystemExit("Symlinks in result bundles are not supported for screenshot export")
+    if entry.is_file():
+        name = entry.relative_to(result).as_posix().encode("utf-8")
+        fingerprint.update(len(name).to_bytes(8, "big"))
+        fingerprint.update(name)
+        fingerprint.update(entry.stat().st_size.to_bytes(8, "big"))
+        with entry.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                fingerprint.update(chunk)
+bundle_digest = fingerprint.hexdigest()
+# Never overwrite an incomplete attempt; keep it for diagnosis and use a new
+# directory. Only a matching completed marker permits reuse.
+base = "ExportedAttachments-" + bundle_digest
+attempt = 0
+while True:
+    export = args.evidence / (base + ("-" + str(attempt) if attempt else ""))
+    if export.is_symlink():
+        raise SystemExit("Symlinked attachment export directory is not supported")
+    marker = export / ".export-complete.json"
+    if not export.exists():
+        export.mkdir()
+        command = ["xcrun", "xcresulttool", "export", "attachments", "--path", str(result), "--output-path", str(export)]
+        completed = subprocess.run(command, capture_output=True, text=True)
+        if completed.returncode:
+            print("::warning::Screenshot export unavailable; visual review remains unverified.")
+            raise SystemExit(0)
+        marker.write_text(json.dumps({"resultBundleSHA256": bundle_digest}) + chr(10))
+        break
+    if marker.is_file() and not marker.is_symlink():
+        saved = json.loads(marker.read_text(encoding="utf-8"))
+        if saved.get("resultBundleSHA256") == bundle_digest:
+            break
+    attempt += 1
+
+for entry in export.rglob("*"):
+    if entry.is_symlink():
+        raise SystemExit("Symlinks in attachment exports are not supported")
+
+# Match exact exported filenames in parsed manifests. Test identifiers are
+# represented only by hashes in logs; the original manifest remains in the artifact.
+manifests = [p for p in sorted(export.rglob("*.json")) if p != marker]
+links = []
+def collect(value, manifest, test_hash=None):
+    if isinstance(value, dict):
+        for key in ("testIdentifier", "testIdentifierString", "testName"):
+            if isinstance(value.get(key), str):
+                test_hash = hashlib.sha256(value[key].encode("utf-8")).hexdigest()
+                break
+        for key, item in value.items():
+            if key in ("exportedFileName", "fileName", "exportedPath", "path") and isinstance(item, str):
+                links.append((item, manifest, test_hash))
+            collect(item, manifest, test_hash)
+    elif isinstance(value, list):
+        for item in value:
+            collect(item, manifest, test_hash)
+
+manifest_hashes = {}
+for manifest in manifests:
+    raw = manifest.read_bytes()
+    manifest_hashes[manifest] = hashlib.sha256(raw).hexdigest()
+    collect(json.loads(raw), manifest)
+originals = sorted(export.rglob("*.png"))
+records = []
+for original in originals:
+    relative = original.relative_to(export).as_posix()
+    matches = [(manifest, test_hash) for value, manifest, test_hash in links
+               if value == relative or (value == original.name and
+                  sum(p.name == original.name for p in originals) == 1)]
+    records.append({"file": relative,
+                    "originalSHA256": hashlib.sha256(original.read_bytes()).hexdigest(),
+                    "association": ("matched" if matches[0][1] else "manifest-only") if len(matches) == 1 else "unassociated" if not matches else "ambiguous",
+                    "sources": [{"manifest": m.relative_to(export).as_posix(),
+                                 "manifestSHA256": manifest_hashes[m], "testIdentifierSHA256": t}
+                                for m, t in matches]})
+(args.evidence / ("screenshot-sources-" + bundle_digest + ".json")).write_text(json.dumps({
+    "resultBundleSHA256": bundle_digest,
+    "attachmentManifests": [p.relative_to(export).as_posix() for p in manifests],
+    "screenshots": records,
+}, indent=2) + chr(10))
 if not args.log_previews:
     raise SystemExit(0)
 
 print("::warning::Full xcresult artifact upload was unavailable. These bounded JPEG previews are review copies, not the original result bundle.")
-export = args.evidence / "ExportedAttachments"
-export.mkdir(exist_ok=True)
-command = ["xcrun", "xcresulttool", "export", "attachments", "--path", str(result), "--output-path", str(export)]
-completed = subprocess.run(command, capture_output=True, text=True)
-if completed.returncode:
-    print("::warning::Screenshot export unavailable; visual review remains unverified.")
-    print(completed.stderr[-4000:])
-    subprocess.run(["xcrun", "xcresulttool", "help", "export", "attachments"], check=False)
-    raise SystemExit(0)
-
-# The exporter manifest links an attachment to its test and human-readable name.
-for manifest in sorted(export.rglob("*.json")):
-    raw = manifest.read_text()
-    if len(raw) <= 100_000:
-        print("FRONTEND_ATTACHMENT_MANIFEST " + json.dumps({"file": manifest.name, "manifest": json.loads(raw)}))
-
 previews = args.evidence / "ReviewPreviews"
 previews.mkdir(exist_ok=True)
 # Keep all six flows plus normal/large-text detail comparisons reviewable when
@@ -87,7 +170,8 @@ count = 0
 for original in sorted(export.rglob("*.png")):
     if count >= 24:
         break
-    preview = previews / (original.stem + ".jpg")
+    original_hash = hashlib.sha256(original.read_bytes()).hexdigest()
+    preview = previews / ("review-" + str(count + 1).zfill(2) + "-" + original_hash[:12] + ".jpg")
     rendered = subprocess.run(
         ["sips", "-s", "format", "jpeg", "-s", "formatOptions", "70", "-Z", "1200",
          str(original), "--out", str(preview)],
@@ -101,9 +185,14 @@ for original in sorted(export.rglob("*.png")):
         continue
     budget -= len(encoded)
     count += 1
-    metadata = {"file": preview.name, "original": original.name, "mime": "image/jpeg",
+    source_record = next(record for record in records if record["file"] == original.relative_to(export).as_posix())
+    safe_sources = [{"manifestSHA256": source["manifestSHA256"],
+                     "testIdentifierSHA256": source["testIdentifierSHA256"]}
+                    for source in source_record["sources"]]
+    metadata = {"sourceAssociation": source_record["association"], "sources": safe_sources,
+                "resultBundleSHA256": bundle_digest, "file": preview.name, "mime": "image/jpeg",
                 "bytes": len(payload), "previewSHA256": hashlib.sha256(payload).hexdigest(),
-                "originalSHA256": hashlib.sha256(original.read_bytes()).hexdigest(),
+                "originalSHA256": original_hash,
                 "note": "JPEG review copy, longest side at most 1200 pixels; assertions ran on the original UI."}
     print("FRONTEND_SCREENSHOT_BEGIN " + json.dumps(metadata, separators=(",", ":")))
     for start in range(0, len(encoded), 12_000):

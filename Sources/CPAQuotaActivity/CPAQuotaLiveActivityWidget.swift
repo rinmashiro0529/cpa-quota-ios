@@ -44,7 +44,7 @@ private func activitySymbol(_ state: CPAQuotaLiveActivityState, isStale: Bool) -
     let status = CPAQuotaActivityPresentation.compactStatus(snapshot: state.snapshot, account: state.account(), isStale: isStale)
     switch status {
     case "结束", "到期": return "checkmark.circle"
-    case "陈旧": return "clock.badge.exclamationmark"
+    case "旧值": return "clock.badge.exclamationmark"
     case "失败": return "exclamationmark.triangle"
     case "限流": return "hourglass"
     case "未知": return "questionmark.circle"

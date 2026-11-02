@@ -87,7 +87,7 @@ public enum CPAQuotaActivityPresentation {
     public static func compactStatus(snapshot: MonitoringSnapshot, account: MonitoringAccount?, isStale: Bool) -> String? {
         if snapshot.phase == .stopped { return "结束" }
         if snapshot.phase == .expired { return "到期" }
-        if isStale || account?.status == .stale { return "陈旧" }
+        if isStale || account?.status == .stale { return "旧值" }
         if snapshot.phase == .failed || account?.status == .failed { return "失败" }
         if snapshot.phase == .coolingDown || account?.status == .coolingDown { return "限流" }
         if account == nil || account?.status == .unavailable { return "未知" }

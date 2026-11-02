@@ -10,11 +10,36 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+var fixtureServers struct {
+	sync.Mutex
+	servers []*httptest.Server
+}
+
+// Keep fixture addresses reserved until all package tests finish: production
+// origin security state intentionally remains shared for the process lifetime.
+func reserveFixtureServer(t *testing.T, server *httptest.Server) {
+	t.Helper()
+	fixtureServers.Lock()
+	fixtureServers.servers = append(fixtureServers.servers, server)
+	fixtureServers.Unlock()
+	t.Cleanup(server.CloseClientConnections)
+}
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	for _, server := range fixtureServers.servers {
+		server.Close()
+	}
+	os.Exit(code)
+}
 
 func fixtureClient(t *testing.T, handler http.Handler, accounts []Account) (*Client, *httptest.Server, *atomic.Int64) {
 	t.Helper()
@@ -23,7 +48,7 @@ func fixtureClient(t *testing.T, handler http.Handler, accounts []Account) (*Cli
 	server := httptest.NewUnstartedServer(handler)
 	server.EnableHTTP2 = true
 	server.StartTLS()
-	t.Cleanup(server.Close)
+	reserveFixtureServer(t, server)
 	client, err := New(Config{
 		BaseURL: server.URL, ManagementKey: "fixture-key", Accounts: accounts, Client: server.Client(),
 		Now: func() time.Time { return time.Unix(now.Load(), 0) },
@@ -262,5 +287,71 @@ func TestCustomTrustIsLimitedToLoopback(t *testing.T) {
 	cfg := Config{BaseURL: "https://example.invalid:443", ManagementKey: "k", Accounts: []Account{{ID: "a", Provider: "codex", Selection: "primary"}}, Client: &http.Client{Transport: transport}}
 	if _, err := New(cfg); err == nil {
 		t.Fatal("custom trust was accepted for a non-loopback origin")
+	}
+}
+
+// A fixture origin must remain reserved after its test ends, because CPA's
+// origin-wide security state outlives any individual client or TLS server.
+func TestFixtureOriginsDoNotLeakSecurityState(t *testing.T) {
+	for _, kind := range []string{"fixtureClient", "contractClient", "sameOriginPair"} {
+		t.Run(kind, func(t *testing.T) {
+			var address atomic.Value
+			accounts := []Account{{ID: "a", Provider: "codex", Selection: "primary"}}
+			t.Run("blocked origin", func(t *testing.T) {
+				handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					address.Store(r.Host)
+					w.WriteHeader(http.StatusForbidden)
+				})
+				var client *Client
+				switch kind {
+				case "fixtureClient":
+					client, _, _ = fixtureClient(t, handler, accounts)
+				case "contractClient":
+					client, _ = contractClient(t, handler, accounts)
+				case "sameOriginPair":
+					client, _, _ = sameOriginPair(t, handler, accounts, accounts)
+				}
+				if got := client.Collect(context.Background())["a"]; got.Status != "failed" {
+					t.Fatalf("expected management authentication failure, got %+v", got)
+				}
+			})
+			host, ok := address.Load().(string)
+			if !ok {
+				t.Fatal("first fixture received no management request")
+			}
+			listener, err := net.Listen("tcp", host)
+			if err != nil {
+				// Confirm the address is actively reserved rather than assuming any bind
+				// error is evidence of a live fixture.
+				conn, dialErr := net.DialTimeout("tcp", host, time.Second)
+				if dialErr != nil {
+					t.Fatalf("fixture address was not reusable or live: listen=%v dial=%v", err, dialErr)
+				}
+				_ = conn.Close()
+				return
+			}
+			var calls atomic.Int32
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if r.URL.Path == "/v0/management/auth-files" {
+					_, _ = io.WriteString(w, `{"files":[{"id":"a","auth_index":"1","provider":"codex"}]}`)
+					return
+				}
+				_, _ = io.WriteString(w, `{"status_code":200,"body":{"rate_limit":{"primary_window":{"used_percent":10}}}}`)
+			}))
+			_ = server.Listener.Close()
+			server.Listener = listener
+			server.EnableHTTP2 = true
+			server.StartTLS()
+			defer server.Close()
+			client, err := New(Config{BaseURL: server.URL, ManagementKey: "fixture-key", Accounts: accounts, Client: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := client.Collect(context.Background())["a"]
+			if got.Status != "ok" || calls.Load() != 2 {
+				t.Fatalf("a later fixture inherited the previous fixture's security state: status=%s requests=%d", got.Status, calls.Load())
+			}
+		})
 	}
 }

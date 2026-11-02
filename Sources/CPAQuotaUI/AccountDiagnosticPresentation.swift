@@ -35,7 +35,7 @@ public struct AccountDiagnosticPresentation: Equatable, Sendable {
         }
 
         if error?.kind == .unsupportedProvider {
-            readerDescription = "本次查询返回未支持的平台，不代表拥有可用配额。"
+            readerDescription = "暂不支持读取该平台的额度。"
         } else if account.supportsPluginQuota {
             readerDescription = "账号声明支持 CPA 标准化额度插件。"
         } else {

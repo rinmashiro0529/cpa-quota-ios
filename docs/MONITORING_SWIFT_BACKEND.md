@@ -1,10 +1,10 @@
 # Swift 监控后端
 
-当前实现是监控客户端与纯 Swift 快照模型，不代表真实 APNs、WidgetKit、Live Activity、服务部署或设备推送已经验证。本次持久墓碑、授权和调度的验证见 `BACKEND_RELIABILITY_PR.md` 与当前 PR Checks；`BACKEND_VERIFICATION.md` 仅是 PR #1 的历史回执，完成源码与合成测试不等于可以直接开启生产监控。
+当前实现是监控客户端与纯 Swift 快照模型，不代表真实 APNs、WidgetKit、Live Activity、服务部署或设备推送已经验证。持久墓碑、授权和调度的历史验证见 `BACKEND_RELIABILITY_PR.md`；当前提交应查阅对应的 CI 检查；`BACKEND_VERIFICATION.md` 仅是 PR #1 的历史回执，完成源码与合成测试不等于可以直接开启生产监控。
 
 ## 客户端与状态
 
-`MonitorBridgeToken` 与 `MonitoringPushToken` 是独立的非 Codable 敏感类型，文本描述脱敏。使用 `MonitorBridgeAddress` 规范化 HTTPS 桥接地址后创建 `CPAMonitorClient`，调用 `create`、`get`、`rotate`、`refresh`、`stop` 和 `cachedQuota`。地址规则与独立 Keychain 存储一致，不能自行剥离桥接的反向代理路径。桥接 token 不等于 CPA 管理密钥。
+`MonitorBridgeToken` 与 `MonitoringPushToken` 是独立的非 Codable 敏感类型，文本描述脱敏。使用 `MonitorBridgeAddress` 规范化 HTTPS 桥接地址后创建 `CPAMonitorClient`，调用 `create`、`get`、`rotate`、`refresh`、`stop` 和 `cachedQuota`。地址规则与独立 Keychain 存储一致，不能自行剥离桥接的反向代理路径。监控访问令牌（Bridge Token）不等于 CPA 管理密钥。
 
 创建会话时由调用方先生成并持久保存 UUID；请求超时后以原 UUID 查询对账，不能换 UUID 盲目重试。`stop` 返回 nil 只表示服务器返回204并接受停止意图，不能解释为设备活动已移除或 APNs 已送达。`MonitoringStore` 对启动、加载、刷新、token 更新和停止提供可观察状态；网络失败保留当前会话 UUID，并标为 uncertain，不把结果不明伪装成停止成功。
 

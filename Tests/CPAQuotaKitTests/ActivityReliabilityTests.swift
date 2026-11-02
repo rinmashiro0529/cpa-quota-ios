@@ -185,7 +185,7 @@ struct ActivityReliabilityTests {
         #expect(try CPAQuotaActivityPresentation.status(snapshot: snapshot(), account: self.account(status: .stale), isStale: false) == "上次读数")
         #expect(try CPAQuotaActivityPresentation.status(snapshot: snapshot(), account: self.account(status: .failed), isStale: false) == "读取失败")
         #expect(try CPAQuotaActivityPresentation.compactStatus(snapshot: snapshot(phase: .expired), account: account, isStale: true) == "到期")
-        #expect(try CPAQuotaActivityPresentation.compactStatus(snapshot: snapshot(), account: account, isStale: true) == "陈旧")
+        #expect(try CPAQuotaActivityPresentation.compactStatus(snapshot: snapshot(), account: account, isStale: true) == "旧值")
         #expect(try CPAQuotaActivityPresentation.compactStatus(snapshot: snapshot(), account: account, isStale: false) == nil)
         #expect(try CPAQuotaActivityPresentation.value(self.account(remaining: nil)) == "未知")
         #expect(try CPAQuotaActivityPresentation.value(self.account(value: 0, remaining: nil)) == "0.00 credits")

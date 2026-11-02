@@ -313,11 +313,11 @@ public enum CAPUsagePresentation {
     public static func completenessTitle(_ completeness: CAPUsageCompleteness) -> String {
         switch completeness {
         case .singlePage:
-            return "单页完整 (singlePage)"
+            return "当前窗口的响应为单页"
         case .offsetUnverified:
-            return "分页已达末页 · 未冻结快照 (offsetUnverified)"
+            return "已读取至报告末页"
         case .truncated:
-            return "已截断 · 达分页/体积预算或页异常 (truncated)"
+            return "数据不完整"
         }
     }
 
@@ -326,25 +326,25 @@ public enum CAPUsagePresentation {
         case .singlePage:
             return "当前响应在单页内返回 \(itemCount) 条记录；不排除后续迟到写入。"
         case .offsetUnverified:
-            return "已读取 \(itemCount) 条记录至报告末页，但分页 offset 不提供跨页原子快照证明。"
+            return "已读取 \(itemCount) 条记录至报告末页；读取期间数据可能变化，跨页结果并非冻结快照。"
         case .truncated:
             return "已保守停止于 \(itemCount) 条记录（受 10 页 / 5000 条 / 4MiB 单页 / 8MiB 总预算或去重一致性保护），不可视为全窗口完整统计。"
         }
     }
 
     public static func formatCounter(_ value: UInt64?) -> String {
-        guard let value else { return "未知 (nil)" }
+        guard let value else { return "未知" }
         return "\(value)"
     }
 
     public static func formatNanosecondsAsMillis(_ ns: UInt64?) -> String {
-        guard let ns else { return "未知 (nil)" }
+        guard let ns else { return "未知" }
         let ms = Double(ns) / 1_000_000.0
         return String(format: "%.1f ms", ms)
     }
 
     public static func formatUSD(_ amount: Double?, currency: String = "USD") -> String {
-        guard let amount, amount.isFinite else { return "未知 (nil)" }
+        guard let amount, amount.isFinite else { return "未知" }
         return String(format: "%.4f %@", amount, currency)
     }
 
@@ -380,13 +380,13 @@ public enum CAPUsagePresentation {
         switch error {
         case .pluginUnavailable:
             return (
-                "CAP 用量插件路由不可用 (404)",
-                "服务端未安装或未暴露 cap-token-usage-tracker 路由；客户端不会将 404 伪装为空统计。"
+                "当前服务未提供 CAP 用量接口",
+                "请在 CPA 服务端检查 CAP 用量插件是否已安装并启用。额度页面仍可独立使用。"
             )
         case .invalidResponse:
             return (
-                "CAP 响应格式或预算校验未通过",
-                "响应超过 4MiB 上限、字段类型不符或分页参数异常，已拒绝解析。"
+                "响应数据异常，暂时无法显示",
+                "无法显示本次用量结果，请检查服务端和插件版本后重试。额度页面仍可独立使用。"
             )
         case .network:
             return (
@@ -410,7 +410,7 @@ public enum CAPUsagePresentation {
             if statusCode == 401 || statusCode == 403 {
                 return (
                     "CAP 资源访问被拒绝 (HTTP \(statusCode))",
-                    "当前认证模式无权读取该资源；客户端严格遵守显式认证选择，不会自动升级或降级偷偷重发管理密钥。"
+                    "当前认证方式无权读取该资源；不会自动切换认证方式或重发管理密钥。"
                 )
             }
             return (

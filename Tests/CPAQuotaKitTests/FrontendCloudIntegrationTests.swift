@@ -76,13 +76,22 @@ struct FrontendCloudIntegrationTests {
         let emptySummary = CAPUsageAggregation.summarize([])
         #expect(CAPUsagePresentation.generationTPSText(emptySummary) == "无有效生成 TPS 样本")
         #expect(CAPUsagePresentation.generationCoverageText(emptySummary) == "有效生成样本 0 / 总请求 0")
-        #expect(CAPUsagePresentation.formatUSD(nil) == "未知 (nil)")
-        #expect(CAPUsagePresentation.formatCounter(nil) == "未知 (nil)")
-        #expect(CAPUsagePresentation.formatNanosecondsAsMillis(nil) == "未知 (nil)")
+        #expect(CAPUsagePresentation.formatUSD(nil) == "未知")
+        #expect(CAPUsagePresentation.formatCounter(nil) == "未知")
+        #expect(CAPUsagePresentation.formatNanosecondsAsMillis(nil) == "未知")
 
-        #expect(CAPUsagePresentation.completenessTitle(.singlePage).contains("singlePage"))
-        #expect(CAPUsagePresentation.completenessTitle(.offsetUnverified).contains("offsetUnverified"))
-        #expect(CAPUsagePresentation.completenessTitle(.truncated).contains("truncated"))
+        #expect(CAPUsagePresentation.completenessTitle(.singlePage) == "当前窗口的响应为单页")
+        #expect(CAPUsagePresentation.completenessTitle(.offsetUnverified) == "已读取至报告末页")
+        #expect(CAPUsagePresentation.completenessTitle(.truncated) == "数据不完整")
+        #expect(CAPUsagePresentation.completenessSubtitle(.offsetUnverified, itemCount: 12).contains("读取期间数据可能变化"))
+        #expect(CAPUsagePresentation.completenessSubtitle(.truncated, itemCount: 12).contains("不可视为全窗口完整统计"))
+        let unavailable = CAPUsagePresentation.errorDescription(.pluginUnavailable)
+        #expect(unavailable.title == "当前服务未提供 CAP 用量接口")
+        #expect(unavailable.detail.contains("CPA 服务端"))
+        #expect(unavailable.detail.contains("额度页面仍可独立使用"))
+        let invalid = CAPUsagePresentation.errorDescription(.invalidResponse)
+        #expect(invalid.title == "响应数据异常，暂时无法显示")
+        #expect(invalid.detail.contains("服务端和插件版本"))
     }
 
     @Test @MainActor
