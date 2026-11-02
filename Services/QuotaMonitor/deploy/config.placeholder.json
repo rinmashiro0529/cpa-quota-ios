@@ -1,0 +1,20 @@
+{
+  "listen": "127.0.0.1:8787",
+  "state_path": "/var/lib/quota-monitor/state.enc",
+  "state_key_env": "QUOTA_MONITOR_STATE_KEY",
+  "dry_run": true,
+  "sources": [
+    {
+      "id": "example",
+      "base_url": "https://cpa.example.invalid",
+      "management_key_env": "QUOTA_MONITOR_CPA_KEY",
+      "accounts": [
+        {"id": "replace-account-id", "safe_id": "account-1", "label": "Account 1", "provider": "codex", "reader": "codex", "selection": "primary", "window_id": "primary", "window_label": "Primary"}
+      ]
+    }
+  ],
+  "principals": [
+    {"id": "example-device", "bearer_token_env": "QUOTA_MONITOR_BRIDGE_TOKEN", "source_accounts": {"example": ["replace-account-id"]}}
+  ],
+  "apns": {"team_id": "", "key_id": "", "bundle_id": "", "environment": "sandbox", "private_key_env": "QUOTA_MONITOR_APNS_KEY"}
+}

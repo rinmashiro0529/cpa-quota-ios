@@ -1,0 +1,17 @@
+{
+  "date": "2026-10-25",
+  "runner": "build-host build-container: final compiled cpa-quota-probe",
+  "build_source_archive_sha256": "8a27db32bf8728cf1b1db12d63e7eef4bf58fcb5937f5e5e8816da91a9add094",
+  "authentication": "Existing management key through encrypted SSH stdin; no key in argv, environment, or remote credential files; probe core dumps disabled",
+  "accounts": 4,
+  "enabled": 3,
+  "succeeded": 3,
+  "failed": 0,
+  "providers": [
+    {"provider": "codex", "accounts": 2, "enabled": 2, "succeeded": 2, "windows": 4, "metrics": 0, "errors": {}},
+    {"provider": "freetier", "accounts": 1, "enabled": 1, "succeeded": 1, "windows": 0, "metrics": 4, "errors": {}},
+    {"provider": "xai", "accounts": 1, "enabled": 0, "succeeded": 0, "windows": 0, "metrics": 0, "errors": {"accountDisabled": 1}}
+  ],
+  "not_performed": ["Inference", "Quota reset", "New OAuth flow", "Changing account state", "Changing production configuration"],
+  "identities_or_balances_recorded": false
+}

@@ -1,0 +1,170 @@
+[
+  {
+    "name": "retry-after-original-string",
+    "now": 1800000000,
+    "envelope": {"status_code": 429, "header": {"Retry-After": "7200"}, "body": {}},
+    "expected": {"valid": true, "status": 429, "retry_after_seconds": 7200}
+  },
+  {
+    "name": "retry-after-headers-alias-and-number",
+    "now": 1800000000,
+    "envelope": {"status_code": 429, "headers": {"retry-after": 7200}, "body": {}},
+    "expected": {"valid": true, "status": 429, "retry_after_seconds": 7200}
+  },
+  {
+    "name": "retry-after-case-insensitive-envelope-and-header",
+    "now": 1800000000,
+    "envelope": {"STATUSCODE": " 429 ", "HEADERS": {"rEtRy-AfTeR": ["7200"]}, "body": {}},
+    "expected": {"valid": true, "status": 429, "retry_after_seconds": 7200}
+  },
+  {
+    "name": "retry-after-first-parseable-array-element",
+    "now": 1800000000,
+    "envelope": {"status_code": 429, "header": {"Retry-After": [null, {}, false, "invalid", -1, "1e100", 7200, "3600"]}, "body": {}},
+    "expected": {"valid": true, "status": 429, "retry_after_seconds": 7200}
+  },
+  {
+    "name": "retry-after-null-header-falls-back-to-headers",
+    "now": 1800000000,
+    "envelope": {"status_code": 429, "header": null, "headers": {"Retry-After": "7200"}, "body": {}},
+    "expected": {"valid": true, "status": 429, "retry_after_seconds": 7200}
+  },
+  {
+    "name": "retry-after-first-non-null-header-alias-wins",
+    "now": 1800000000,
+    "envelope": {"status_code": 429, "header": {"Retry-After": "3600"}, "headers": {"Retry-After": "7200"}, "body": {}},
+    "expected": {"valid": true, "status": 429, "retry_after_seconds": 3600}
+  },
+  {
+    "name": "retry-after-http-date-array",
+    "now": 1800000000,
+    "envelope": {"status_code": 429, "headers": {"retry-after": ["invalid", "Fri, 15 Jan 2027 10:00:00 GMT"]}, "body": {}},
+    "expected": {"valid": true, "status": 429, "retry_after_seconds": 7200}
+  },
+  {
+    "name": "retry-after-rfc3339-date",
+    "now": 1800000000,
+    "envelope": {"status_code": 429, "header": {"Retry-After": "2027-01-15T10:00:00Z"}, "body": {}},
+    "expected": {"valid": true, "status": 429, "retry_after_seconds": 7200}
+  },
+  {
+    "name": "retry-after-no-valid-value",
+    "now": 1800000000,
+    "envelope": {"status_code": 429, "headers": {"Retry-After": [null, {}, true, "invalid", -1]}, "body": {}},
+    "expected": {"valid": true, "status": 429, "retry_after_seconds": null}
+  },
+  {
+    "name": "retry-after-missing",
+    "now": 1800000000,
+    "envelope": {"status_code": 429, "body": {}},
+    "expected": {"valid": true, "status": 429, "retry_after_seconds": null}
+  },
+  {
+    "name": "status-integer-number",
+    "now": 1800000000,
+    "envelope": {"status_code": 200, "body": {"rate_limit": {"primary_window": {"used_percent": 25}}}},
+    "expected": {"valid": true, "status": 200, "retry_after_seconds": null}
+  },
+  {
+    "name": "status-integral-decimal",
+    "now": 1800000000,
+    "envelope": {"status_code": 200.0, "body": {}},
+    "expected": {"valid": true, "status": 200, "retry_after_seconds": null}
+  },
+  {
+    "name": "status-integral-exponent",
+    "now": 1800000000,
+    "envelope": {"status_code": 2e2, "body": {}},
+    "expected": {"valid": true, "status": 200, "retry_after_seconds": null}
+  },
+  {
+    "name": "status-integer-string-and-string-body",
+    "now": 1800000000,
+    "envelope": {"statusCode": " 200 ", "body": "{\"rate_limit\":{\"primary_window\":{\"used_percent\":25}}}"},
+    "expected": {"valid": true, "status": 200, "retry_after_seconds": null}
+  },
+  {
+    "name": "status-minimum-http-code",
+    "now": 1800000000,
+    "envelope": {"status_code": 100, "body": {}},
+    "expected": {"valid": true, "status": 100, "retry_after_seconds": null}
+  },
+  {
+    "name": "status-maximum-http-code",
+    "now": 1800000000,
+    "envelope": {"status_code": 599, "body": {}},
+    "expected": {"valid": true, "status": 599, "retry_after_seconds": null}
+  },
+  {
+    "name": "status-below-http-range",
+    "now": 1800000000,
+    "envelope": {"status_code": 99, "body": {}},
+    "expected": {"valid": false, "status": 0, "retry_after_seconds": null}
+  },
+  {
+    "name": "status-above-http-range",
+    "now": 1800000000,
+    "envelope": {"status_code": 600, "body": {}},
+    "expected": {"valid": false, "status": 0, "retry_after_seconds": null}
+  },
+  {
+    "name": "status-fractional-success-is-not-truncated",
+    "now": 1800000000,
+    "envelope": {"status_code": 200.5, "body": {}},
+    "expected": {"valid": false, "status": 0, "retry_after_seconds": null}
+  },
+  {
+    "name": "status-fractional-throttle-is-not-truncated",
+    "now": 1800000000,
+    "envelope": {"status_code": 429.5, "header": {"Retry-After": "7200"}, "body": {}},
+    "expected": {"valid": false, "status": 0, "retry_after_seconds": null}
+  },
+  {
+    "name": "status-fractional-string",
+    "now": 1800000000,
+    "envelope": {"status_code": "429.5", "body": {}},
+    "expected": {"valid": false, "status": 0, "retry_after_seconds": null}
+  },
+  {
+    "name": "status-overflow",
+    "now": 1800000000,
+    "envelope": {"status_code": 1e100, "body": {}},
+    "expected": {"valid": false, "status": 0, "retry_after_seconds": null}
+  },
+  {
+    "name": "status-boolean",
+    "now": 1800000000,
+    "envelope": {"status_code": true, "body": {}},
+    "expected": {"valid": false, "status": 0, "retry_after_seconds": null}
+  },
+  {
+    "name": "status-null",
+    "now": 1800000000,
+    "envelope": {"status_code": null, "body": {}},
+    "expected": {"valid": false, "status": 0, "retry_after_seconds": null}
+  },
+  {
+    "name": "status-missing",
+    "now": 1800000000,
+    "envelope": {"body": {}},
+    "expected": {"valid": false, "status": 0, "retry_after_seconds": null}
+  },
+  {
+    "name": "status-invalid-first-alias-does-not-fall-through",
+    "now": 1800000000,
+    "envelope": {"status_code": "invalid", "statusCode": 200, "body": {}},
+    "expected": {"valid": false, "status": 0, "retry_after_seconds": null}
+  },
+  {
+    "name": "success-primitive-string-body-rejected",
+    "now": 1800000000,
+    "envelope": {"status_code": 200, "body": "1"},
+    "expected": {"valid": false, "status": 200, "retry_after_seconds": null}
+  },
+  {
+    "name": "success-null-body-rejected",
+    "now": 1800000000,
+    "envelope": {"status_code": 200, "body": null},
+    "expected": {"valid": false, "status": 200, "retry_after_seconds": null}
+  }
+]

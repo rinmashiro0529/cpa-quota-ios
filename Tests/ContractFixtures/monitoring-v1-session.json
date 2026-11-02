@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "id": "11111111-1111-4111-8111-111111111111",
+  "source_id": "personal",
+  "account_ids": ["fixture-upstream-account"],
+  "activity_id": "fixture-activity",
+  "starts_at": 1800000000,
+  "expires_at": 1800014400,
+  "next_refresh_at": 1800000600,
+  "status": "active",
+  "revision": 2,
+  "delivery_state": "pending",
+  "snapshot": {
+    "version": 1,
+    "sequence": 2,
+    "phase": "ready",
+    "generated_at": 1800000001,
+    "expires_at": 1800000900,
+    "accounts": [
+      {
+        "id": "account-1",
+        "label": "账号1",
+        "provider": "codex",
+        "window_id": "primary",
+        "window_label": "5小时",
+        "remaining_fraction": 0.42,
+        "observed_at": 1800000000,
+        "status": "ok"
+      }
+    ]
+  }
+}
