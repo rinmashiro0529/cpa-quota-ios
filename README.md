@@ -1,12 +1,12 @@
 # CPA Quota iOS App & Backend (`CPAQuotaKit` + `CPAQuotaUI` + `CPAQuotaActivity`)
 
-Rin，许可见 [MIT 许可证](LICENSE)，安全问题报告见 [SECURITY](SECURITY.md)，贡献要求见 [CONTRIBUTING](CONTRIBUTING.md)，公开前未完成事项见 [公开准备检查表](docs/OPEN_SOURCE_READINESS.md)。
+许可见 [MIT 许可证](LICENSE)，安全问题报告见 [SECURITY](SECURITY.md)，贡献要求见 [CONTRIBUTING](CONTRIBUTING.md)，公开前未完成事项见 [公开准备检查表](docs/OPEN_SOURCE_READINESS.md)。
 
-Rin，本工程包含原生 Swift 6 后端包 `CPAQuotaKit`、SwiftUI 前端模块 `CPAQuotaUI`、共享活动模块 `CPAQuotaActivity` 以及 App 入口 `CPAQuotaApp`。后端负责连接个人 CPA、枚举已有账号、读取并归一化额度、缓存最后成功结果、管理并发/取消以及通过系统 Keychain 保存管理凭据；前端通过 `@MainActor @Observable` 状态驱动额度、CAP 用量、监控、账号与连接工作台。前端现使用 5 个原生 Tab / NavigationStack、系统控件与可用系统上的 Liquid Glass 按钮。旧应用内仿灵动岛及浮动自绘 TabBar 已移除；真正的系统 Live Activity 和常规配额 Widget 由独立 `CPAQuotaActivityExtension` 承载。
+本工程包含原生 Swift 6 后端包 `CPAQuotaKit`、SwiftUI 前端模块 `CPAQuotaUI`、共享活动模块 `CPAQuotaActivity` 以及 App 入口 `CPAQuotaApp`。后端负责连接个人 CPA、枚举已有账号、读取并归一化额度、缓存最后成功结果、管理并发/取消以及通过系统 Keychain 保存管理凭据；前端通过 `@MainActor @Observable` 状态驱动额度、CAP 用量、监控、账号与连接工作台。前端现使用 5 个原生 Tab / NavigationStack、系统控件与可用系统上的 Liquid Glass 按钮。旧应用内仿灵动岛及浮动自绘 TabBar 已移除；真正的系统 Live Activity 和常规配额 Widget 由独立 `CPAQuotaActivityExtension` 承载。
 
-Rin，本次主线整理保留完整原生前端、Widget 切源/过期边界修复及构建基线合并 `6dff18b`，并将通用构建与部署材料纳入同一仓库；不需要从旧功能分支挑选代码。源码、构建产物、签名身份和运行中的部署是不同交付层次：本仓库不保存真实密钥、描述文件、生产配置、SDK 或已签 IPA。历史验证与当前待验收项见 [主线集成状态](docs/MAIN_INTEGRATION_STATUS.md)。
+本次主线整理保留完整原生前端、Widget 切源/过期边界修复及构建基线合并 `6dff18b`，并将通用构建与部署材料纳入同一仓库；不需要从旧功能分支挑选代码。源码、构建产物、签名身份和运行中的部署是不同交付层次：本仓库不保存真实密钥、描述文件、生产配置、SDK 或已签 IPA。历史验证与当前待验收项见 [主线集成状态](docs/MAIN_INTEGRATION_STATUS.md)。
 
-## Rin，当前交付与启用状态
+## 当前交付与启用状态
 
 | 层次 | 当前状态 | 边界 |
 | --- | --- | --- |
@@ -15,9 +15,9 @@ Rin，本次主线整理保留完整原生前端、Widget 切源/过期边界修
 | 系统活动与小组件 | ActivityKit 生命周期恢复、限宽布局、普通 Widget、默认关闭的安全快照共享 | 签名、Push provisioning、APNs 实际送达及锁屏行为仍需真机验收 |
 | 独立 Go 监控服务 | 受控读取、租约、取消墓碑、有界准入、加密状态和 APNs update/end | 源码合并不会启动或部署服务，不会配置真实凭据或启用 Apple 能力 |
 
-Rin，监控服务必须由操作者另行配置并运行。`dry_run=true` 仅禁止 APNs，不禁止有活动时的 CPA 采集，因此不能把 dry-run 当作完全离线模式。真实 CPA、插件鉴权、APNs 与设备送达仍需独立接入和验收；600秒是服务端采集目标，不是设备必达承诺。系统活动显示首个账号和其他账号数量，App 内预览可切换账号，不承诺后台自动轮播。
+监控服务必须由操作者另行配置并运行。`dry_run=true` 仅禁止 APNs，不禁止有活动时的 CPA 采集，因此不能把 dry-run 当作完全离线模式。真实 CPA、插件鉴权、APNs 与设备送达仍需独立接入和验收；600秒是服务端采集目标，不是设备必达承诺。系统活动显示首个账号和其他账号数量，App 内预览可切换账号，不承诺后台自动轮播。
 
-## Rin，运行与兼容性
+## 运行与兼容性
 
 | 项目 | 约定 |
 | --- | --- |
@@ -31,7 +31,7 @@ Rin，监控服务必须由操作者另行配置并运行。`dry_run=true` 仅�
 | 写入 CPA | 不提供；只读查询，不登录上游 OAuth、不重置额度、不修改配置或账号 |
 | 缓存与安全 | App 完整额度缓存仅在进程内；用户主动开启后可在 App Group 保存安全别名与主要读数供 Widget 使用；管理和桥接凭据使用独立 Keychain 命名空间，保持 `WhenUnlockedThisDeviceOnly`；服务状态另行加密持久化 |
 
-## Rin，架构与模块划分
+## 架构与模块划分
 
 | 模块 | 类型 | 路径与职责 |
 | --- | --- | --- |
@@ -45,11 +45,11 @@ Rin，监控服务必须由操作者另行配置并运行。`dry_run=true` 仅�
 | `CPAQuotaAppUITests` | 原生 XCUITest | `Apple/CPAQuotaAppUITests/`：本机 Debug 协议夹具驱动的导航、登录、CAP、外观与布局回归；Release 不包含夹具 |
 | `QuotaMonitor` | 独立 Go Module | `Services/QuotaMonitor/`：HTTP 控制、白名单采集、持久化、调度与 APNs；不属于 SwiftPM App 的自动启动流程 |
 
-## Rin，验证与构建
+## 验证与构建
 
-Rin，`.github/workflows/backend-checks.yml` 在 PR 和 `main` 更新时运行 Go test/race/vet、Linux/Windows 构建、Xcode 26.2 / 正式版 27.1 的 SwiftPM、iOS Simulator 原生单元与 UI 测试、设备 Release 构建和实际嵌入活动扩展检查。模拟器矩阵包含 iPhone 17 Pro / iOS 26.2、iPhone 18 Pro / iOS 27.0、iPhone Duo / iOS 27.1；标准 iPhone 验证真实横屏，Duo 按系统管理的实际窗口形状验证。实际 SDK、解析后的 Xcode 路径、模拟器 runtime、xcresult 与截图尝试作为 7 天 CI 附件保存；若附件存储配额不足，CI 明确告警并在日志中保留摘要与有界的截图审阅副本，完整结果包不可用这一限制不会被隐藏。该工作流仅使用 `contents: read`，不签名、不发布、不部署，也不使用真实 CPA/APNs/Apple 账号凭据；包含 macOS 作业，会消耗相应 CI 额度。当前结果应查看对应提交的 [GitHub Actions](https://github.com/rinmashiro0529/cpa-quota-ios/actions)，不能用历史回执替代新提交的检查。既有 `ios-ci.yml` 归档流程仍受原指定 CI 分支限制，并另验收设备平台的扩展产物。
+`.github/workflows/backend-checks.yml` 在 PR 和 `main` 更新时运行 Go test/race/vet、Linux/Windows 构建、Xcode 26.2 / 正式版 27.1 的 SwiftPM、iOS Simulator 原生单元与 UI 测试、设备 Release 构建和实际嵌入活动扩展检查。模拟器矩阵包含 iPhone 17 Pro / iOS 26.2、iPhone 18 Pro / iOS 27.0、iPhone Duo / iOS 27.1；标准 iPhone 验证真实横屏，Duo 按系统管理的实际窗口形状验证。实际 SDK、解析后的 Xcode 路径、模拟器 runtime、xcresult 与截图尝试作为 7 天 CI 附件保存；若附件存储配额不足，CI 明确告警并在日志中保留摘要与有界的截图审阅副本，完整结果包不可用这一限制不会被隐藏。该工作流仅使用 `contents: read`，不签名、不发布、不部署，也不使用真实 CPA/APNs/Apple 账号凭据；包含 macOS 作业，会消耗相应 CI 额度。当前结果应查看对应提交的 [GitHub Actions](https://github.com/rinmashiro0529/cpa-quota-ios/actions)，不能用历史回执替代新提交的检查。既有 `ios-ci.yml` 归档流程仍受原指定 CI 分支限制，并另验收设备平台的扩展产物。
 
-Rin，在仓库根目录可运行源码接线校验和独立 Go 合成验收；后者输出真实退出码、源码哈希和构建回执到新的 `artifacts/backend-verification/` 目录，不启动真实监控服务。
+在仓库根目录可运行源码接线校验和独立 Go 合成验收；后者输出真实退出码、源码哈希和构建回执到新的 `artifacts/backend-verification/` 目录，不启动真实监控服务。
 
 ```powershell
 python -I -X utf8 -B ci/validate_source_layout.py --root .
@@ -59,7 +59,7 @@ python -I -B -m unittest discover -s tools/tests -p "test_*.py"
 python -I -X utf8 -B tools/test_monitor_backend.py --project .
 ```
 
-Rin，已配置 SSH 的 Linux 构建主机及 Darwin SDK 容器环境可使用仓库内工具执行隔离测试与交叉编译，无需引用其他工程目录的脚本。将 `BUILD_HOST` 和 `BUILD_CONTAINER` 分别替换为自己的 SSH 主机别名和容器名称，不依赖脚本的历史默认值。
+已配置 SSH 的 Linux 构建主机及 Darwin SDK 容器环境可使用仓库内工具执行隔离测试与交叉编译，无需引用其他工程目录的脚本。将 `BUILD_HOST` 和 `BUILD_CONTAINER` 分别替换为自己的 SSH 主机别名和容器名称，不依赖脚本的历史默认值。
 
 ```powershell
 python -I -X utf8 tools/test_backend_nwd.py --project . --host BUILD_HOST --container BUILD_CONTAINER --mode test
@@ -67,29 +67,29 @@ python -I -X utf8 tools/test_backend_nwd.py --project . --host BUILD_HOST --cont
 python -I -X utf8 tools/test_backend_nwd.py --project . --host BUILD_HOST --container BUILD_CONTAINER --mode simulator --target CPAQuotaApp
 ```
 
-Rin，NWD 工具为每次运行创建新目录并校验归档 SHA256，不覆盖旧构建、不清理共享缓存、不重启容器。上述 `device`/`simulator` 命令只编译指定 Swift target，不等于完整 App 与扩展打包。完整设备构建、SDK 输入与产物检查、Xcode 双 bundle 签名的入口和限制见 [iOS 构建和签名](docs/NWD_IPA_BUILD.md)；独立 Go 的离线 Linux 构建和受控安装模板见 [监控部署](docs/MONITOR_DEPLOYMENT.md)。两类新工具的 `--help`、准备和离线检查都不代表已经执行远端构建或部署。
+NWD 工具为每次运行创建新目录并校验归档 SHA256，不覆盖旧构建、不清理共享缓存、不重启容器。上述 `device`/`simulator` 命令只编译指定 Swift target，不等于完整 App 与扩展打包。完整设备构建、SDK 输入与产物检查、Xcode 双 bundle 签名的入口和限制见 [iOS 构建和签名](docs/NWD_IPA_BUILD.md)；独立 Go 的离线 Linux 构建和受控安装模板见 [监控部署](docs/MONITOR_DEPLOYMENT.md)。两类新工具的 `--help`、准备和离线检查都不代表已经执行远端构建或部署。
 
-Rin，Darwin SDK 交叉编译不等于 Xcode Simulator 测试、签名归档或真机运行；原生测试由上述 Apple CI 单独验证，真实设备行为仍需另行验收。
+Darwin SDK 交叉编译不等于 Xcode Simulator 测试、签名归档或真机运行；原生测试由上述 Apple CI 单独验证，真实设备行为仍需另行验收。
 
-### Rin，显式目标的只读实服探针
+### 显式目标的只读实服探针
 
-Rin，`tools/live_probe.py` 只运行目标容器中已构建的 `.build/linux/debug/cpa-quota-probe`，不替你构建或部署。使用前必须确认已获目标访问授权，并显式指定 SSH 主机、容器和容器内绝对工作目录；脚本不再使用历史默认目的地。以下主机、容器和凭据文件均为占位符，示例不会自动执行。
+`tools/live_probe.py` 只运行目标容器中已构建的 `.build/linux/debug/cpa-quota-probe`，不替你构建或部署。使用前必须确认已获目标访问授权，并显式指定 SSH 主机、容器和容器内绝对工作目录；脚本不再使用历史默认目的地。以下主机、容器和凭据文件均为占位符，示例不会自动执行。
 
 ```powershell
 python -I -B tools/live_probe.py --server https://cpa.example.test --credential-file LOCAL_CREDENTIAL_FILE --host BUILD_HOST --container BUILD_CONTAINER --workdir /work/cpa-quota-ios
 ```
 
-Rin，凭据文件必须仅含一个管理密钥。文件内容只经 SSH stdin 传给远端进程，不放入参数、环境变量或常规输出；不要将凭据文件提交到仓库。容器名和主机别名经过校验，工作目录必须是无控制字符的绝对 POSIX 路径。`--help` 和工具回归不读取真实凭据、不连接远端；相关回归以模拟文件和进程边界验证参数、引用、超时及脱敏，不证明实服接入已验收。
+凭据文件必须仅含一个管理密钥。文件内容只经 SSH stdin 传给远端进程，不放入参数、环境变量或常规输出；不要将凭据文件提交到仓库。容器名和主机别名经过校验，工作目录必须是无控制字符的绝对 POSIX 路径。`--help` 和工具回归不读取真实凭据、不连接远端；相关回归以模拟文件和进程边界验证参数、引用、超时及脱敏，不证明实服接入已验收。
 
-## Rin，接入、升级与回退边界
+## 接入、升级与回退边界
 
-Rin，同一管理连接的 401/403 保护不能通过 force、重载清单或已有成功缓存绕过；429 尊重截止时间。修复凭据或管理权限后，应显式创建新的连接上下文重新验证，而不是清除保护或删除上游账号。插件监控仅使用稳定的 `summary-key:<key>`；旧位置选择器必须迁移，没有稳定 key 的指标不能通过猜测数组位置接入。
+同一管理连接的 401/403 保护不能通过 force、重载清单或已有成功缓存绕过；429 尊重截止时间。修复凭据或管理权限后，应显式创建新的连接上下文重新验证，而不是清除保护或删除上游账号。插件监控仅使用稳定的 `summary-key:<key>`；旧位置选择器必须迁移，没有稳定 key 的指标不能通过猜测数组位置接入。
 
-Rin，服务容量限制包含历史终态会话和取消墓碑，默认每个 principal 的历史意图上限为256，租约到期不会自动释放；容量不足时新意图返回507，不能靠删除状态文件腾空间。活动 token 失效会产生 v2 持久记录，旧服务不能直接读取；回退须保留已确认的取消事实并使用兼容格式，不能恢复陈旧状态丢弃它们。详见服务迁移说明；本仓库不包含自动部署或破坏性降级脚本。
+服务容量限制包含历史终态会话和取消墓碑，默认每个 principal 的历史意图上限为256，租约到期不会自动释放；容量不足时新意图返回507，不能靠删除状态文件腾空间。活动 token 失效会产生 v2 持久记录，旧服务不能直接读取；回退须保留已确认的取消事实并使用兼容格式，不能恢复陈旧状态丢弃它们。详见服务迁移说明；本仓库不包含自动部署或破坏性降级脚本。
 
-Rin，PR #1 的功能与 PR #2 的可靠性修复应作为完整组合维护，测试、共享合同与原生接线不能拆开省略。原始交付、基线提交和历史验证记录继续保留；新的源码主线不替换既有安装包，也不撤销证书或清空 Keychain。
+PR #1 的功能与 PR #2 的可靠性修复应作为完整组合维护，测试、共享合同与原生接线不能拆开省略。原始交付、基线提交和历史验证记录继续保留；新的源码主线不替换既有安装包，也不撤销证书或清空 Keychain。
 
-## Rin，文档索引
+## 文档索引
 
 | 文件 | 内容 |
 | --- | --- |
