@@ -11,6 +11,16 @@ CPA Quota 是连接个人 CPA 服务、只读查看账号额度的原生 iOS 客
 
 当前界面为中文。应用只读查询，不登录上游 OAuth，也不修改账号、配置或重置额度。
 
+## 界面截图
+
+以下截图来自 iPhone 17 Pro 模拟器、Xcode 26.2 的合成 UI 测试，使用示例账号与地址，不连接真实服务；监控页面展示未配置状态。来源为实现提交 `bbb4bcaa2906a67fe673282c4a4a62318c245d01` 的 [CI 运行 41441790484](https://github.com/rinmashiro0529/cpa-quota-ios/actions/runs/41441790484)。
+
+| 额度总览 | CAP 用量 |
+| --- | --- |
+| <img src="docs/images/quotas.png" alt="额度总览示例" width="280"> | <img src="docs/images/cap-usage.png" alt="CAP 用量示例" width="280"> |
+| 监控与活动（未配置） | 连接管理 |
+| <img src="docs/images/monitoring.png" alt="未配置的监控页面" width="280"> | <img src="docs/images/connection.png" alt="连接管理示例" width="280"> |
+
 ## 要求
 
 - iOS 17 或更高版本；macOS 14 或更高版本可用于支持的 Swift 包开发。最低系统真机兼容性尚未验收。
@@ -51,7 +61,7 @@ go -C Services/QuotaMonitor test ./...
 go -C Services/QuotaMonitor vet ./...
 ```
 
-当前提交的 CI 结果以对应 [GitHub Actions](https://github.com/rinmashiro0529/cpa-quota-ios/actions) 运行记录为准。历史成功不代表当前提交通过；main `1f782ca` 的 Go 检查曾失败及重跑后 race 阶段失败。模拟器和离线测试不能代替真实 CPA、签名、Keychain、真机与 APNs 验收。截图须来自真实运行并经隐私核验，当前尚待提供。
+当前提交的 CI 结果以对应 [GitHub Actions](https://github.com/rinmashiro0529/cpa-quota-ios/actions) 运行记录为准；历史成功不代表后续提交通过。模拟器和离线测试不能代替真实 CPA、签名、Keychain、真机与 APNs 验收。
 
 ## 安全、贡献与许可
 
