@@ -156,6 +156,20 @@ struct CPAQuotaUITests {
     }
 
     @Test
+    func futureObservationsAreStaleWithoutClaimingExpiry() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        for source in [QuotaSource.live, .passive] {
+            let snapshot = QuotaSnapshot(accountID: "future", provider: "codex", source: source,
+                                         fetchedAt: now, observedAt: now.addingTimeInterval(120))
+            let badge = QuotaFormatter.freshnessBadge(for: snapshot, now: now)
+            #expect(badge.isStale)
+            #expect(badge.badgeText.contains("时效待确认"))
+            #expect(badge.badgeText.contains("时间偏移异常"))
+            #expect(!badge.badgeText.contains("过期"))
+        }
+    }
+
+    @Test
     func freshnessAndEmailMaskingFollowPrivacyAndPassiveContracts() {
         let now = Date(timeIntervalSince1970: 2_000_000_000)
         let passiveWithoutObserved = QuotaSnapshot(

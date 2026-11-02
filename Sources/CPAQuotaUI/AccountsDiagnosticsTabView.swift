@@ -29,7 +29,7 @@ public struct AccountsDiagnosticsTabView: View {
             Section {
                 connectionHealth
                 DisclosureGroup("额度读取能力") {
-                    Text("内置 Codex 与 xAI 读取器，同时支持服务端发现的标准化额度插件。未支持的平台会明确标记，不会显示虚构配额。")
+                    Text("支持 Codex、xAI 及服务端发现的标准化额度插件。部分平台可能暂无法查询。")
                         .font(.body)
                         .foregroundStyle(palette.textSecondary)
                 }
@@ -111,7 +111,7 @@ public struct AccountsDiagnosticsTabView: View {
             Label("已读取账号，可选能力有告警", systemImage: "exclamationmark.circle")
                 .foregroundStyle(palette.textPrimary)
         } else {
-            Label("读取通道正常", systemImage: "checkmark.seal")
+            Label("账号读取正常", systemImage: "checkmark.seal")
                 .foregroundStyle(palette.textPrimary)
         }
     }

@@ -678,7 +678,7 @@ public final class MonitoringWorkspaceCoordinator {
                   (1...5).contains(selectedAccountIDsDraft.count),
                   Set(selectedAccountIDsDraft).count == selectedAccountIDsDraft.count,
                   selectedAccountIDsDraft.allSatisfy(Self.isValidAccountSelection) else {
-                bridgeFormError = "请填写授权 Source ID 并选择 1–5 个账号。"
+                bridgeFormError = "请填写来源 ID（由监控服务管理员提供）并选择 1–5 个账号。"
                 return
             }
             let intent = PendingIntent(id: UUID(), sourceID: source, accountIDs: selectedAccountIDsDraft,
@@ -749,7 +749,7 @@ public final class MonitoringWorkspaceCoordinator {
         if intent.registration == nil {
             guard let update = latestToken, update.sessionID == intent.id, update.activityID == activityID else {
                 isWaitingForPushToken = true
-                bridgeStatusNotice = "正在等待此系统活动的推送令牌；无需再次创建活动，可随时取消本次启动。"
+                bridgeStatusNotice = "正在等待系统完成实时活动设置。无需再次创建活动，可以取消本次启动。"
                 return
             }
             do {
@@ -862,7 +862,7 @@ public final class MonitoringWorkspaceCoordinator {
         syncPersistedState(context)
         if store.state == .available {
             await updateBoundActivity(context, operation: operation)
-            if isCurrent(context, operation) { bridgeStatusNotice = "服务端已接受刷新意图；这不是设备送达回执。" }
+            if isCurrent(context, operation) { bridgeStatusNotice = "服务端已接受更新请求，但尚不能确认设备收到更新。" }
         }
     }
 
@@ -904,16 +904,16 @@ public final class MonitoringWorkspaceCoordinator {
             guard isCurrent(context, operation) else { return }
             attachedActivityID = nil
             localActivitySnapshot = nil
-            bridgeStatusNotice = "原桥接已确认终态或持久取消意图；本地绑定活动已结束。该回执不证明 APNs end 已送达。"
+            bridgeStatusNotice = "服务端已确认终态或持久停止请求；本机绑定活动已结束，但设备是否收到结束推送尚未确认。"
         } else {
-            bridgeStatusNotice = "停止结果未确认，已保留原 UUID；404、超时或 507 均不代表停止成功。"
+            bridgeStatusNotice = "尚未确认监控已停止，已保留原会话标识。请核对原服务和账号后再重试；未找到、超时或容量不足都不代表停止成功。"
         }
     }
 
     public func loadCachedQuotaForDraftSource() async {
         guard let context = connection else { bridgeFormError = "请先连接监控桥接。"; return }
         let source = sourceIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !source.isEmpty else { bridgeFormError = "请先填写授权 Source ID。"; return }
+        guard !source.isEmpty else { bridgeFormError = "请先填写来源 ID（由监控服务管理员提供）。"; return }
         guard cacheOperationID == nil else { return }
         let readID = UUID()
         cacheOperationID = readID

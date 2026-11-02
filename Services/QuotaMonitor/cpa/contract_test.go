@@ -24,7 +24,7 @@ func contractClient(t *testing.T, handler http.HandlerFunc, accounts []Account) 
 	server := httptest.NewUnstartedServer(handler)
 	server.EnableHTTP2 = true
 	server.StartTLS()
-	t.Cleanup(server.Close)
+	reserveFixtureServer(t, server)
 	client, err := New(Config{
 		BaseURL: server.URL, ManagementKey: "fixture-key", Accounts: accounts, Client: server.Client(),
 		Now: func() time.Time { return time.Unix(now.Load(), 0).UTC() },
@@ -287,7 +287,7 @@ func sameOriginPair(t *testing.T, handler http.HandlerFunc, firstAccounts, secon
 	server := httptest.NewUnstartedServer(handler)
 	server.EnableHTTP2 = true
 	server.StartTLS()
-	t.Cleanup(server.Close)
+	reserveFixtureServer(t, server)
 	now := &atomic.Int64{}
 	now.Store(1800000000)
 	create := func(accounts []Account) *Client {

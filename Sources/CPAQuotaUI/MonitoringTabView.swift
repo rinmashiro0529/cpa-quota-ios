@@ -80,7 +80,7 @@ public struct MonitoringTabView: View {
             } footer: {
                 Text(hasUnfinishedSession
                      ? "本次范围已固定。结束当前监控后，可以选择新的范围。"
-                     : "来源与账号须由监控服务授权。展示的指标和窗口由服务配置决定，应用不会根据别名猜测账号。")
+                     : "请使用监控服务授权的来源与账号。可显示的指标和窗口由服务配置决定。")
             }
             .disabled(monitor.isBusy || hasUnfinishedSession)
             .listRowBackground(palette.contentSurface)
@@ -269,7 +269,7 @@ private struct MonitoringConnectionEditor: View {
                     .submitLabel(.go)
                     .onSubmit { connect() }
                     .accessibilityIdentifier("monitor.bridgeToken")
-                Toggle("安全记住此连接", isOn: $monitor.rememberBridgeDraft)
+                Toggle("记住监控服务连接", isOn: $monitor.rememberBridgeDraft)
             } header: {
                 Text("服务连接")
             } footer: {
@@ -279,8 +279,7 @@ private struct MonitoringConnectionEditor: View {
 
             if let error = monitor.bridgeFormError {
                 Section {
-                    Label(error, systemImage: "exclamationmark.triangle")
-                        .font(.subheadline)
+                    MonitoringOperationError(message: error)
                         .accessibilityIdentifier("monitor.connectionError")
                 }
                 .listRowBackground(palette.contentSurface)
@@ -401,7 +400,7 @@ private struct MonitoringAccountSelectionView: View {
                     .disabled(monitor.newAccountIDDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                               || monitor.selectedAccountIDsDraft.count >= 5)
                 if let error = monitor.bridgeFormError {
-                    Text(error).font(.subheadline)
+                    MonitoringOperationError(message: error)
                 }
             } header: {
                 Text("手动添加")
@@ -460,11 +459,11 @@ private struct MonitoringDiagnosticsView: View {
         let palette = BrandPalette(colorScheme: colorScheme)
         Form {
             if let error = monitor.bridgeFormError {
-                Section("最近操作") { Label(error, systemImage: "exclamationmark.triangle") }
+                Section("最近操作") { MonitoringOperationError(message: error) }
                     .listRowBackground(palette.contentSurface)
             }
             if let notice = monitor.bridgeStatusNotice {
-                Section("状态说明") { Text(notice) }
+                Section("状态说明") { MonitoringOperationStatus(message: notice) }
                     .listRowBackground(palette.contentSurface)
             }
             Section("本机系统活动") {
@@ -474,7 +473,7 @@ private struct MonitoringDiagnosticsView: View {
                     QuotaLabeledValue(title: "活动 ID", value: id)
                 }
                 Button("检查本机活动") { monitor.refreshLocalActivityInventory() }
-                Text("本机活动、远端监控、推送服务接受与设备实际展示是不同状态。移除本机活动不会自动取消远端租约。")
+                Text("结束本机显示不会停止服务端监控。推送服务接受与设备实际展示也是不同状态。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -521,34 +520,39 @@ private struct MonitoringDiagnosticsView: View {
                 .listRowBackground(palette.contentSurface)
             }
 
-            Section("当前会话协议状态") {
+            Section("会话详情") {
                 if let store = monitor.store {
-                    LabeledContent("读取状态", value: String(describing: store.state))
-                    if let error = store.error { Text(monitor.monitoringErrorText(error)) }
-                    if let id = store.sessionID ?? monitor.pendingCreateUUID {
-                        QuotaLabeledValue(title: "会话 UUID", value: id.uuidString)
-                    }
-                    if let active = store.session {
-                        QuotaLabeledValue(title: "活动 ID", value: active.activityID)
-                        LabeledContent("Source", value: active.sourceID)
-                        LabeledContent("Revision", value: String(active.revision))
-                        LabeledContent("远端状态", value: active.status.rawValue)
-                        LabeledContent("推送状态", value: active.deliveryState.rawValue)
-                        if let next = active.nextRefreshAt {
-                            LabeledContent("服务预计下次采集") {
-                                Text(Date(timeIntervalSince1970: next), format: .dateTime.month().day().hour().minute())
-                            }
-                        }
-                    }
+                    LabeledContent("读取状态", value: monitoringStateSummary(store.state))
+                    if let error = store.error { Text(monitoringErrorSummary(error)) }
                     if store.cancellationReceipt != nil {
                         Label("已记录服务端持久取消回执", systemImage: "checkmark.circle")
                     }
+                    DisclosureGroup("会话详情（高级）") {
+                        LabeledContent("读取状态", value: String(describing: store.state))
+                        if let error = store.error { Text(monitor.monitoringErrorText(error)) }
+                        if let id = store.sessionID ?? monitor.pendingCreateUUID {
+                            QuotaLabeledValue(title: "会话 UUID", value: id.uuidString)
+                        }
+                        if let active = store.session {
+                            QuotaLabeledValue(title: "活动 ID", value: active.activityID)
+                            LabeledContent("Source", value: active.sourceID)
+                            LabeledContent("Revision", value: String(active.revision))
+                            LabeledContent("远端状态", value: active.status.rawValue)
+                            LabeledContent("推送状态", value: active.deliveryState.rawValue)
+                            if let next = active.nextRefreshAt {
+                                LabeledContent("服务预计下次采集") {
+                                    Text(Date(timeIntervalSince1970: next), format: .dateTime.month().day().hour().minute())
+                                }
+                            }
+                        }
+                        Text("sent / ended 表示推送服务接受，不证明设备显示或移除。刷新返回受理状态不代表新读数已经产生。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    .accessibilityIdentifier("monitor.sessionDetails")
                 } else {
                     Text("尚未配置监控服务")
                 }
-                Text("sent / ended 表示推送服务接受，不证明设备显示或移除。刷新返回受理状态不代表新读数已经产生。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
             }
             .listRowBackground(palette.contentSurface)
 
@@ -667,16 +671,50 @@ private struct MonitoringRecoveryRecordView: View {
             }
             .listRowBackground(palette.contentSurface)
             if let error = monitor.bridgeFormError {
-                Section("处理结果") { Text(error) }.listRowBackground(palette.contentSurface)
+                Section("处理结果") { MonitoringOperationError(message: error) }.listRowBackground(palette.contentSurface)
             }
             if let notice = monitor.bridgeStatusNotice {
-                Section("状态") { Text(notice) }.listRowBackground(palette.contentSurface)
+                Section("状态") { MonitoringOperationStatus(message: notice) }.listRowBackground(palette.contentSurface)
             }
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .background(BrandCanvasBackground())
         .navigationTitle("恢复记录")
+    }
+}
+
+private struct MonitoringOperationError: View {
+    let message: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("未能完成操作，请查看详情并核对监控设置。", systemImage: "exclamationmark.triangle")
+            DisclosureGroup("操作详情（高级）") { Text(message) }
+        }
+        .font(.subheadline)
+    }
+}
+
+private struct MonitoringOperationStatus: View {
+    let message: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("操作状态已更新；如需停止监控，请核对原服务的确认状态。")
+            DisclosureGroup("状态详情（高级）") { Text(message) }
+        }
+        .font(.subheadline)
+    }
+}
+
+private func monitoringStateSummary(_ state: MonitoringStore.State) -> String {
+    switch state {
+    case .idle: "尚未读取"
+    case .working: "正在处理"
+    case .available: "已读取"
+    case .stopIntentRecorded: "服务已记录停止请求"
+    case .uncertain: "状态尚未确认"
     }
 }
 

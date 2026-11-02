@@ -69,7 +69,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         let app = launch(connected: true)
         defer { app.terminate() }
         let tabs = [
-            ("quotas", "额度总览"), ("usage", "CAP用量"),
+            ("quotas", "额度总览"), ("usage", "CAP 用量"),
             ("monitoring", "监控与活动"), ("accounts", "账号诊断"),
             ("connection", "连接管理")
         ]
@@ -109,12 +109,12 @@ final class CPAQuotaAppUITests: XCTestCase {
     func testCAPAllFourSectionsReadParsedFixtures() {
         let app = launch(connected: true)
         defer { app.terminate() }
-        selectTab("usage", title: "CAP用量", in: app)
+        selectTab("usage", title: "CAP 用量", in: app)
         let sections = [
-            ("近30m模型概览", "cap.loadOverview", "cap.overview.loaded"),
+            ("模型概览", "cap.loadOverview", "cap.overview.loaded"),
             ("趋势·分组·费用", "cap.loadAnalytics", "cap.analytics.loaded"),
-            ("请求明细页", "cap.loadRequests", "cap.requests.loaded"),
-            ("管理统计对比", "cap.loadManagement", "cap.management.loaded")
+            ("请求记录", "cap.loadRequests", "cap.requests.loaded"),
+            ("管理统计", "cap.loadManagement", "cap.management.loaded")
         ]
         for (title, loadID, loadedID) in sections {
             let picker = element("cap.sectionPicker", in: app)
@@ -133,7 +133,7 @@ final class CPAQuotaAppUITests: XCTestCase {
             reveal(loaded, in: app, requiresHitTarget: loadedID == "cap.analytics.loaded")
             verify(loaded.exists, in: app, "Parsed content must replace the empty state for \(title).")
             if loadedID == "cap.overview.loaded" {
-                verify(loaded.label.contains("singlePage"), in: app,
+                verify(loaded.label == "当前窗口的响应为单页", in: app,
                        "The overview must display the fixture's complete single-page result.")
             }
             attach(app, name: loadedID)

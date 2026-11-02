@@ -10,14 +10,14 @@ public enum FreshnessBadgeState: Equatable, Sendable {
     public var badgeText: String {
         switch self {
         case .liveFresh(let age):
-            return "实时查询 · \(age)"
+            return "最近查询 · \(age)"
         case .liveStale(let age):
-            return "实时查询 · 陈旧 (\(age))"
+            return "最近查询 · 时效待确认 (\(age))"
         case .passiveFresh(let age):
             return "被动观察 · \(age)"
         case .passiveStaleOrUnknown(let age):
             if let age {
-                return "被动观察 · 陈旧 (\(age))"
+                return "被动观察 · 时效待确认 (\(age))"
             }
             return "被动观察 · 时间未知"
         }
@@ -125,7 +125,7 @@ public struct WindowPresentation: Identifiable, Equatable, Sendable {
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.timeZone = timeZone
         formatter.dateFormat = "MM-dd HH:mm"
-        return "重置时间点: \(formatter.string(from: resetAt))"
+        return "重置时间： \(formatter.string(from: resetAt))"
     }
 
     public static func formatDuration(_ seconds: TimeInterval?) -> String {
@@ -198,20 +198,20 @@ public struct CreditsPresentation: Equatable, Sendable {
     public init?(credits: QuotaCredits?) {
         guard let credits else { return nil }
         if credits.unlimited == true {
-            self.title = "附加 Credits 状态"
+            self.title = "额外额度"
             self.valueText = "不限额 (Unlimited)"
             self.footnote = "独立于订阅窗口比例，不直接折算为百分比。"
         } else if let balance = credits.balance, balance.isFinite {
-            self.title = "附加 Credits 余额"
+            self.title = "额外额度余额"
             self.valueText = String(format: "%.2f (上游原单位)", balance)
             self.footnote = "附加额度不等于订阅可用百分比，且原单位不预设为美元。"
         } else if credits.hasCredits == true {
-            self.title = "附加 Credits 状态"
+            self.title = "额外额度"
             self.valueText = "已启用 · 余额数值未知"
             self.footnote = "上游声明拥有 Credits，但未返回具体余额数值。"
         } else if credits.hasCredits == false {
-            self.title = "附加 Credits 状态"
-            self.valueText = "无额外 Credits"
+            self.title = "额外额度"
+            self.valueText = "无额外额度"
             self.footnote = "当前账号仅使用主订阅窗口或摘要配额。"
         } else {
             return nil

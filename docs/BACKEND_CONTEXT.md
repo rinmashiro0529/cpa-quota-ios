@@ -1,5 +1,7 @@
 # 后端开发上下文
 
+> **历史记录**：首次提交 2026-10-25（`fd9c6c2`）；本文可能包含后续补充，仅反映所述时期及版本，测试结果不代表当前提交。当前入口见 [README](../README.md)。
+
 本文为公开资料泛化版本；原始私有路径、主机标识和记录仅存原验证环境，历史结论和验证边界不变。
 
 本资料在开始 Swift 实现前收集，日期为 2026-10-25。原始完整 CPA 调研仅存于原验证环境；本工程不复制其中的账号身份或任何凭据。
@@ -44,17 +46,17 @@ Keychain 属性还直接核查了已安装 iPhoneOS27.1 SDK 的 `Security.framew
 
 原验证环境中的签名材料目录仅检查到 p12、mobileprovision 和 key.txt 存在，没有读取密码、私钥或描述文件内容，没有复制到本项目或构建主机。iOS Keychain 默认使用未来宿主 App 的签名隔离，不设置额外 access group，也不修改现有 Keychain。
 
-参考工程配置之外，还从仅存原验证环境的历史会话记录中提取了构建命令，未复制完整会话或秘密值；参考计划的环境段为第 15–18 行、容器段为第 29–30 行，Package.swift 的平台段为第 7–10 行。历史记录只作为线索，当前工具版本、容器挂载和 SDK 配置都由主会话实际只读核查。
+参考工程配置之外，还从仅存原验证环境的历史会话记录中提取了构建命令，未复制完整会话或秘密值；参考计划的环境段为第 15–18 行、容器段为第 29–30 行，Package.swift 的平台段为第 7–10 行。历史记录只作为线索，当前工具版本、容器挂载和 SDK 配置均经实际只读核查。
 
-资料收集子任务曾误读一次参考工程 `signing/adhoc-entitlements.plist`，超出了我给该子任务设定的目录限制。它是 App 标识与 entitlement 元数据，不是私钥或密码；未记录其字段值、未复制到新工程，也未读取同目录 p12、密码或 mobileprovision。该越界读取已如实记录，不能将其当作额外权限授权。
+资料收集时曾误读参考工程 `signing/adhoc-entitlements.plist`，超出当时规定的目录限制。它是 App 标识与 entitlement 元数据，不是私钥或密码；未记录其字段值、未复制到新工程，也未读取同目录 p12、密码或 mobileprovision。该越界读取已如实记录，不能将其当作额外权限授权。
 
 ## 文档核查
 
 | 来源 | 结果 |
 | --- | --- |
-| [SwiftPM PackageDescription](https://docs.swift.org/package-manager/PackageDescription/PackageDescription.html) | 经 Crawl4AI 读取，核查 library、executable/test target、平台与资源约定 |
+| [SwiftPM PackageDescription](https://docs.swift.org/package-manager/PackageDescription/PackageDescription.html) | 已查阅，核查 library、executable/test target、平台与资源约定 |
 | [Apple Keychain data protection](https://support.apple.com/guide/security/keychain-data-protection-secb0694df1a/web) | 前序调研已核查；本轮默认解锁可用且 ThisDeviceOnly，不承诺锁屏后台读取 |
-| Apple Observation 文档页 | Crawl4AI 未提取到可用正文；不据此作成功声明，以现有源码模式与真实 SDK 构建核实 |
+| Apple Observation 文档页 | 当时未获取可用正文；以现有源码模式与真实 SDK 构建核实 |
 | [Codex usage/pricing](https://developers.openai.com/codex/pricing/) | 前序已核查订阅额度与 API token 费用不同，不能据本地 token 统计计算订阅余额 |
 
 ## 实现范围

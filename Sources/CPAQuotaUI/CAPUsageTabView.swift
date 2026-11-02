@@ -15,6 +15,14 @@ public struct CAPUsageTabView: View {
         case requests = "请求明细页"
         case management = "管理统计对比"
         public var id: String { rawValue }
+        public var title: String {
+            switch self {
+            case .models: "模型概览"
+            case .details: "趋势·分组·费用"
+            case .requests: "请求记录"
+            case .management: "管理统计"
+            }
+        }
     }
 
     public init(session: CPAQuotaSession) { self.session = session }
@@ -53,7 +61,7 @@ public struct CAPUsageTabView: View {
         }
         .capPageStyle()
         .environment(\.capMasksEmail, session.maskEmail)
-        .navigationTitle("用量")
+        .navigationTitle("CAP 用量")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 if isBusy {
@@ -74,7 +82,7 @@ public struct CAPUsageTabView: View {
     private var controls: some View {
         Section {
             Picker("栏目", selection: $selectedSection) {
-                ForEach(DetailSection.allCases) { Text($0.rawValue).tag($0) }
+                ForEach(DetailSection.allCases) { Text($0.title).tag($0) }
             }
             .pickerStyle(.menu)
             .accessibilityIdentifier("cap.sectionPicker")
@@ -96,10 +104,14 @@ public struct CAPUsageTabView: View {
                 .accessibilityIdentifier("cap.resourceAccess")
                 Text("资源请求只使用你选定的权限；失败时不会自动附加管理密钥。管理统计始终使用管理权限。切换方式会清除原资源快照。")
                     .font(.footnote).foregroundStyle(.secondary)
-                Text("生成 TPS 按有效输出 Token 总和 ÷ 有效生成时长总和计算；生成时长为 latency − TTFT。它不是单次速度的平均，也不除以 30 分钟窗口。同名模型的不同平台与流式模式分别统计。")
+                Text("生成速度根据有效输出和生成时长加权计算；样本覆盖范围见各项统计。")
                     .font(.footnote).foregroundStyle(.secondary)
-                Text("窗口截至最后完整分钟。缺失字段保持未知；失败请求可保留部分用量，但不计入成功生成 TPS。分页到末页也不能证明跨页是数据库原子快照。")
-                    .font(.footnote).foregroundStyle(.secondary)
+                DisclosureGroup("统计说明") {
+                    Text("生成 TPS 按有效输出 Token 总和 ÷ 有效生成时长总和计算；生成时长为 latency − TTFT。它不是单次速度的平均，也不除以 30 分钟窗口。同名模型的不同平台与流式模式分别统计。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Text("窗口截至最后完整分钟。缺失字段保持未知；失败请求可保留部分用量，但不计入成功生成 TPS。分页到末页也不能证明跨页是数据库原子快照。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -123,6 +135,9 @@ public struct CAPUsageTabView: View {
                 Text(CAPUsagePresentation.completenessSubtitle(snapshot.requests.completeness,
                     itemCount: snapshot.requests.items.count))
                     .font(.footnote).foregroundStyle(.secondary)
+                DisclosureGroup("读取详情（高级）") {
+                    Text("完整性状态：\(String(describing: snapshot.requests.completeness))")
+                }
                 CAPSummaryRows(summary: presentation.summary)
                 NavigationLink("全部窗口计数与样本") {
                     CAPSummaryDetailView(title: "窗口统计", summary: presentation.summary, window: snapshot.window)
@@ -165,7 +180,7 @@ public struct CAPUsageTabView: View {
             }
             .disabled(coordinator.store?.isLoadingDetails == true)
             .accessibilityIdentifier("cap.loadAnalytics")
-            Text("四个响应分别生成。即使查询窗口相同，也不表示同一时刻的原子快照。")
+            Text("各项统计分别生成，可能在不同时间更新。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
         if let error = coordinator.store?.detailsError {

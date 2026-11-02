@@ -18,7 +18,7 @@ struct AccountDiagnosticPresentationTests {
         let presentation = AccountDiagnosticPresentation(
             account: account, error: CPAError(.unsupportedProvider), maskEmail: true
         )
-        #expect(presentation.readerDescription.contains("本次查询返回未支持的平台"))
+        #expect(presentation.readerDescription == "暂不支持读取该平台的额度。")
         #expect(presentation.severity == ErrorPresentation(error: CPAError(.unsupportedProvider)).severity)
     }
 

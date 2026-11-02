@@ -27,9 +27,9 @@ public struct QuotasOverviewTabView: View {
                     }
                 }
             } header: {
-                Text("只读配额工作台").font(QuotaTypography.brandHeadline)
+                Text("账号额度").font(QuotaTypography.brandHeadline)
             } footer: {
-                Text("不同额度窗口相互独立。未知比例、旧快照与读取错误会分别标明。")
+                Text("各额度窗口单独计算。未知比例、上次读数和读取错误会分别标明。")
             }
             .listRowBackground(palette.contentSurface)
 
@@ -46,7 +46,7 @@ public struct QuotasOverviewTabView: View {
                     QuotaErrorNotice(
                         presentation: ErrorPresentation(error: warning, hasPreservedSnapshot: true)
                     )
-                    Text("可选能力发现暂未完成。已读取的账号与内置读取器仍可使用，不需要删除管理密钥。")
+                    Text("部分额度来源的能力暂未确定。已读取的账号和内置读取器仍可使用，无需删除管理密钥。")
                         .font(.subheadline)
                         .foregroundStyle(palette.textSecondary)
                 }
@@ -114,13 +114,13 @@ public struct QuotasOverviewTabView: View {
             ContentUnavailableView {
                 Label("暂时无法读取账号", systemImage: "exclamationmark.triangle")
             } description: {
-                Text("本次读取未成功，不能据此判断服务中没有账号。请按连接错误提示恢复。")
+                Text("暂时无法读取账号列表，请按连接错误提示恢复。")
             }
         } else {
             ContentUnavailableView {
                 Label("服务中暂无授权账号", systemImage: "person.crop.circle.badge.questionmark")
             } description: {
-                Text("管理接口成功返回了空列表。管理密钥仍然有效，添加授权账号后可刷新查看。")
+                Text("当前服务中暂无授权账号。请在 CPA 服务端添加账号后刷新。")
             }
         }
     }
@@ -233,7 +233,7 @@ public struct AccountQuotaCardView: View {
             if let snapshot {
                 QuotaFreshnessLabel(snapshot: snapshot)
                 if record?.error != nil {
-                    Label("保留上次成功快照，非本次刷新结果", systemImage: "clock.arrow.circlepath")
+                    Label("正在显示上次成功获取的数据", systemImage: "clock.arrow.circlepath")
                         .font(.subheadline)
                         .foregroundStyle(palette.textPrimary)
                 }
@@ -256,7 +256,7 @@ public struct AccountQuotaCardView: View {
                         .foregroundStyle(palette.textSecondary)
                 }
                 if snapshot.windows.isEmpty && snapshot.metrics.isEmpty && snapshot.credits == nil {
-                    Text("账号已成功响应，但上游未返回可识别的额度窗口或摘要指标。")
+                    Text("账号已响应，但暂未返回可显示的额度数据。")
                         .font(.subheadline)
                         .foregroundStyle(palette.textSecondary)
                 }

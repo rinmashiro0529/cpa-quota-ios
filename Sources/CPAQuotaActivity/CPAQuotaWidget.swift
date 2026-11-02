@@ -191,7 +191,7 @@ private struct QuotaWidgetContent: View {
                 "观察于 \($0.formatted(date: .abbreviated, time: .shortened))"
             } ?? "观察时间未知")
         } else {
-            Text("打开 CPA 查看配额").font(.caption)
+            Text("打开 CPA Quota 查看额度").font(.caption)
         }
     }
 
@@ -257,7 +257,7 @@ private struct QuotaWidgetContent: View {
             .privacySensitive()
             .accessibilityElement(children: .combine)
         } else {
-            Label("打开 CPA 查看配额", systemImage: "chart.bar.xaxis")
+            Label("打开 CPA Quota 查看额度", systemImage: "chart.bar.xaxis")
         }
     }
 

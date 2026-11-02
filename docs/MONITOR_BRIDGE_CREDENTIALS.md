@@ -7,8 +7,8 @@
 | 凭据 | 用途 | 存储/传输边界 |
 | --- | --- | --- |
 | CPA 管理密钥 | App或授权服务访问CPA管理接口 | 保持原有敏感类型与存储；不作为桥接注册请求字段 |
-| `MonitorBridgeToken` | App访问自有桥接，服务端绑定principal与授权来源 | 独立Keychain命名空间，HTTPS Bearer，不进入活动payload |
-| `MonitoringPushToken` | 服务端更新特定Live Activity | 交给授权桥接；不能用作用户登录凭据，不返回在会话响应中 |
+| `MonitorBridgeToken` | App 访问自有桥接，服务端绑定 principal 与授权来源 | 独立 Keychain 命名空间，HTTPS Bearer，不进入活动 payload |
+| `MonitoringPushToken` | 服务端更新特定 Live Activity | 交给授权桥接；不能用作用户登录凭据，不返回在会话响应中 |
 | APNs提供者私钥 | 服务端签署Apple APNs认证JWT | 只由部署侧管理；不进入App、Git或本模块 |
 
 ## 调用方式
@@ -45,7 +45,7 @@ if let token = try await credentials.load(for: address) {
 
 ## 错误与测试边界
 
-已知安全存储失败保留其安全错误类别；未知存储错误统一映射为`secureStorageFailure`，不把底层错误的任意文本或秘密转给前端。敏感Token没有Codable表示，文本描述脱敏；任何调用方仍不应记录其原值、请求认证头或完整会话上下文。
+已知安全存储失败保留其安全错误类别；未知存储错误统一映射为`secureStorageFailure`，不把底层错误的任意文本或秘密转给前端。敏感 Token 没有 Codable 表示，文本描述脱敏；任何调用方仍不应记录其原值、请求认证头或完整会话上下文。
 
 测试通过注入`MemoryCredentialStore`和合成HTTPS传输验证实际认证头、路径隔离、原管理凭据不被替换、失败保留、错误脱敏和移除幂等。Linux无Security框架时验证默认存储报不可用，而非明文回退；这些不等同于真实iPhone Keychain验收。所有测试凭据均为合成值，没有读取用户的Keychain或Apple身份。
 
