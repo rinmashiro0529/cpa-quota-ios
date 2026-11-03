@@ -12,6 +12,12 @@ public struct AccountDetailSheetView: View {
         self.account = account
     }
 
+    private var widgetNumberExplanation: String {
+        guard session.sharesQuotaWithWidgets else { return "尚未启用小组件共享。" }
+        guard session.widgetAlias(for: account) != nil else { return "小组件共享已启用，匿名编号尚未就绪。" }
+        return "小组件中以匿名编号显示该账号。"
+    }
+
     public var body: some View {
         let palette = BrandPalette(colorScheme: colorScheme)
         let record = session.records[account.id]
@@ -32,9 +38,13 @@ public struct AccountDetailSheetView: View {
                 QuotaLabeledValue(title: "平台", value: account.provider.uppercased())
                 QuotaLabeledValue(title: "套餐", value: snapshot?.plan ?? account.plan ?? "未知", monospaced: false)
                 QuotaLabeledValue(title: "小组件别名", value: session.widgetAlias(for: account) ?? "尚未共享", monospaced: false)
-                Text("小组件中使用匿名编号显示该账号。")
+                Text(widgetNumberExplanation)
+                    .font(.footnote)
+                    .foregroundStyle(palette.textSecondary)
                 DisclosureGroup("编号说明") {
                     Text("同一来源且账号身份保留期间，重排或重启不会改变编号；移除、重新绑定或切换来源后可能重新分配。")
+                        .font(.footnote)
+                        .foregroundStyle(palette.textSecondary)
                 }
                     .font(.footnote)
                     .foregroundStyle(palette.textSecondary)

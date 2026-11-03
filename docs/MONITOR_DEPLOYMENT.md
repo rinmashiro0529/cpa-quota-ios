@@ -25,6 +25,16 @@ python -I -B tools/monitor_ops/build.py --output <仓库外的新目录>
 
 凭据文件使用 UTF-8、无 BOM。state-key、cpa-key 和 bridge-token 各为一行，不包含 CR 或额外空白；APNs 私钥使用正常 LF 换行的 PEM。包装器不猜测编码或修改密钥，格式错误应修正输入后受控重启，不得通过重置上游凭据绕过。
 
+## 可选：经授权的实服探针
+
+仅对本人拥有或明确获授权的服务和来源运行。该探针只读验证，不构建、不安装、不部署；它会通过 SSH 访问指定实服，并在容器内运行已构建的探针。默认流程不执行此操作。使用一个管理密钥，保存在仓库外的密钥文件中；不要将密钥放入命令参数、环境变量、仓库、终端输出或提交。工具从该文件读取密钥，并通过标准输入经 SSH 传送，不将密钥作为 SSH/远程命令参数。
+
+```powershell
+python -I -B tools/live_probe.py --server https://example.invalid --credential-file "<仓库外密钥文件路径>" --host SSH_ALIAS --container CONTAINER --workdir /absolute/workdir
+```
+
+`--host` 使用 SSH 配置中的别名；`--container` 是已授权目标容器名；`--workdir` 是该容器内包含已构建 `.build/linux/debug/cpa-quota-probe` 的绝对 POSIX 路径。执行前将占位值替换为已确认获授权的目的地；示例本身不应直接执行。密钥文件须位于仓库外。
+
 ## 运行后验收与回退
 
 确认服务就绪后，通过可信 HTTPS 路径检查 `/healthz` 为 200；不带 Bearer 请求受保护资源应为 401；使用有权访问的 principal 查询尚无缓存的 source quota 应为 404；该 principal 查询未获授权的其他来源应为 403。这里的跨来源是授权范围检查，不是浏览器 CORS 检查。检查时不要在命令行、历史、日志或报告中暴露 token，也不要制造 ActivityKit push token。已有缓存或授权配置不同会改变预期，应先确认前置条件。

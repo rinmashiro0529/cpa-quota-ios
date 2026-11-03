@@ -219,16 +219,10 @@ public struct MonitoringTabView: View {
     }
 
     private var userFacingMessage: String? {
-        if let error = monitor.store?.error { return monitoringErrorSummary(error) }
-        if monitor.bridgeFormError != nil {
-            return "未能完成操作。请检查监控设置，或在诊断中查看原因与恢复操作。"
+        if let feedback = monitor.operationFeedback {
+            return feedback.summary + (feedback.isUncertain ? " 当前状态尚未确认。" : "")
         }
         if monitor.store?.cancellationReceipt != nil { return "监控服务已记录停止请求。本机与远端状态可分别在诊断中查看。" }
-        if monitor.bridgeStatusNotice != nil {
-            if monitor.isWaitingForPushToken { return "正在等待系统准备完成，无需重复开始。" }
-            if monitor.store?.state == .uncertain { return "当前状态尚未确认，请核对原监控会话。" }
-            return "操作结果已更新，详细状态可在监控诊断中查看。"
-        }
         return nil
     }
 
@@ -277,9 +271,9 @@ private struct MonitoringConnectionEditor: View {
             }
             .listRowBackground(palette.contentSurface)
 
-            if let error = monitor.bridgeFormError {
+            if let error = monitor.bridgeFormFeedback {
                 Section {
-                    MonitoringOperationError(message: error)
+                    MonitoringOperationError(feedback: error)
                         .accessibilityIdentifier("monitor.connectionError")
                 }
                 .listRowBackground(palette.contentSurface)
@@ -399,8 +393,8 @@ private struct MonitoringAccountSelectionView: View {
                 Button("添加授权账号") { monitor.addAccountIDDraft(monitor.newAccountIDDraft) }
                     .disabled(monitor.newAccountIDDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                               || monitor.selectedAccountIDsDraft.count >= 5)
-                if let error = monitor.bridgeFormError {
-                    MonitoringOperationError(message: error)
+                if let error = monitor.bridgeFormFeedback {
+                    MonitoringOperationError(feedback: error)
                 }
             } header: {
                 Text("手动添加")
@@ -458,12 +452,12 @@ private struct MonitoringDiagnosticsView: View {
     var body: some View {
         let palette = BrandPalette(colorScheme: colorScheme)
         Form {
-            if let error = monitor.bridgeFormError {
-                Section("最近操作") { MonitoringOperationError(message: error) }
+            if let error = monitor.bridgeFormFeedback {
+                Section("最近操作") { MonitoringOperationError(feedback: error) }
                     .listRowBackground(palette.contentSurface)
             }
-            if let notice = monitor.bridgeStatusNotice {
-                Section("状态说明") { MonitoringOperationStatus(message: notice) }
+            if let notice = monitor.bridgeStatusFeedback {
+                Section("状态说明") { MonitoringOperationStatus(feedback: notice) }
                     .listRowBackground(palette.contentSurface)
             }
             Section("本机系统活动") {
@@ -523,7 +517,9 @@ private struct MonitoringDiagnosticsView: View {
             Section("会话详情") {
                 if let store = monitor.store {
                     LabeledContent("读取状态", value: monitoringStateSummary(store.state))
-                    if let error = store.error { Text(monitoringErrorSummary(error)) }
+                    if let feedback = monitor.storeErrorFeedback {
+                        Text(feedback.summary + (feedback.isUncertain ? " 当前状态尚未确认。" : ""))
+                    }
                     if store.cancellationReceipt != nil {
                         Label("已记录服务端持久取消回执", systemImage: "checkmark.circle")
                     }
@@ -670,11 +666,11 @@ private struct MonitoringRecoveryRecordView: View {
                 Text("确认载入后，返回监控页可停止该会话。未确认结束的记录不能删除，404 也不代表停止成功。")
             }
             .listRowBackground(palette.contentSurface)
-            if let error = monitor.bridgeFormError {
-                Section("处理结果") { MonitoringOperationError(message: error) }.listRowBackground(palette.contentSurface)
+            if let error = monitor.bridgeFormFeedback {
+                Section("处理结果") { MonitoringOperationError(feedback: error) }.listRowBackground(palette.contentSurface)
             }
-            if let notice = monitor.bridgeStatusNotice {
-                Section("状态") { MonitoringOperationStatus(message: notice) }.listRowBackground(palette.contentSurface)
+            if let notice = monitor.bridgeStatusFeedback {
+                Section("状态") { MonitoringOperationStatus(feedback: notice) }.listRowBackground(palette.contentSurface)
             }
         }
         .formStyle(.grouped)
@@ -685,24 +681,30 @@ private struct MonitoringRecoveryRecordView: View {
 }
 
 private struct MonitoringOperationError: View {
-    let message: String
+    let feedback: MonitoringOperationFeedback
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("未能完成操作，请查看详情并核对监控设置。", systemImage: "exclamationmark.triangle")
-            DisclosureGroup("操作详情（高级）") { Text(message) }
+            Label(feedback.summary, systemImage: "exclamationmark.triangle")
+            if feedback.isUncertain { Text("当前状态尚未确认。") }
+            if feedback.diagnostics != feedback.summary {
+                DisclosureGroup("操作详情（高级）") { Text(feedback.diagnostics) }
+            }
         }
         .font(.subheadline)
     }
 }
 
 private struct MonitoringOperationStatus: View {
-    let message: String
+    let feedback: MonitoringOperationFeedback
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("操作状态已更新；如需停止监控，请核对原服务的确认状态。")
-            DisclosureGroup("状态详情（高级）") { Text(message) }
+            Text(feedback.summary)
+            if feedback.isUncertain { Text("当前状态尚未确认。") }
+            if feedback.diagnostics != feedback.summary {
+                DisclosureGroup("状态详情（高级）") { Text(feedback.diagnostics) }
+            }
         }
         .font(.subheadline)
     }
@@ -718,20 +720,6 @@ private func monitoringStateSummary(_ state: MonitoringStore.State) -> String {
     }
 }
 
-private func monitoringErrorSummary(_ error: MonitoringError) -> String {
-    switch error {
-    case .unauthorized: return "监控访问令牌已失效，请更新服务连接。"
-    case .forbidden: return "此来源或账号尚未获得监控服务授权。"
-    case .notFound: return "暂未找到原会话；不能据此确认已经停止。"
-    case .conflict: return "原会话需要先核对，才能继续操作。"
-    case .rateLimited: return "服务正在冷却，请稍后再试。"
-    case .capacityExceeded: return "监控服务的历史记录容量已满。原会话仍可查询和停止，请联系服务维护者。"
-    case .network, .serviceUnavailable: return "暂时无法联系监控服务，原会话状态已保留。"
-    case .invalidConfiguration: return "请检查来源、账号和连接设置。"
-    case .redirectRefused: return "服务返回了不安全的跳转，请检查连接地址。"
-    case .rejected, .invalidResponse: return "监控服务未能确认此次操作，请查看诊断后重试。"
-    }
-}
 
 private extension View {
     @ViewBuilder

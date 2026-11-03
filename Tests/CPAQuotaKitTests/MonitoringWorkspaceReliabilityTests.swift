@@ -9,6 +9,77 @@ import CPAQuotaUI
 @Suite("Monitoring workspace identity and lifecycle", .timeLimit(.minutes(1)))
 @MainActor
 struct MonitoringWorkspaceReliabilityTests {
+    @Test func operationFeedbackShowsSpecificValidation() async {
+        let coordinator = workspace(transport: WorkspaceMonitorTransport())
+        await coordinator.startOrReconcileMonitoringSession()
+        #expect(coordinator.bridgeFormFeedback?.summary == "请先连接监控桥接。")
+        coordinator.addAccountIDDraft("invalid account!")
+        #expect(coordinator.bridgeFormFeedback?.summary == "账号标识格式无效，请使用监控服务授权的原标识。")
+        #expect(coordinator.bridgeFormFeedback?.diagnostics == coordinator.bridgeFormError)
+    }
+
+    @Test func cacheErrorsExposeActionableSummaryAndOriginalDiagnostic() async throws {
+        for (status, summary, diagnostic) in [
+            (401, "监控访问令牌鉴权失败，请检查并更新服务连接。", "桥接 Token 鉴权失败 (401 unauthorized · 已熔断当前桥接客户端后续请求)"),
+            (403, "此来源或账号尚未获得监控服务授权，请联系服务维护者。", "当前 Source 或账号未获桥接白名单授权 (403 forbidden · 仅拒绝当前请求，不影响合法旧会话 DELETE)")
+        ] {
+            let transport = WorkspaceMonitorTransport()
+            await transport.setQuotaStatus(status)
+            let coordinator = workspace(transport: transport)
+            await connect(coordinator, remember: false)
+            coordinator.sourceIDDraft = "personal"
+            await coordinator.loadCachedQuotaForDraftSource()
+            let feedback = try #require(coordinator.bridgeFormFeedback)
+            #expect(feedback.summary == summary)
+            #expect(feedback.diagnostics == diagnostic)
+            #expect(feedback.diagnostics == coordinator.bridgeFormError)
+            #expect(!feedback.summary.contains(String(status)))
+        }
+    }
+
+    @Test func networkFailureAndMissingStopRemainUnconfirmed() async throws {
+        let failed = workspace(transport: WorkspaceMonitorTransport(createFails: true))
+        await connect(failed)
+        drafts(failed)
+        await failed.startOrReconcileMonitoringSession()
+        let network = try #require(failed.storeErrorFeedback)
+        #expect(network.isUncertain)
+        #expect(network.diagnostics == failed.monitoringErrorText(.network))
+        #expect(failed.bridgeStatusFeedback?.isUncertain == true)
+
+        let transport = WorkspaceMonitorTransport()
+        let coordinator = workspace(transport: transport)
+        await connect(coordinator)
+        drafts(coordinator)
+        await coordinator.startOrReconcileMonitoringSession()
+        await transport.setDeleteStatus(404)
+        await coordinator.stopActiveMonitoringSession()
+        let status = try #require(coordinator.bridgeStatusFeedback)
+        #expect(status.isUncertain)
+        #expect(status.summary.contains("尚未确认"))
+        #expect(status.summary.contains("不代表停止成功"))
+        #expect(coordinator.store?.cancellationReceipt == nil)
+        #expect(coordinator.storeErrorFeedback?.diagnostics == coordinator.monitoringErrorText(.notFound))
+    }
+
+    @Test func overallFeedbackKeepsValidationAndUnconfirmedStopVisible() async throws {
+        let transport = WorkspaceMonitorTransport()
+        let coordinator = workspace(transport: transport)
+        await connect(coordinator)
+        drafts(coordinator)
+        await coordinator.startOrReconcileMonitoringSession()
+        coordinator.addAccountIDDraft("invalid account!")
+        await transport.setDeleteStatus(404)
+        await coordinator.stopActiveMonitoringSession()
+        let feedback = try #require(coordinator.operationFeedback)
+        #expect(feedback.summary.contains("账号标识格式无效"))
+        #expect(feedback.summary.contains("尚未确认"))
+        #expect(feedback.summary.contains("不代表停止成功"))
+        #expect(feedback.isUncertain)
+        #expect(coordinator.bridgeFormError == "账号标识格式无效，请使用监控服务授权的原标识。")
+        #expect(coordinator.store?.cancellationReceipt == nil)
+    }
+
     @Test func temporaryCacheUsesTheBoundClientAndSharesCooldown() async throws {
         let transport = WorkspaceMonitorTransport()
         await transport.setQuotaStatus(429)

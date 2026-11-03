@@ -211,6 +211,18 @@ public extension SystemLiveActivityDriver {
     func stopObservingAuthorizationChanges() {}
 }
 
+public struct MonitoringOperationFeedback: Equatable, Sendable {
+    public let summary: String
+    public let diagnostics: String
+    public let isUncertain: Bool
+
+    public init(summary: String, diagnostics: String, isUncertain: Bool = false) {
+        self.summary = summary
+        self.diagnostics = diagnostics
+        self.isUncertain = isUncertain
+    }
+}
+
 @MainActor
 @Observable
 public final class MonitoringWorkspaceCoordinator {
@@ -224,8 +236,37 @@ public final class MonitoringWorkspaceCoordinator {
     public private(set) var activeAddress: MonitorBridgeAddress?
     public private(set) var credentialBindingID: UUID?
     public private(set) var isSavedInKeychain = false
-    public private(set) var bridgeFormError: String?
-    public private(set) var bridgeStatusNotice: String?
+    public private(set) var bridgeFormFeedback: MonitoringOperationFeedback?
+    private var storedStatusFeedback: MonitoringOperationFeedback?
+    public var bridgeStatusFeedback: MonitoringOperationFeedback? {
+        guard let feedback = storedStatusFeedback else { return nil }
+        return MonitoringOperationFeedback(summary: feedback.summary, diagnostics: feedback.diagnostics,
+            isUncertain: feedback.isUncertain || (store?.state == .uncertain && store?.cancellationReceipt == nil))
+    }
+    public private(set) var bridgeFormError: String? {
+        get { bridgeFormFeedback?.diagnostics }
+        set { bridgeFormFeedback = newValue.map { MonitoringOperationFeedback(summary: $0, diagnostics: $0) } }
+    }
+    public private(set) var bridgeStatusNotice: String? {
+        get { storedStatusFeedback?.diagnostics }
+        set { storedStatusFeedback = newValue.map { MonitoringOperationFeedback(summary: $0, diagnostics: $0) } }
+    }
+    public var storeErrorFeedback: MonitoringOperationFeedback? {
+        guard let error = store?.error else { return nil }
+        return feedback(for: error, isUncertain: store?.state == .uncertain && store?.cancellationReceipt == nil)
+    }
+    public var operationFeedback: MonitoringOperationFeedback? {
+        let items = [bridgeFormFeedback, bridgeStatusFeedback, storeErrorFeedback].compactMap { $0 }
+        guard !items.isEmpty else { return nil }
+        var summaries: [String] = []
+        var diagnostics: [String] = []
+        for item in items {
+            if !summaries.contains(item.summary) { summaries.append(item.summary) }
+            if !diagnostics.contains(item.diagnostics) { diagnostics.append(item.diagnostics) }
+        }
+        return MonitoringOperationFeedback(summary: summaries.joined(separator: " "),
+            diagnostics: diagnostics.joined(separator: "\n"), isUncertain: items.contains { $0.isUncertain })
+    }
     public private(set) var cachedSourceSnapshot: MonitoringSnapshot?
     public private(set) var cachedSourceID: String?
     public private(set) var persistedRecords: [PersistedMonitoringRecord] = []
@@ -929,7 +970,12 @@ public final class MonitoringWorkspaceCoordinator {
             bridgeStatusNotice = "已读取来源缓存，供本页查看；它不代表所选账号的活动注册内容。"
         } catch {
             guard isCurrent(context), source == sourceIDDraft.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
-            bridgeFormError = monitoringErrorText(error as? MonitoringError)
+            if let error = error as? MonitoringError {
+                bridgeFormFeedback = feedback(for: error)
+            } else {
+                bridgeFormFeedback = MonitoringOperationFeedback(summary: "无法读取来源缓存，请检查连接后重试。",
+                    diagnostics: monitoringErrorText(nil))
+            }
         }
     }
 
@@ -1040,7 +1086,14 @@ public final class MonitoringWorkspaceCoordinator {
             let result = try await store.loadDetached(handle: handle)
             guard isCurrent(current), detachedConnections[handle]?.client === context.client else { return }
             syncDetached(handle, context: context)
-            bridgeStatusNotice = "原桥接分离会话已查询：\(result.status.rawValue)。"
+            let summary: String
+            switch result.status {
+            case .active: summary = "原桥接分离会话仍在运行；如需结束，请明确停止。"
+            case .stopped: summary = "原桥接已确认分离会话停止。"
+            case .expired: summary = "原桥接已确认分离会话到期。"
+            }
+            storedStatusFeedback = MonitoringOperationFeedback(summary: summary,
+                diagnostics: "原桥接分离会话已查询：\(result.status.rawValue)。")
         } catch {
             guard isCurrent(current) else { return }
             bridgeFormError = "原桥接分离会话查询未确认。"
@@ -1277,6 +1330,11 @@ public final class MonitoringWorkspaceCoordinator {
         metadataStore.savePersistedRecords(persistedRecords)
     }
 
+    public func feedback(for error: MonitoringError, isUncertain: Bool = false) -> MonitoringOperationFeedback {
+        MonitoringOperationFeedback(summary: monitoringErrorSummary(error), diagnostics: monitoringErrorText(error),
+                                    isUncertain: isUncertain)
+    }
+
     public func monitoringErrorText(_ error: MonitoringError?) -> String {
         guard let error else { return "无错误" }
         switch error {
@@ -1305,5 +1363,20 @@ public final class MonitoringWorkspaceCoordinator {
         case .network:
             return "网络或连接超时 (network · 状态保持 uncertain 待对账)"
         }
+    }
+}
+
+private func monitoringErrorSummary(_ error: MonitoringError) -> String {
+    switch error {
+    case .unauthorized: return "监控访问令牌鉴权失败，请检查并更新服务连接。"
+    case .forbidden: return "此来源或账号尚未获得监控服务授权，请联系服务维护者。"
+    case .notFound: return "暂未找到原会话；不能据此确认已经停止。"
+    case .conflict: return "原会话需要先核对，才能继续操作。"
+    case .rateLimited: return "服务正在冷却，请稍后再试。"
+    case .capacityExceeded: return "监控服务的历史记录容量已满。原会话仍可查询和停止，请联系服务维护者。"
+    case .network, .serviceUnavailable: return "暂时无法联系监控服务，原会话状态已保留；请检查连接后对账。"
+    case .invalidConfiguration: return "请检查来源、账号和连接设置。"
+    case .redirectRefused: return "服务返回了不安全的跳转，请检查连接地址。"
+    case .rejected, .invalidResponse: return "监控服务未能确认此次操作，请查看诊断后重试。"
     }
 }
