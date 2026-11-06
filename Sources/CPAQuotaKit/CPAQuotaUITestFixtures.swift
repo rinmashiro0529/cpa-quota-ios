@@ -19,7 +19,8 @@ import FoundationNetworking
 private struct UITestHTTPTransport: HTTPTransport {
     func send(_ request: URLRequest) async throws -> HTTPResponse {
         try Task.checkCancellation()
-        guard let url = request.url, url.host == "ui-test.invalid" else {
+        guard let url = request.url,
+              ["ui-test.invalid", "slow-ui-test.invalid"].contains(url.host ?? "") else {
             return response(status: 404, json: "{}")
         }
         let path = url.path
@@ -28,6 +29,13 @@ private struct UITestHTTPTransport: HTTPTransport {
             return response(status: 401, json: "{}")
         }
         if path.hasSuffix("/auth-files") {
+            if url.host == "slow-ui-test.invalid" {
+                // Deliberately finish after the caller cancels, like a transport
+                // that has already handed its response to a system callback.
+                await Task.detached {
+                    try? await Task.sleep(for: .seconds(5))
+                }.value
+            }
             return response(json: #"{"files":[{"id":"ui-main","auth_index":"ui-index-main","provider":"codex","label":"主要账号","email":"native@example.com","status":"active","disabled":false,"id_token":{"chatgpt_account_id":"ui-owner","plan_type":"team"}},{"id":"ui-empty","auth_index":"ui-index-empty","provider":"codex","label":"额度已用完","email":"zero@example.com","status":"active","disabled":false},{"id":"ui-plugin","auth_index":"ui-index-plugin","provider":"fixture-plugin","label":"摘要指标账号","email":"summary@example.com","status":"active","disabled":false,"supports_quota":true}]}"#)
         }
         if path.hasSuffix("/quota/providers") {

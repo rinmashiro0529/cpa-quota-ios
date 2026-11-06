@@ -22,12 +22,66 @@ extension EnvironmentValues {
 
 private struct CAPPageStyle: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
     func body(content: Content) -> some View {
         content
+            #if os(iOS)
+            .listStyle(.insetGrouped)
+            .listSectionSpacing(16)
+            #else
             .listStyle(.inset)
+            #endif
             .scrollContentBackground(.hidden)
             .background(BrandCanvasBackground())
-            .tint(BrandPalette(colorScheme: colorScheme).actionTint)
+            .tint(BrandPalette(colorScheme: colorScheme, contrast: contrast).actionTint)
+    }
+}
+
+// Keep upstream metadata readable while honoring the same account-wide privacy setting
+// as labeled values. Identities and aggregation keys retain the original data.
+struct CAPMetadataText: View {
+    let value: String
+    @Environment(\.capMasksEmail) private var masksEmail
+
+    init(_ value: String) { self.value = value }
+
+    var body: some View {
+        Text(CAPDisplay.privacyValue(value, masksEmail: masksEmail))
+    }
+}
+
+struct CAPMetadataLabel: View {
+    let value: String
+    let systemImage: String
+
+    init(_ value: String, systemImage: String) {
+        self.value = value
+        self.systemImage = systemImage
+    }
+
+    var body: some View {
+        Label { CAPMetadataText(value) } icon: { Image(systemName: systemImage) }
+    }
+}
+
+struct CAPSection<Content: View>: View {
+    private let title: String?
+    private let content: Content
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    init(_ title: String? = nil, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        Section {
+            content
+        } header: {
+            if let title { Text(title) }
+        }
+        .listRowBackground(BrandPalette(colorScheme: colorScheme, contrast: contrast).contentSurface)
     }
 }
 
@@ -55,6 +109,7 @@ struct CAPErrorNotice: View {
     let error: CAPUsageError
     let preservesData: Bool
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
 
     private var severity: ErrorSeverityLevel {
         switch error {
@@ -66,7 +121,7 @@ struct CAPErrorNotice: View {
 
     var body: some View {
         let description = CAPUsagePresentation.errorDescription(error)
-        let palette = BrandPalette(colorScheme: colorScheme)
+        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         VStack(alignment: .leading, spacing: 8) {
             Label(description.title, systemImage: severity == .critical ? "exclamationmark.octagon" : "exclamationmark.triangle")
                 .font(.headline)
@@ -80,6 +135,44 @@ struct CAPErrorNotice: View {
         }
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityElement(children: .combine)
+    }
+}
+
+struct CAPResourceStatus<Value: Sendable>: View {
+    let state: CAPUsageResourceState<Value>
+    let generatedAt: String?
+    var showsPreviousLabel = true
+    var selectedWindow: CAPUsageWindow? = nil
+    var retryDisabled = false
+    let retry: () -> Void
+
+    var body: some View {
+        if state.isLoading {
+            Label { Text("正在读取此区域…") } icon: { ProgressView() }
+                .font(.subheadline)
+        }
+        if let error = state.error {
+            CAPErrorNotice(error: error, preservesData: state.snapshot != nil)
+            Button("重试此区域", systemImage: "arrow.clockwise", action: retry)
+                .disabled(state.isLoading || retryDisabled)
+                .frame(minHeight: 44)
+        }
+        if let snapshot = state.snapshot {
+            if showsPreviousLabel,
+               state.isShowingPreviousResult || selectedWindow.map({ $0 != snapshot.window }) == true {
+                Label("上次读数", systemImage: "clock")
+                    .font(.subheadline.weight(.semibold))
+            }
+            CAPValueRow(title: "数据窗口", value: CAPUsagePresentation.windowBadgeText(snapshot.window))
+            CAPValueRow(title: "生成时间", value: generatedAt ?? "未知")
+        } else if !state.isLoading, state.error == nil {
+            Text("尚未读取此区域。")
+                .font(.subheadline).foregroundStyle(.secondary)
+        }
+        if let query = state.requestedQuery, state.error != nil,
+           state.snapshot?.query != query {
+            CAPValueRow(title: "未完成窗口", value: CAPUsagePresentation.windowBadgeText(query.window))
+        }
     }
 }
 
@@ -101,12 +194,13 @@ struct CAPDestinationLabel: View {
 struct CAPSummaryRows: View {
     let summary: CAPUsageSummary
     var body: some View {
-        CAPValueRow(title: "加权生成速度", value: CAPUsagePresentation.generationTPSText(summary))
-        CAPValueRow(title: "生成样本覆盖", value: CAPUsagePresentation.generationCoverageText(summary))
-        CAPValueRow(title: "端到端速度", value: CAPUsagePresentation.endToEndTPSText(summary))
-        CAPValueRow(title: "请求 / 失败", value: "\(CAPDisplay.counter(summary.counters.requests)) / \(CAPDisplay.counter(summary.counters.failedRequests))")
+        CAPValueRow(title: "请求数", value: CAPDisplay.counter(summary.counters.requests))
+        CAPValueRow(title: "失败率", value: CAPUsagePresentation.failureRateText(summary.counters))
+        CAPValueRow(title: "总 Token", value: CAPDisplay.counter(summary.counters.totalTokens))
         CAPValueRow(title: "输入 / 输出 Token", value: "\(CAPDisplay.counter(summary.counters.inputTokens)) / \(CAPDisplay.counter(summary.counters.outputTokens))")
-        CAPValueRow(title: "推理 / 总 Token", value: "\(CAPDisplay.counter(summary.counters.reasoningTokens)) / \(CAPDisplay.counter(summary.counters.totalTokens))")
+        CAPValueRow(title: "加权生成速度", value: CAPUsagePresentation.generationTPSText(summary))
+        CAPValueRow(title: "端到端速度", value: CAPUsagePresentation.endToEndTPSText(summary))
+        CAPValueRow(title: "生成样本覆盖", value: CAPUsagePresentation.generationCoverageText(summary))
     }
 }
 
@@ -135,9 +229,9 @@ struct CAPSummaryDetailView: View {
     let window: CAPUsageWindow
     var body: some View {
         List {
-            Section { CAPValueRow(title: "查询窗口", value: CAPUsagePresentation.windowBadgeText(window)) }
-            Section("速度与覆盖") { CAPSummaryRows(summary: summary) }
-            Section("完整计数") { CAPCounterRows(counters: summary.counters) }
+            CAPSection { CAPValueRow(title: "查询窗口", value: CAPUsagePresentation.windowBadgeText(window)) }
+            CAPSection("速度与覆盖") { CAPSummaryRows(summary: summary) }
+            CAPSection("完整计数") { CAPCounterRows(counters: summary.counters) }
         }
         .capPageStyle().navigationTitle(title)
     }
@@ -147,8 +241,8 @@ struct CAPModelRow: View {
     let item: CAPUsageModelSummary
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(item.model ?? "未知模型").font(.headline).fontDesign(.monospaced)
-            Text("\(item.provider ?? "未知平台") · \(CAPUsagePresentation.streamLabel(item.stream))")
+            CAPMetadataText(item.model ?? "未知模型").font(.headline).fontDesign(.monospaced)
+            CAPMetadataText("\(item.provider ?? "未知平台") · \(CAPUsagePresentation.streamLabel(item.stream))")
                 .font(.subheadline).foregroundStyle(.secondary)
             Text(CAPUsagePresentation.generationTPSText(item.summary)).font(.body.monospacedDigit())
             Text(CAPUsagePresentation.generationCoverageText(item.summary))
@@ -164,14 +258,14 @@ struct CAPModelDetailView: View {
     let window: CAPUsageWindow
     var body: some View {
         List {
-            Section("模型与窗口") {
+            CAPSection("模型与窗口") {
                 CAPValueRow(title: "模型", value: item.model ?? "未知")
                 CAPValueRow(title: "平台", value: item.provider ?? "未知")
                 CAPValueRow(title: "传输模式", value: CAPUsagePresentation.streamLabel(item.stream))
                 CAPValueRow(title: "查询窗口", value: CAPUsagePresentation.windowBadgeText(window))
             }
-            Section("速度与覆盖") { CAPSummaryRows(summary: item.summary) }
-            Section("完整计数") { CAPCounterRows(counters: item.summary.counters) }
+            CAPSection("速度与覆盖") { CAPSummaryRows(summary: item.summary) }
+            CAPSection("完整计数") { CAPCounterRows(counters: item.summary.counters) }
         }
         .capPageStyle().navigationTitle("模型用量")
     }
@@ -181,8 +275,8 @@ struct CAPStatRowLabel: View {
     let row: CAPUsageStatRow
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("\(row.provider ?? "未知平台") · \(row.model ?? "未知模型")").font(.headline)
-            if let hour = row.hour { Text(hour).font(.subheadline.monospaced()).foregroundStyle(.secondary) }
+            CAPMetadataText("\(row.provider ?? "未知平台") · \(row.model ?? "未知模型")").font(.headline)
+            if let hour = row.hour { CAPMetadataText(hour).font(.subheadline.monospaced()).foregroundStyle(.secondary) }
             Text("请求 \(CAPDisplay.counter(row.counters.requests)) · 输出 \(CAPDisplay.counter(row.counters.outputTokens)) Token")
                 .font(.subheadline).monospacedDigit()
             Text("平均延迟 \(CAPDisplay.milliseconds(row.averageLatencyNs)) · 首 Token \(CAPDisplay.milliseconds(row.averageTtftNs))")
@@ -199,7 +293,7 @@ struct CAPStatDetailView: View {
     let generatedAt: String?
     var body: some View {
         List {
-            Section("来源与维度") {
+            CAPSection("来源与维度") {
                 CAPValueRow(title: "查询窗口", value: CAPUsagePresentation.windowBadgeText(window))
                 CAPValueRow(title: "响应生成", value: generatedAt ?? "未知")
                 CAPValueRow(title: "时间桶", value: row.hour ?? "未提供")
@@ -212,11 +306,11 @@ struct CAPStatDetailView: View {
                 CAPValueRow(title: "服务等级", value: row.serviceTier ?? "未提供")
                 CAPValueRow(title: "推理强度", value: row.reasoningEffort ?? "未提供")
             }
-            Section("延迟") {
+            CAPSection("延迟") {
                 CAPValueRow(title: "平均延迟", value: CAPDisplay.milliseconds(row.averageLatencyNs))
                 CAPValueRow(title: "平均首 Token 延迟", value: CAPDisplay.milliseconds(row.averageTtftNs))
             }
-            Section("完整计数") { CAPCounterRows(counters: row.counters) }
+            CAPSection("完整计数") { CAPCounterRows(counters: row.counters) }
         }
         .capPageStyle().navigationTitle("统计明细")
     }
@@ -229,12 +323,12 @@ struct CAPStatCollectionView: View {
     let generatedAt: String?
     var body: some View {
         List {
-            Section {
+            CAPSection {
                 CAPValueRow(title: "查询窗口", value: CAPUsagePresentation.windowBadgeText(window))
                 CAPValueRow(title: "响应生成", value: generatedAt ?? "未知")
                 CAPValueRow(title: "返回条数", value: "\(rows.count)")
             }
-            Section("全部返回记录") {
+            CAPSection("全部返回记录") {
                 if rows.isEmpty { Text("当前响应没有此类记录。").foregroundStyle(.secondary) }
                 ForEach(rows) { item in
                     NavigationLink {
@@ -248,15 +342,17 @@ struct CAPStatCollectionView: View {
 }
 
 struct CAPInitialStatsView: View {
-    let presentation: CAPAnalyticsPresentation
+    let presentation: CAPInitialPresentation
     var body: some View {
-        let initial = presentation.snapshot.initial
+        let initial = presentation.snapshot.value
         let window = presentation.snapshot.window
         List {
-            Section("来源与保留范围") {
+            CAPSection("来源与保留范围") {
                 CAPValueRow(title: "查询窗口", value: CAPUsagePresentation.windowBadgeText(window))
                 CAPValueRow(title: "生成时间", value: initial.generatedAt)
                 CAPValueRow(title: "保留起点", value: initial.retainedSince)
+                Text(CAPUsagePresentation.retentionDescription(retainedSince: initial.retainedSince, window: window))
+                    .font(.footnote).foregroundStyle(.secondary)
                 CAPValueRow(title: "最后使用", value: initial.lastUsed)
                 CAPValueRow(title: "时间桶宽度", value: "\(initial.bucketSeconds) 秒")
                 CAPValueRow(title: "来源", value: initial.sources.isEmpty ? "未列出来源" : initial.sources.joined(separator: "、"))
@@ -266,8 +362,8 @@ struct CAPInitialStatsView: View {
                     CAPValueRow(title: "端点", value: "/stats/initial")
                 }
             }
-            Section("汇总") { CAPCounterRows(counters: initial.summary) }
-            Section("完整明细") {
+            CAPSection("汇总") { CAPCounterRows(counters: initial.summary) }
+            CAPSection("完整明细") {
                 NavigationLink("模型统计 · \(presentation.initialModels.count) 项") {
                     CAPStatCollectionView(title: "模型统计", rows: presentation.initialModels,
                         window: window, generatedAt: initial.generatedAt)
@@ -283,10 +379,12 @@ struct CAPInitialStatsView: View {
 }
 
 struct CAPTrendsView: View {
-    let presentation: CAPAnalyticsPresentation
+    let presentation: CAPTrendsPresentation
+    @Environment(\.capMasksEmail) private var masksEmail
     @State private var selectedSeriesID: CAPTrendSeriesID?
     @State private var metric: CAPTrendMetric = .requests
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
     @ScaledMetric(relativeTo: .body) private var chartHeight: CGFloat = 220
 
     private var selectedSeries: CAPTrendSeries? {
@@ -295,10 +393,10 @@ struct CAPTrendsView: View {
 
     var body: some View {
         List {
-            Section("返回的时间桶") {
+            CAPSection("返回的时间桶") {
                 CAPValueRow(title: "查询窗口", value: CAPUsagePresentation.windowBadgeText(presentation.snapshot.window))
-                CAPValueRow(title: "生成时间", value: presentation.snapshot.trends.generatedAt)
-                CAPValueRow(title: "桶宽度", value: "\(presentation.snapshot.trends.bucketSeconds) 秒")
+                CAPValueRow(title: "生成时间", value: presentation.snapshot.value.generatedAt)
+                CAPValueRow(title: "桶宽度", value: "\(presentation.snapshot.value.bucketSeconds) 秒")
                 Picker("指标", selection: $metric) {
                     ForEach(CAPTrendMetric.allCases) { Text($0.rawValue).tag($0) }
                 }
@@ -307,7 +405,7 @@ struct CAPTrendsView: View {
                     Picker("模型与来源组", selection: Binding(
                         get: { selectedSeries?.id ?? series.id }, set: { selectedSeriesID = $0 }
                     )) {
-                        ForEach(presentation.trends.series) { Text($0.title).tag($0.id) }
+                        ForEach(presentation.trends.series) { CAPMetadataText($0.title).tag($0.id) }
                     }
                     .pickerStyle(.menu)
                     trendChart(series)
@@ -334,15 +432,15 @@ struct CAPTrendsView: View {
                         .font(.footnote)
                 }
             }
-            Section {
+            CAPSection {
                 NavigationLink("完整数据表 · \(presentation.trendRows.count) 项") {
                     CAPStatCollectionView(title: "完整趋势数据", rows: presentation.trendRows,
-                        window: presentation.snapshot.window, generatedAt: presentation.snapshot.trends.generatedAt)
+                        window: presentation.snapshot.window, generatedAt: presentation.snapshot.value.generatedAt)
                 }
                 .accessibilityHint("提供图表中所有返回记录、缺失值与各维度的文字明细")
                 DisclosureGroup("响应诊断") {
-                    CAPValueRow(title: "Schema", value: "\(presentation.snapshot.trends.schemaVersion)")
-                    CAPValueRow(title: "Range", value: presentation.snapshot.trends.range)
+                    CAPValueRow(title: "Schema", value: "\(presentation.snapshot.value.schemaVersion)")
+                    CAPValueRow(title: "Range", value: presentation.snapshot.value.range)
                     CAPValueRow(title: "端点", value: "/stats/trends")
                 }
             }
@@ -360,15 +458,15 @@ struct CAPTrendsView: View {
             Chart(series.points) { point in
                 if let value = metric.value(point) {
                     PointMark(x: .value("时间桶", point.date), y: .value(metric.rawValue, value))
-                        .foregroundStyle(BrandPalette(colorScheme: colorScheme).accent)
-                        .accessibilityLabel(Text(point.row.hour ?? "时间桶"))
+                        .foregroundStyle(BrandPalette(colorScheme: colorScheme, contrast: contrast).accent)
+                        .accessibilityLabel(Text(CAPDisplay.privacyValue(point.row.hour ?? "时间桶", masksEmail: masksEmail)))
                         .accessibilityValue(Text("\(metric.rawValue)，\(value.formatted()) \(metric.unit)"))
                 }
             }
             .chartXAxisLabel("返回的时间桶")
             .chartYAxisLabel(metric.unit)
             .frame(height: chartHeight)
-            .accessibilityLabel("\(series.title)，\(metric.rawValue)趋势，共 \(plottedCount) 个有效点")
+            .accessibilityLabel(Text(CAPDisplay.privacyValue("\(series.title)，\(metric.rawValue)趋势，共 \(plottedCount) 个有效点", masksEmail: masksEmail)))
             #else
             Text("当前平台使用下方完整数据表查看时间桶。").foregroundStyle(.secondary)
             #endif
@@ -382,31 +480,34 @@ struct CAPGroupsView: View {
     @Bindable var coordinator: CAPUsageWorkspaceCoordinator
     var body: some View {
         List {
-            if let error = coordinator.store?.detailsError {
-                Section { CAPErrorNotice(error: error, preservesData: coordinator.analyticsPresentation != nil) }
+            if let state = coordinator.store?.groupsState {
+                CAPSection("分组读取状态") {
+                    CAPResourceStatus(state: state, generatedAt: state.snapshot?.value.generatedAt,
+                        selectedWindow: coordinator.activeWindow, retryDisabled: coordinator.store?.isLoadingDetails == true) {
+                        Task { await coordinator.retryDetailResource(.groups) }
+                    }
+                }
             }
-            if let presentation = coordinator.analyticsPresentation {
+            if let presentation = coordinator.groupsPresentation {
                 let snapshot = presentation.snapshot
-                Section("分页与来源") {
-                    CAPValueRow(title: "查询窗口", value: CAPUsagePresentation.windowBadgeText(snapshot.window))
-                    CAPValueRow(title: "生成时间", value: snapshot.groups.generatedAt)
-                    Text(CAPUsagePresentation.groupPaginationBanner(offset: snapshot.groupOffset,
-                        limit: snapshot.groupLimit, count: presentation.groups.count, total: snapshot.groups.total))
+                CAPSection("分页与来源") {
+                    Text(CAPUsagePresentation.groupPaginationBanner(offset: snapshot.query.groupOffset,
+                        limit: snapshot.query.groupLimit, count: presentation.groups.count, total: snapshot.value.total))
                         .font(.subheadline)
                     pagination(snapshot)
-                    Text("翻页继续使用此窗口。四个端点分别响应，生成时间可能不同；失败时保留上一页。")
+                    Text("翻页继续使用此窗口，失败时保留上一页。其他分析区域可以独立读取与重试。")
                         .font(.footnote).foregroundStyle(.secondary)
                     DisclosureGroup("响应诊断") {
-                        CAPValueRow(title: "Schema", value: "\(snapshot.groups.schemaVersion)")
-                        CAPValueRow(title: "Range", value: snapshot.groups.range)
+                        CAPValueRow(title: "Schema", value: "\(snapshot.value.schemaVersion)")
+                        CAPValueRow(title: "Range", value: snapshot.value.range)
                         CAPValueRow(title: "端点", value: "/stats/groups")
                     }
                 }
-                Section("本页全部分组") {
+                CAPSection("本页全部分组") {
                     if presentation.groups.isEmpty { Text("本页没有分组记录。").foregroundStyle(.secondary) }
                     ForEach(presentation.groups) { item in
                         NavigationLink {
-                            CAPStatDetailView(row: item.value, window: snapshot.window, generatedAt: snapshot.groups.generatedAt)
+                            CAPStatDetailView(row: item.value, window: snapshot.window, generatedAt: snapshot.value.generatedAt)
                         } label: { CAPStatRowLabel(row: item.value) }
                     }
                 }
@@ -425,19 +526,20 @@ struct CAPGroupsView: View {
         }
     }
 
-    private func pagination(_ snapshot: CAPUsageDetailSnapshot) -> some View {
-        let next = CAPPageNavigation.nextOffset(offset: snapshot.groupOffset, limit: snapshot.groupLimit,
-            count: snapshot.groups.items.count, total: snapshot.groups.total)
+    private func pagination(_ snapshot: CAPUsageResourceSnapshot<CAPUsageGroups>) -> some View {
+        let query = snapshot.query
+        let next = CAPPageNavigation.nextOffset(offset: query.groupOffset, limit: query.groupLimit,
+            count: snapshot.value.items.count, total: snapshot.value.total)
         return HStack {
             Button("上一页", systemImage: "chevron.backward") {
                 Task { await coordinator.refreshGroupPage(window: snapshot.window,
-                    groupOffset: max(0, snapshot.groupOffset - snapshot.groupLimit), groupLimit: snapshot.groupLimit) }
+                    groupOffset: max(0, query.groupOffset - query.groupLimit), groupLimit: query.groupLimit) }
             }
-            .disabled(snapshot.groupOffset <= 0 || coordinator.store?.isLoadingDetails == true)
+            .disabled(query.groupOffset <= 0 || coordinator.store?.isLoadingDetails == true)
             Spacer()
             Button("下一页", systemImage: "chevron.forward") {
                 guard let next else { return }
-                Task { await coordinator.refreshGroupPage(window: snapshot.window, groupOffset: next, groupLimit: snapshot.groupLimit) }
+                Task { await coordinator.refreshGroupPage(window: snapshot.window, groupOffset: next, groupLimit: query.groupLimit) }
             }
             .disabled(next == nil || coordinator.store?.isLoadingDetails == true)
         }
@@ -462,21 +564,21 @@ struct CAPCostAmountRows: View {
 }
 
 struct CAPCostsView: View {
-    let presentation: CAPAnalyticsPresentation
+    let presentation: CAPCostsPresentation
     var body: some View {
-        let costs = presentation.snapshot.costs
+        let costs = presentation.snapshot.value
         List {
-            Section("估算与覆盖") {
+            CAPSection("估算与覆盖") {
                 CAPValueRow(title: "查询窗口", value: CAPUsagePresentation.windowBadgeText(presentation.snapshot.window))
                 CAPValueRow(title: "生成时间", value: costs.generatedAt)
                 CAPValueRow(title: "币种", value: costs.currency)
                 CAPValueRow(title: "估算依据", value: costs.estimateBasis)
                 CAPValueRow(title: "价格簿版本", value: "#\(costs.priceBookRevision)")
-                Label(CAPUsagePresentation.costReliabilityBanner(costs), systemImage: "info.circle")
+                CAPMetadataLabel(CAPUsagePresentation.costReliabilityBanner(costs), systemImage: "info.circle")
                     .font(.subheadline)
                 CAPCostAmountRows(amounts: costs.summary, currency: costs.currency)
             }
-            Section("费用明细") {
+            CAPSection("费用明细") {
                 NavigationLink("按模型 · \(presentation.costModels.count) 项") {
                     CAPCostCollectionView(title: "模型费用", rows: presentation.costModels,
                         costs: costs, window: presentation.snapshot.window)
@@ -486,21 +588,21 @@ struct CAPCostsView: View {
                         costs: costs, window: presentation.snapshot.window)
                 }
             }
-            Section("缺失价格") {
+            CAPSection("缺失价格") {
                 if presentation.missingPrices.isEmpty {
                     Text("响应没有列出缺价条目；仍须结合已计价、未计价计数判断覆盖。")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
                 ForEach(presentation.missingPrices) { item in
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("\(item.value.provider) · \(item.value.model)").font(.headline)
+                        CAPMetadataText("\(item.value.provider) · \(item.value.model)").font(.headline)
                         Text("未计价请求 \(item.value.requests) 次 · 缺价不等于免费")
                             .font(.subheadline).foregroundStyle(.secondary)
                     }
                     .accessibilityElement(children: .combine)
                 }
             }
-            Section {
+            CAPSection {
                 DisclosureGroup("响应诊断") {
                     CAPValueRow(title: "Schema", value: "\(costs.schemaVersion)")
                     CAPValueRow(title: "Range", value: costs.range)
@@ -519,21 +621,21 @@ struct CAPCostCollectionView: View {
     let window: CAPUsageWindow
     var body: some View {
         List {
-            Section {
+            CAPSection {
                 CAPValueRow(title: "查询窗口", value: CAPUsagePresentation.windowBadgeText(window))
                 CAPValueRow(title: "响应生成", value: costs.generatedAt)
                 CAPValueRow(title: "币种 / 价格簿", value: "\(costs.currency) / #\(costs.priceBookRevision)")
             }
-            Section("全部返回记录") {
+            CAPSection("全部返回记录") {
                 if rows.isEmpty { Text("响应没有此类费用明细。").foregroundStyle(.secondary) }
                 ForEach(rows) { item in
                     DisclosureGroup {
                         CAPCostAmountRows(amounts: item.value.amounts, currency: costs.currency)
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("\(item.value.provider) · \(item.value.model)").font(.headline)
-                            if let hour = item.value.hour { Text(hour).font(.subheadline).foregroundStyle(.secondary) }
-                            Text(CAPUsagePresentation.formatUSD(item.value.amounts.totalUsd, currency: costs.currency))
+                            CAPMetadataText("\(item.value.provider) · \(item.value.model)").font(.headline)
+                            if let hour = item.value.hour { CAPMetadataText(hour).font(.subheadline).foregroundStyle(.secondary) }
+                            CAPMetadataText(CAPUsagePresentation.formatUSD(item.value.amounts.totalUsd, currency: costs.currency))
                                 .font(.body.monospacedDigit())
                         }
                     }
@@ -547,13 +649,14 @@ struct CAPCostCollectionView: View {
 struct CAPRequestRow: View {
     let request: CAPUsageRequest
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme)
+        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         VStack(alignment: .leading, spacing: 5) {
-            Text(request.model ?? "未知模型").font(.headline).fontDesign(.monospaced)
-            Text("\(request.provider ?? "未知平台") · \(request.time ?? "时间未知")")
+            CAPMetadataText(request.model ?? "未知模型").font(.headline).fontDesign(.monospaced)
+            CAPMetadataText("\(request.provider ?? "未知平台") · \(request.time ?? "时间未知")")
                 .font(.subheadline).foregroundStyle(.secondary)
-            Label(CAPUsagePresentation.requestOutcomeText(request),
+            CAPMetadataLabel(CAPUsagePresentation.requestOutcomeText(request),
                 systemImage: request.failed == true ? "xmark.circle" : request.failed == false ? "checkmark.circle" : "questionmark.circle")
                 .font(.subheadline)
                 .foregroundStyle(request.failed == true ? palette.statusError : request.failed == false ? palette.statusOK : palette.textSecondary)
@@ -572,7 +675,7 @@ struct CAPRequestDetailView: View {
     let priceBookRevision: UInt64?
     var body: some View {
         List {
-            Section("请求与响应来源") {
+            CAPSection("请求与响应来源") {
                 CAPValueRow(title: "请求序号", value: request.sequence.map(String.init) ?? "未提供")
                 CAPValueRow(title: "请求时间", value: request.time ?? "未知")
                 CAPValueRow(title: "结果", value: CAPUsagePresentation.requestOutcomeText(request))
@@ -582,7 +685,7 @@ struct CAPRequestDetailView: View {
                 CAPValueRow(title: "响应生成", value: generatedAt ?? "未知")
                 CAPValueRow(title: "价格簿版本", value: priceBookRevision.map { "#\($0)" } ?? "未知")
             }
-            Section("用量") {
+            CAPSection("用量") {
                 CAPValueRow(title: "输入 Token", value: CAPDisplay.counter(request.inputTokens))
                 CAPValueRow(title: "输出 Token", value: CAPDisplay.counter(request.outputTokens))
                 CAPValueRow(title: "推理 Token", value: CAPDisplay.counter(request.reasoningTokens))
@@ -594,7 +697,7 @@ struct CAPRequestDetailView: View {
                 CAPValueRow(title: "报告请求数", value: CAPDisplay.counter(request.requests))
                 CAPValueRow(title: "报告失败数", value: CAPDisplay.counter(request.failedRequests))
             }
-            Section("延迟与服务报告速度") {
+            CAPSection("延迟与服务报告速度") {
                 CAPValueRow(title: "首 Token 延迟", value: CAPDisplay.milliseconds(request.ttftNs))
                 CAPValueRow(title: "端到端延迟", value: CAPDisplay.milliseconds(request.latencyNs))
                 CAPValueRow(title: "生成时长", value: CAPDisplay.milliseconds(request.generationNs))
@@ -603,7 +706,7 @@ struct CAPRequestDetailView: View {
                 Text("这里保留单条请求的原始报告。概览的加权速度由有效样本重新计算，不以这些单次速度取平均；失败或结果未知的请求不会作为成功生成样本。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
-            Section("模型与诊断维度") {
+            CAPSection("模型与诊断维度") {
                 CAPValueRow(title: "平台", value: request.provider ?? "未知")
                 CAPValueRow(title: "模型", value: request.model ?? "未知")
                 CAPValueRow(title: "传输模式", value: CAPUsagePresentation.streamLabel(request.stream))
@@ -624,7 +727,7 @@ struct CAPManagementDetailView: View {
     var body: some View {
         let stats = presentation.stats
         List {
-            Section("管理来源") {
+            CAPSection("管理来源") {
                 CAPValueRow(title: "查询窗口", value: CAPUsagePresentation.windowBadgeText(presentation.window))
                 CAPValueRow(title: "生成时间", value: stats.generatedAt ?? "未知")
                 CAPValueRow(title: "保留起点", value: stats.retainedSince ?? "未知")
@@ -636,8 +739,8 @@ struct CAPManagementDetailView: View {
                     CAPValueRow(title: "认证", value: "管理密钥")
                 }
             }
-            Section("完整汇总") { CAPCounterRows(counters: stats.summary) }
-            Section("完整明细") {
+            CAPSection("完整汇总") { CAPCounterRows(counters: stats.summary) }
+            CAPSection("完整明细") {
                 if stats.groups != nil {
                     NavigationLink("分组 · \(presentation.groups.count) 项") {
                         CAPStatCollectionView(title: "管理分组", rows: presentation.groups,

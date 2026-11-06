@@ -247,9 +247,26 @@ private actor CredentialStoreCoordinator {
                     }
                 }
             case .discard(let server):
-                latestWriteBaseline = nil
+                // Unremembered connection is still a cancellable transaction.
+                // Keep every prior credential until the new session accepts it;
+                // explicit forget below is the separate irreversible intent.
                 ownedServers[server.identifier] = server
-                failure = await removeAllOwnedCredentials(version: intent.version)
+                failure = await loadUnconfirmedCredentials(version: intent.version)
+                guard latestIntent?.version == intent.version else { continue }
+                if failure == nil {
+                    latestWriteBaseline = CredentialWriteBaseline(
+                        intentVersion: intent.version,
+                        servers: ownedServers,
+                        credentials: confirmedCredentials,
+                        cancellation: intent.cancellation
+                    )
+                }
+                if failure == nil, !intent.cancellation.isCancelled {
+                    failure = await removeAllOwnedCredentials(version: intent.version)
+                    if intent.cancellation.isCancelled, let baseline = latestWriteBaseline {
+                        failure = await rollbackTransaction(baseline, using: intent.version) ?? failure
+                    }
+                }
             case .forget(let server):
                 latestWriteBaseline = nil
                 if let server { ownedServers[server.identifier] = server }
@@ -459,6 +476,8 @@ public final class CPAQuotaSession {
     @ObservationIgnored private var operationGeneration: UInt64 = 0
     @ObservationIgnored private var pendingServer: CPAServer?
     @ObservationIgnored private var pendingStore: CPAQuotaStore?
+    @ObservationIgnored private var connectionSubmissionTask: Task<Void, Never>?
+    @ObservationIgnored private var connectionSubmissionID: UUID?
     @ObservationIgnored private var credentialIntentVersion: UInt64 = 0
     @ObservationIgnored private var progressRoundID: UInt64 = 0
     @ObservationIgnored private var isProgressRoundActive = false
@@ -655,7 +674,7 @@ public final class CPAQuotaSession {
             pendingStore = newStore
 
             let progressRound = beginProgressRound()
-            await newStore.load()
+            await newStore.loadInventory()
             endProgressRound(progressRound)
             guard generation == operationGeneration, !Task.isCancelled else {
                 if generation == operationGeneration {
@@ -700,6 +719,9 @@ public final class CPAQuotaSession {
             isRememberedInKeychain = true
             capUsageCoordinator.bind(client: capClient)
             authState = .connected(server: server, isRememberedInKeychain: true)
+            if newStore.error == nil {
+                await refreshAcceptedStore(newStore, generation: generation)
+            }
         } catch let error as CPAError {
             guard generation == operationGeneration else { return }
             if Task.isCancelled {
@@ -746,11 +768,78 @@ public final class CPAQuotaSession {
         authState = .unconfigured
     }
 
+    /// Capture drafts synchronously so dismissal before the task starts still
+    /// cancels the submitted credentials. The task belongs to the session.
+    public func submitConnectionDraft() {
+        guard connectionSubmissionTask == nil else { return }
+        let address = serverAddressDraft
+        let key = managementKeyDraft
+        let remember = rememberCredentialsDraft
+        managementKeyDraft = ""
+        let submissionID = UUID()
+        connectionSubmissionID = submissionID
+        connectionSubmissionTask = Task { @MainActor [weak self] in
+            guard let self, !Task.isCancelled, self.connectionSubmissionID == submissionID else { return }
+            await self.connect(serverAddress: address, managementKeyInput: key, rememberInKeychain: remember)
+            if self.connectionSubmissionID == submissionID {
+                self.connectionSubmissionID = nil
+                self.connectionSubmissionTask = nil
+            }
+        }
+    }
+
+    /// Close-button, interactive-dismissal and deep-link routes all use this
+    /// entry point. Generation invalidation and draft erasure happen before any await.
+    @discardableResult
+    public func dismissConnectionForm() -> Task<Void, Never> {
+        isPresentingConnectionSheet = false
+        connectionFormError = nil
+        return cancelConnectionAttempt()
+    }
+
+    /// External navigation must dismiss an unfinished form before restoring or
+    /// selecting another workspace, so a late candidate cannot take over that route.
+    @discardableResult
+    public func prepareForExternalNavigation() -> Task<Void, Never> {
+        selectedAccountIDForDetail = nil
+        return dismissConnectionForm()
+    }
+
+    @discardableResult
+    public func cancelConnectionAttempt() -> Task<Void, Never> {
+        managementKeyDraft = ""
+        serverAddressDraft = (currentServer ?? savedServer)?.identifier ?? ""
+        rememberCredentialsDraft = currentServer == nil || isRememberedInKeychain
+        connectionSubmissionTask?.cancel()
+        connectionSubmissionTask = nil
+        connectionSubmissionID = nil
+        guard case .connecting = authState else { return Task {} }
+
+        operationGeneration &+= 1
+        let generation = operationGeneration
+        let server = pendingServer ?? currentServer
+        let candidate = pendingStore
+        pendingStore = nil
+        pendingServer = nil
+        restoreActiveAuthState()
+        let intent = nextCredentialIntent(action: .hold(server: server))
+        return Task { @MainActor [weak self] in
+            guard let self else { return }
+            await candidate?.cancel()
+            await self.credentialCoordinator.submit(intent)
+            let outcome = await self.credentialCoordinator.synchronize()
+            guard generation == self.operationGeneration, outcome.version == intent.version else { return }
+            if let failure = outcome.failure { self.presentStorageFailure(failure) }
+        }
+    }
+
     public func connect(
         serverAddress: String,
         managementKeyInput: String,
         rememberInKeychain: Bool
     ) async {
+        guard !Task.isCancelled else { return }
+        managementKeyDraft = ""
         connectionFormError = nil
         statusBannerMessage = nil
 
@@ -777,22 +866,35 @@ public final class CPAQuotaSession {
             await previousCandidate.cancel()
         }
         guard generation == operationGeneration else { return }
+        if Task.isCancelled {
+            await abandonConnect(server: server, generation: generation)
+            return
+        }
 
         if let savedServer, savedServer != server {
             let registrationVersion = nextCredentialIntent(action: .hold(server: savedServer)).version
             await credentialCoordinator.register(savedServer, version: registrationVersion)
             guard generation == operationGeneration else { return }
+            if Task.isCancelled {
+                await abandonConnect(server: server, generation: generation)
+                return
+            }
         }
 
         let holdIntent = nextCredentialIntent(action: .hold(server: server))
         await credentialCoordinator.submit(holdIntent)
+        guard generation == operationGeneration else { return }
+        if Task.isCancelled {
+            await abandonConnect(server: server, generation: generation)
+            return
+        }
 
         let client = clientFactory(server, managementKey)
         let newStore = CPAQuotaStore(client: client)
         pendingStore = newStore
 
         let progressRound = beginProgressRound()
-        await newStore.load()
+        await newStore.loadInventory()
         endProgressRound(progressRound)
 
         guard generation == operationGeneration, !Task.isCancelled else {
@@ -851,7 +953,7 @@ public final class CPAQuotaSession {
                 await abandonConnect(
                     server: server,
                     generation: generation,
-                    cancelledIntentVersion: rememberInKeychain ? commitIntent.version : nil
+                    cancelledIntentVersion: commitIntent.version
                 )
             }
             return
@@ -866,7 +968,7 @@ public final class CPAQuotaSession {
             await abandonConnect(
                 server: server,
                 generation: generation,
-                cancelledIntentVersion: rememberInKeychain ? commitIntent.version : nil
+                cancelledIntentVersion: commitIntent.version
             )
             return
         }
@@ -891,10 +993,24 @@ public final class CPAQuotaSession {
         pendingServer = nil
         capUsageCoordinator.bind(client: capClient)
         self.authState = .connected(server: server, isRememberedInKeychain: savedToKeychain)
+        // The validated connection is accepted. Dismissing its now-completed
+        // form must not cancel the accepted account refresh.
+        connectionSubmissionTask = nil
+        connectionSubmissionID = nil
         self.isPresentingConnectionSheet = false
         synchronizeQuotaWidgetSnapshot()
         _ = await credentialCoordinator.finalize(commitIntent.version)
         await previousStore?.cancel()
+        await refreshAcceptedStore(newStore, generation: generation)
+    }
+
+    private func refreshAcceptedStore(_ acceptedStore: CPAQuotaStore, generation: UInt64) async {
+        guard operationGeneration == generation, store === acceptedStore, !Task.isCancelled else { return }
+        let round = beginProgressRound()
+        await acceptedStore.refreshLoadedAccounts()
+        endProgressRound(round)
+        guard operationGeneration == generation, store === acceptedStore else { return }
+        synchronizeQuotaWidgetSnapshot()
     }
 
     private func restoreActiveAuthState() {
@@ -985,24 +1101,7 @@ public final class CPAQuotaSession {
 
     public func cancelActiveOperation() async {
         if case .connecting = authState {
-            operationGeneration &+= 1
-            let generation = operationGeneration
-            let server = pendingServer ?? currentServer
-            let intent = nextCredentialIntent(action: .hold(server: server))
-            await credentialCoordinator.submit(intent)
-            let outcome = await credentialCoordinator.synchronize()
-            guard generation == operationGeneration else { return }
-            guard outcome.version == intent.version else { return }
-            if let failure = outcome.failure {
-                presentStorageFailure(failure)
-            }
-            if let pendingStore {
-                await pendingStore.cancel()
-                guard generation == operationGeneration else { return }
-            }
-            pendingStore = nil
-            pendingServer = nil
-            restoreActiveAuthState()
+            await cancelConnectionAttempt().value
             return
         }
         guard let store else { return }

@@ -76,6 +76,7 @@ type Service struct {
 	rounds        map[string]*sourceRound
 	lastRound     map[string]int64
 	notifications map[string]bool
+	refreshes     refreshLimits
 }
 
 type principalAuth struct {
@@ -223,7 +224,8 @@ func NewService(opt Options) (*Service, error) {
 	}
 	ctx, cancel := context.WithCancel(parent)
 	service := &Service{opt: opt, state: state, sources: sources, tokens: tokens, ctx: ctx, cancel: cancel,
-		delivery: map[string]*deliveryGate{}, rounds: map[string]*sourceRound{}, lastRound: map[string]int64{}, notifications: map[string]bool{}}
+		delivery: map[string]*deliveryGate{}, rounds: map[string]*sourceRound{}, lastRound: map[string]int64{}, notifications: map[string]bool{},
+		refreshes: refreshLimits{principals: map[string][]time.Time{}, sessions: map[string]time.Time{}}}
 	for _, record := range state.Sessions {
 		if record.Snapshot != nil && record.NextRefresh != nil {
 			started := *record.NextRefresh - int64(refreshSpacing/time.Second)
@@ -253,6 +255,7 @@ func (s *Service) Handler() http.Handler {
 	})
 	mux.HandleFunc("/v1/monitoring/sessions", s.sessions)
 	mux.HandleFunc("/v1/monitoring/sessions/", s.session)
+	mux.HandleFunc("GET /v1/capabilities", s.capabilities)
 	mux.HandleFunc("GET /v1/sources/{sourceID}/quota", s.quota)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
@@ -606,20 +609,33 @@ func (s *Service) refreshSession(w http.ResponseWriter, r *http.Request, princip
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	startCollection := false
 	if record.Status == "active" {
+		if wait := s.refreshes.accept(principal.id, id, s.opt.Now()); wait > 0 {
+			s.mu.Unlock()
+			writeRefreshLimit(w, wait)
+			return
+		}
+		previous := record
 		record.Pending = true
 		record.Delivery = pendingDelivery(record, s.opt.Config.DryRun)
-		s.state.Sessions[id] = record
-		if s.persistLocked() != nil {
-			s.mu.Unlock()
-			http.Error(w, "unavailable", http.StatusServiceUnavailable)
-			return
+		// An already accepted refresh is durable. Repeating it must not
+		// serialize and fsync the entire state or rescan all source sessions.
+		if record.Pending != previous.Pending || record.Delivery != previous.Delivery {
+			s.state.Sessions[id] = record
+			if s.persistLocked() != nil {
+				s.state.Sessions[id] = previous
+				s.mu.Unlock()
+				http.Error(w, "unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			startCollection = !previous.Pending
 		}
 	}
 	view := s.view(record)
 	s.mu.Unlock()
 	writeJSON(w, http.StatusAccepted, view)
-	if record.Status == "active" {
+	if startCollection {
 		s.startCollections([]string{id})
 	}
 }

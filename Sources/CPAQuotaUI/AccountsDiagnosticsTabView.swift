@@ -5,6 +5,7 @@ import CPAQuotaKit
 public struct AccountsDiagnosticsTabView: View {
     @Bindable var session: CPAQuotaSession
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
     @State private var searchText = ""
 
     public init(session: CPAQuotaSession) {
@@ -18,13 +19,15 @@ public struct AccountsDiagnosticsTabView: View {
             let presentation = AccountDiagnosticPresentation(
                 account: account, error: session.records[account.id]?.error, maskEmail: session.maskEmail
             )
-            return [presentation.displayName, presentation.email, account.provider, account.authIndex ?? ""]
+            return [presentation.displayName, presentation.email,
+                    QuotaFormatter.maskEmails(in: account.provider, enabled: session.maskEmail),
+                    QuotaFormatter.maskEmails(in: account.authIndex ?? "", enabled: session.maskEmail)]
                 .contains { $0.localizedCaseInsensitiveContains(query) }
         }
     }
 
     public var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme)
+        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         List {
             Section {
                 connectionHealth
@@ -81,8 +84,8 @@ public struct AccountsDiagnosticsTabView: View {
                             let presentation = AccountDiagnosticPresentation(
                                 account: account, error: session.records[account.id]?.error, maskEmail: session.maskEmail
                             )
-                            QuotaLabeledValue(title: "账号索引", value: account.authIndex ?? "未知")
-                            QuotaLabeledValue(title: "服务报告状态", value: account.status, monospaced: false)
+                            QuotaLabeledValue(title: "账号索引", value: QuotaFormatter.maskEmails(in: account.authIndex ?? "未知", enabled: session.maskEmail))
+                            QuotaLabeledValue(title: "服务报告状态", value: QuotaFormatter.maskEmails(in: account.status, enabled: session.maskEmail), monospaced: false)
                             Text(presentation.readerDescription)
                                 .font(.subheadline)
                                 .foregroundStyle(palette.textSecondary)
@@ -101,7 +104,7 @@ public struct AccountsDiagnosticsTabView: View {
 
     @ViewBuilder
     private var connectionHealth: some View {
-        let palette = BrandPalette(colorScheme: colorScheme)
+        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         if session.store?.error != nil {
             Label("账号读取未完成", systemImage: "exclamationmark.triangle")
                 .foregroundStyle(palette.textPrimary)
@@ -117,7 +120,7 @@ public struct AccountsDiagnosticsTabView: View {
     }
 
     private func accountRow(_ account: CPAAccount) -> some View {
-        let palette = BrandPalette(colorScheme: colorScheme)
+        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         let presentation = AccountDiagnosticPresentation(
             account: account, error: session.records[account.id]?.error, maskEmail: session.maskEmail
         )
@@ -132,7 +135,7 @@ public struct AccountsDiagnosticsTabView: View {
                     Text(presentation.email)
                         .font(QuotaTypography.dataDetail)
                         .foregroundStyle(palette.textSecondary)
-                    Text(account.provider.uppercased())
+                    Text(QuotaFormatter.maskEmails(in: account.provider.uppercased(), enabled: session.maskEmail))
                         .font(.caption)
                         .foregroundStyle(palette.textSecondary)
                     Label(presentation.accountStatus, systemImage: presentation.statusSymbol)

@@ -44,6 +44,7 @@ public final class MonitoringStore {
     public private(set) var cancellationReceipt: MonitoringCancellationReceipt?
     public private(set) var state: State = .idle
     public private(set) var error: MonitoringError?
+    public private(set) var lastConfirmedAt: Date?
     public private(set) var detachedSessions: [DetachedMonitoringSession] = []
     @ObservationIgnored private var client: CPAMonitorClient
     @ObservationIgnored private var generation: UInt64 = 0
@@ -58,6 +59,7 @@ public final class MonitoringStore {
         }
         self.client = client
         sessionID = nil; session = nil; cancellationReceipt = nil; error = nil; state = .idle
+        lastConfirmedAt = nil
     }
 
     public func cancelPending() async {
@@ -84,6 +86,7 @@ public final class MonitoringStore {
             }
             self.session = nil
             cancellationReceipt = nil
+            lastConfirmedAt = nil
         }
         generation &+= 1
         let current = generation
@@ -108,6 +111,7 @@ public final class MonitoringStore {
                                                              lastSession: session, cancellationReceipt: cancellationReceipt))
             session = nil
             cancellationReceipt = nil
+            lastConfirmedAt = nil
         }
         cancellationReceipt = receipt(for: id)
         sessionID = id; state = .working; error = nil
@@ -169,6 +173,7 @@ public final class MonitoringStore {
             if let result { try accept(result); state = .available }
             else {
                 cancellationReceipt = MonitoringCancellationReceipt(id: id, client: client)
+                lastConfirmedAt = Date()
                 state = .stopIntentRecorded
             }
         } catch {
@@ -196,6 +201,7 @@ public final class MonitoringStore {
         }
         try Self.checkProgress(result, from: session)
         session = result
+        lastConfirmedAt = Date()
     }
 
     private func receipt(for id: UUID) -> MonitoringCancellationReceipt? {

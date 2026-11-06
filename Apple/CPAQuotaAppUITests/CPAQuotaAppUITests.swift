@@ -42,7 +42,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         reveal(unauthorized, in: app, upward: false, requiresHitTarget: false)
         verify(unauthorized.label.contains("CPA 管理密钥鉴权失败"), in: app,
                "The real management HTTP 401 response must be presented as an authentication failure.")
-        verify(!element("quota.displayMode", in: app).exists, in: app,
+        verify(!element("quota.options", in: app).exists, in: app,
                "A management 401 must not open the quota workspace.")
         attach(app, name: "login-management-401")
 
@@ -51,7 +51,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         reveal(submit, in: app)
         submit.tap()
         let account = element("quota.account.ui-main", in: app)
-        expectExists(element("quota.displayMode", in: app), in: app, timeout: 15)
+        expectExists(element("quota.options", in: app), in: app, timeout: 15)
         reveal(account, in: app)
         verify(nativeTab("quotas", title: "额度总览", in: app).isSelected, in: app,
                "Successful authentication must return to the selected native quota destination.")
@@ -62,6 +62,50 @@ final class CPAQuotaAppUITests: XCTestCase {
         verify(!textContaining("native@example.com", in: app).exists, in: app,
                "The default masking preference must apply to accessible text.")
         attach(app, name: "login-connected-quota")
+    }
+
+    @MainActor
+    func testCloseDuringSlowConnectionClearsDraftAndRejectsLateResponse() {
+        verifySlowConnectionDismissal(interactively: false)
+    }
+
+    @MainActor
+    func testSwipeDismissalDuringSlowConnectionClearsDraftAndRejectsLateResponse() {
+        verifySlowConnectionDismissal(interactively: true)
+    }
+
+    @MainActor
+    private func verifySlowConnectionDismissal(interactively: Bool) {
+        let app = launch(connected: false)
+        defer { app.terminate() }
+        let address = element("connection.server", in: app)
+        let key = element("connection.key", in: app)
+        let submit = element("connection.submit", in: app)
+        replaceText(in: address, with: "https://slow-ui-test.invalid", app: app)
+        reveal(key, in: app)
+        replaceText(in: key, with: "ui-test-valid-key", app: app)
+        reveal(submit, in: app)
+        submit.tap()
+        expectExists(element("connection.cancel", in: app), in: app)
+        if interactively {
+            let bar = app.navigationBars["连接管理"]
+            expectExists(bar, in: app)
+            bar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
+        } else {
+            element("connection.close", in: app).tap()
+        }
+        let start = element("connection.start", in: app)
+        expectExists(start, in: app)
+        verify(!element("quota.options", in: app).waitForExistence(timeout: 6), in: app,
+               "A response received after dismissal must not open or replace the workspace.")
+        start.tap()
+        expectExists(address, in: app)
+        replaceText(in: address, with: "https://ui-test.invalid", app: app)
+        reveal(submit, in: app)
+        verify(!submit.isEnabled, in: app,
+               "Reopening with a valid address must require a new management key.")
+        attach(app, name: interactively ? "connection-cancel-swipe" : "connection-cancel-close")
     }
 
     @MainActor
@@ -313,12 +357,14 @@ final class CPAQuotaAppUITests: XCTestCase {
         verify(app.wait(for: .runningForeground, timeout: 10), in: app, "The fixture app must launch in the foreground.")
         verify(!element("ui-test.preparationFailed", in: app).exists, in: app, "Fixture preparation must succeed.")
         if connected {
-            // A List does not create every offscreen row. In accessibility5 the
-            // first account starts below the fold; waiting for it without
-            // scrolling incorrectly treats native lazy loading as a failure.
-            expectExists(element("quota.displayMode", in: app), in: app, timeout: 15)
+            // The toolbar is available before lazy account rows, including
+            // when accessibility text sizes require scrolling to the first row.
+            expectExists(element("quota.options", in: app), in: app, timeout: 15)
             reveal(element("quota.account.ui-main", in: app), in: app)
         } else {
+            let start = element("connection.start", in: app)
+            expectExists(start, in: app, timeout: 15)
+            start.tap()
             expectExists(element("connection.server", in: app), in: app, timeout: 15)
         }
         return app

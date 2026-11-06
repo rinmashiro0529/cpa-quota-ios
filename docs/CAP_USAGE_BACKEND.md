@@ -31,7 +31,13 @@ if let client = await session.makeCAPUsageClient() {
 
 ## 窗口与速度
 
-`CAPUsageWindow(now:)` 生成 `[floor(now/60)*60-1800, floor(now/60)*60)`，即截至最后完整分钟的近 30 分钟；上层应显示“截至 HH:mm”。此处 now 是调用方提供的可信时钟，公开资源并未提供独立服务器时钟同步协议。`generated_at` 是插件生成响应时间，不是每次请求观察时间；`bucket_seconds` 明确时间桶分辨率，不能冒充秒级完整数据。
+`CAPUsageWindow(now:range:)` 仅允许 `CAPUsageRange` 的 30 分钟、24 小时、7 天三个有界选项，默认仍为 30 分钟。终点为 `floor(now/60)*60`，起点为终点减去对应的 1800 / 86400 / 604800 秒；它们是经过时长，不是本地自然日。固定版本 `aggregate.go` 的 `usageRangeFromQuery` 明确接受 `range=custom`、RFC3339 起止时间且要求 start < end，`presetUsageRange` 也明确列有 `24h` 和 `7d`。客户端继续发送 custom 起止值，使各区域和翻页复用同一绝对窗口；这项源码证据不代表用户实例已完成兼容性验收。
+
+选择范围只取消在途读取并更新待查询窗口，不自动请求端点。旧结果保留自己的窗口与生成时间并标为“上次读数”；刷新当前栏目使用所选窗口，失败区域重试始终使用该区域失败时的窗口和分页参数。切换为较长范围不会放宽分页、请求条数或字节预算。
+
+`retained_since` 只能说明服务端保留历史的起点。缺失、无法解析或尚未读取时显示“保留范围尚未确认”；窗口早于保留起点时明确提示较早时段不可用，不能把零记录当作该时段零用量。保留起点覆盖窗口仍不证明迟到写入、分页或跨端点快照完整。上游配置默认值不能用于推断用户实例的实际保留期。
+
+此处 now 是调用方提供的可信时钟，公开资源并未提供独立服务器时钟同步协议。界面显示窗口两端的绝对日期与时间。`generated_at` 是插件生成响应时间，不是每次请求观察时间；`bucket_seconds` 明确时间桶分辨率，不能冒充秒级完整数据。
 
 ```text
 严格加权生成 TPS = sum(有效输出 Token) / (sum(latency_ns - ttft_ns) / 1e9)
@@ -62,7 +68,11 @@ CPA 账号清单身份（id/name/auth_index 与嵌套 Codex account ID）优先�
 
 `CAPUsageStore` 的 `refresh(window:)` 更新概览快照和逐模型统计，`summary.counters` 同时提供该已取得请求集合的基础计数：失败请求的部分 Token 保留在用量中，字段缺失或整数溢出时对应合计为 nil。所有统计仍受 `requests.completeness` 约束，不能把部分集合的计数当作插件报告的全量。
 
-`refreshDetails(window:groupOffset:groupLimit:)` 在同一固定窗口内读取 initial/trends/groups/costs，整批成功后发布 `details`，默认分组页为 offset=0、limit=100。独立的 `detailsError`/`isLoadingDetails` 不覆盖概览状态；刷新失败保留上次详情。分组页的 total、当前 items、groupOffset 与 groupLimit 同时保留，不能把一页当作全量。四个端点不共享冻结数据库快照，固定窗口不代表跨端点原子一致性。
+`refreshDetails(window:groupOffset:groupLimit:)` 在同一固定窗口内顺序读取 initial/trends/groups/costs，保持最多一个详情端点在途。四个资源分别持有 `initialState`、`trendsState`、`groupsState`、`costsState`：成功响应立即发布，不等待其他区域成功。每个状态保留自己的 `snapshot.query`（原始窗口及分组分页参数）、本次 `requestedQuery`、错误、加载状态和“上次读数”标记；每个响应的 `generated_at` 原样保留。一个区域失败不会清空其他三个区域，也不会把旧结果的时间重新标成新结果。
+
+`retryDetailResource(_:)` 只重试指定失败区域；`retryFailedDetails()` 只读取当前失败区域，逐个复用各自失败时的查询。`refreshGroupPage` 始终只读 groups，即使其他分析尚未成功，也不会补发整个分析批次。默认分组页仍为 offset=0、limit=100；分组 total、当前 items、groupOffset 与 groupLimit 同时保留，不能把一页当作全量。重试通过原有客户端与协调器，不切换认证方式，不清除冷却或熔断。
+
+兼容属性 `details` 仅保留最近一组窗口一致的四类快照，`detailsError` 为首个资源错误，`isLoadingDetails` 为各资源加载状态的并集；新界面使用独立状态，不以兼容整组快照作为显示门槛。固定窗口不代表四个端点共享冻结数据库快照，也不代表它们的生成时间相同。
 
 新一轮刷新会取消同类旧任务；取消会向底层传输传播，并在 HTTP 返回及 JSON 解码后检查。代际校验同时禁止旧结果覆盖新结果。调用方取消外层 Task 时，Store 也取消自己持有的子任务，不会脱离外层继续翻页。
 
@@ -70,10 +80,11 @@ CPA 账号清单身份（id/name/auth_index 与嵌套 Codex account ID）优先�
 
 ## 验证与上线边界
 
-测试采用固定公开协议的合成 JSON、受控时钟及注入 HTTP 传输，不访问真实 CPA 或凭据。本次验证回执、源码哈希和未验收项目见 `BACKEND_RELIABILITY_PR.md`、`verification/backend-reliability-20261029.json` 与当前 PR Checks；`BACKEND_VERIFICATION.md` 仅记录 PR #1 的历史验证。部分切片的通过不代表完整工程通过。没有新增第三方运行时依赖，也未操作 Apple 账号、签名、安装或部署。
+测试采用固定公开协议的合成 JSON、受控时钟及注入 HTTP 传输，不访问真实 CPA 或凭据。本轮审计整改与验证边界见 `AUDIT_REMEDIATION_20261107.md` 及对应 PR 最新 Checks。新增 Swift 回归用例已加入源码；当前工作环境没有 Swift 编译器，未在本地执行，不能以静态检查替代编译或原生运行结果。`BACKEND_RELIABILITY_PR.md`、`verification/backend-reliability-20261029.json` 与 `BACKEND_VERIFICATION.md` 仅为此前版本的历史证据，不证明本轮变更通过。部分切片的通过不代表完整工程通过。没有新增第三方运行时依赖，也未操作 Apple 账号、签名、安装或部署。
 
 ## 一手协议来源
 
-- [固定版 aggregate.go](https://github.com/AITNR/cap-token-usage-tracker/blob/b7748ecfc1a5352acd10df8f17b1ba88ee2a591b/internal/plugin/aggregate.go)：计数、维度、概览、分组与时间桶。
+- [固定版 aggregate.go](https://github.com/AITNR/cap-token-usage-tracker/blob/b7748ecfc1a5352acd10df8f17b1ba88ee2a591b/internal/plugin/aggregate.go)：计数、维度、概览、分组、时间桶，以及 `usageRangeFromQuery` / `presetUsageRange` 的窗口合同。
+- [固定版 config.go](https://github.com/AITNR/cap-token-usage-tracker/blob/b7748ecfc1a5352acd10df8f17b1ba88ee2a591b/internal/plugin/config.go)：可配置保留天数；默认配置不构成用户实例实际保留范围的证据。
 - [固定版 request_log.go](https://github.com/AITNR/cap-token-usage-tracker/blob/b7748ecfc1a5352acd10df8f17b1ba88ee2a591b/internal/plugin/request_log.go)：请求字段、推理口径及插件TPS回退。
 - [固定版 management.go](https://github.com/AITNR/cap-token-usage-tracker/blob/b7748ecfc1a5352acd10df8f17b1ba88ee2a591b/internal/plugin/management.go)：只读路由、查询与分页。

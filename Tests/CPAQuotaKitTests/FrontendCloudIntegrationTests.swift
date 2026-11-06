@@ -292,6 +292,10 @@ private actor DynamicMonitorScenarioTransport: HTTPTransport {
     private var registeredActivityID: String?
 
     func send(_ request: URLRequest) async throws -> HTTPResponse {
+        if request.url?.lastPathComponent == "capabilities" {
+            return HTTPResponse(statusCode: 200, headers: [:], body: try MonitoringCapabilityFixture.data(
+                sourceID: "prod-cpa", accountIDs: ["acc-1", "acc-2", "acc-3", "acc-4", "acc-5", "acc-6"]))
+        }
         step += 1
         switch step {
         case 1:

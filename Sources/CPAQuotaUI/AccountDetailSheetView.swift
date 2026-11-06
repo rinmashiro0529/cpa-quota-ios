@@ -6,6 +6,7 @@ public struct AccountDetailSheetView: View {
     @Bindable var session: CPAQuotaSession
     public let account: CPAAccount
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
 
     public init(session: CPAQuotaSession, account: CPAAccount) {
         self.session = session
@@ -19,7 +20,7 @@ public struct AccountDetailSheetView: View {
     }
 
     public var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme)
+        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         let record = session.records[account.id]
         let snapshot = record?.snapshot
         let diagnostic = AccountDiagnosticPresentation(
@@ -35,8 +36,8 @@ public struct AccountDetailSheetView: View {
                 QuotaLabeledValue(title: "邮箱", value: diagnostic.email)
                     .privacySensitive()
                     .accessibilityIdentifier("quota.detail.email")
-                QuotaLabeledValue(title: "平台", value: account.provider.uppercased())
-                QuotaLabeledValue(title: "套餐", value: snapshot?.plan ?? account.plan ?? "未知", monospaced: false)
+                QuotaLabeledValue(title: "平台", value: QuotaFormatter.maskEmails(in: account.provider.uppercased(), enabled: session.maskEmail))
+                QuotaLabeledValue(title: "套餐", value: QuotaFormatter.maskEmails(in: snapshot?.plan ?? account.plan ?? "未知", enabled: session.maskEmail), monospaced: false)
                 QuotaLabeledValue(title: "小组件别名", value: session.widgetAlias(for: account) ?? "尚未共享", monospaced: false)
                 Text(widgetNumberExplanation)
                     .font(.footnote)
@@ -74,7 +75,7 @@ public struct AccountDetailSheetView: View {
                 if !snapshot.windows.isEmpty {
                     Section {
                         ForEach(snapshot.windows) { window in
-                            QuotaWindowView(window: WindowPresentation(window: window), displayMode: session.displayMode)
+                            QuotaWindowView(window: WindowPresentation(window: window), displayMode: session.displayMode, maskEmail: session.maskEmail)
                                 .padding(.vertical, 8)
                         }
                     } header: {
@@ -87,7 +88,7 @@ public struct AccountDetailSheetView: View {
                 if !snapshot.metrics.isEmpty {
                     Section {
                         ForEach(snapshot.metrics.map(MetricPresentation.init)) { metric in
-                            QuotaLabeledValue(title: metric.label, value: metric.formattedValue)
+                            QuotaLabeledValue(title: QuotaFormatter.maskEmails(in: metric.label, enabled: session.maskEmail), value: QuotaFormatter.maskEmails(in: metric.formattedValue, enabled: session.maskEmail))
                         }
                     } header: {
                         Text("上游摘要指标")
@@ -147,8 +148,8 @@ public struct AccountDetailSheetView: View {
 
             Section {
                 DisclosureGroup("读取与服务详情") {
-                    QuotaLabeledValue(title: "账号索引", value: account.authIndex ?? "未知")
-                    QuotaLabeledValue(title: "服务报告状态", value: account.status, monospaced: false)
+                    QuotaLabeledValue(title: "账号索引", value: QuotaFormatter.maskEmails(in: account.authIndex ?? "未知", enabled: session.maskEmail))
+                    QuotaLabeledValue(title: "服务报告状态", value: QuotaFormatter.maskEmails(in: account.status, enabled: session.maskEmail), monospaced: false)
                     Text(diagnostic.readerDescription)
                         .font(.subheadline)
                         .foregroundStyle(palette.textSecondary)

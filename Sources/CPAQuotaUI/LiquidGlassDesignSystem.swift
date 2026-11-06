@@ -13,9 +13,11 @@ extension CPAThemeMode {
 
 public struct BrandPalette: Sendable {
     public let colorScheme: ColorScheme
+    public let contrast: ColorSchemeContrast
 
-    public init(colorScheme: ColorScheme) {
+    public init(colorScheme: ColorScheme, contrast: ColorSchemeContrast = .standard) {
         self.colorScheme = colorScheme
+        self.contrast = contrast
     }
 
     public var isDark: Bool {
@@ -54,7 +56,10 @@ public struct BrandPalette: Sendable {
             : Color(red: 0.824, green: 0.427, blue: 0.298) // #D26D4C
     }
 
-    public var actionTint: Color { accent }
+    public var actionTint: Color {
+        let value = BrandActionColor.resolve(isDark: isDark, increasedContrast: contrast == .increased)
+        return Color(.sRGB, red: value.red, green: value.green, blue: value.blue, opacity: 1)
+    }
 
     /// The original dark brand ink stays readable on either terracotta tint.
     /// Dark appearance's light textPrimary is intended for dark content surfaces,
@@ -154,14 +159,15 @@ public struct QuotaContentSurfaceModifier: ViewModifier {
 
 private struct QuotaPrimaryButtonStyleModifier: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        let palette = BrandPalette(colorScheme: colorScheme)
+        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         if #available(iOS 26.0, macOS 26.0, *) {
             content
                 .buttonStyle(.glassProminent)
-                .tint(palette.actionTint)
+                .tint(palette.accent)
                 .foregroundStyle(palette.textOnAccent)
                 .controlSize(.large)
         } else {

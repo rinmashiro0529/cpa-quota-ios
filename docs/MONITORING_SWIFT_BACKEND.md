@@ -4,15 +4,27 @@
 
 ## 客户端与状态
 
-`MonitorBridgeToken` 与 `MonitoringPushToken` 是独立的非 Codable 敏感类型，文本描述脱敏。使用 `MonitorBridgeAddress` 规范化 HTTPS 桥接地址后创建 `CPAMonitorClient`，调用 `create`、`get`、`rotate`、`refresh`、`stop` 和 `cachedQuota`。地址规则与独立 Keychain 存储一致，不能自行剥离桥接的反向代理路径。监控访问令牌（Bridge Token）不等于 CPA 管理密钥。
+`MonitorBridgeToken` 与 `MonitoringPushToken` 是独立的非 Codable 敏感类型，文本描述脱敏。使用 `MonitorBridgeAddress` 规范化 HTTPS 桥接地址后创建 `CPAMonitorClient`，调用 `capabilities`、`create`、`get`、`rotate`、`refresh`、`stop` 和 `cachedQuota`。地址规则与独立 Keychain 存储一致，不能自行剥离桥接的反向代理路径。监控访问令牌（Bridge Token）不等于 CPA 管理密钥。
 
 创建会话时由调用方先生成并持久保存 UUID；请求超时后以原 UUID 查询对账，不能换 UUID 盲目重试。`stop` 返回 nil 只表示服务器返回204并接受停止意图，不能解释为设备活动已移除或 APNs 已送达。`MonitoringStore` 对启动、加载、刷新、token 更新和停止提供可观察状态；网络失败保留当前会话 UUID，并标为 uncertain，不把结果不明伪装成停止成功。
 
 `rotate` 的 revision 为 expected-current，成功响应必须加一；溢出在发送前拒绝。初始 revision 为1，控制变更递增，快照更新只递增 sequence。`refresh` 接受200或202；202只表示当前会话已返回、采集尚待完成，不表示推送完成。push token 是非空偶数长度十六进制文本，最多4096字符，不固定为32字节。当前 `rotate` 的 activityID 参数只用于核对响应，不发送到 token 更新 body 中，也不把旧 session 改绑到另一 Activity。
 
-401表示桥接凭据失效，会阻断该客户端后续请求；403可能只是来源/账号授权不足，只拒绝这一请求，不应阻止发送原本有权停止的会话 DELETE。此规则不同于 CPA 管理连接的共享401/403熔断：管理侧原合同不变。404、409、5xx、重定向和429有独立安全错误类别；429的截止时间可通过 `await client.retryAt` 读取。不得记录原始认证头、请求体、令牌或完整会话上下文。
+401 表示桥接凭据失效，会阻断该客户端后续请求；403 可能只是来源/账号授权不足，只拒绝这一请求，不应阻止发送原本有权停止的会话 DELETE。此规则不同于 CPA 管理连接的共享 401/403 熔断：管理侧原合同不变。404、409、5xx、重定向和 429 有独立安全错误类别。普通查询/创建、refresh、DELETE 和 token PUT 各自遵守自己的 Retry-After；缺少有效期限时保守等待 60 秒。刷新被限流不会阻断其他通道，停止或 token 更新自身被限流时仍然等待，不能借通道隔离绕过服务端冷却。`await client.retryAt` 仅暴露普通查询/创建通道的期限。不得记录原始认证头、请求体、令牌或完整会话上下文。
 
 507 单独映射为 `MonitoringError.capacityExceeded`，表示服务没有接纳新的持久意图，不设置共享冷却或凭据熔断。可继续查询和停止已接受的会话；未知 UUID 的 DELETE 收到 507 时必须保留 uncertain，不能生成取消回执。
+
+## 授权验证与容量发现
+
+`capabilities()` 通过携带独立 Bearer 的 `GET /v1/capabilities` 返回 `MonitoringCapabilities`。DTO 与 Go 共用 `monitoring-capabilities-v1.json`，验证协议版本、整数 Unix 秒、资源数量、重复标识与容量算式。它只证明当前服务识别此令牌并返回了授权范围，不证明真实 CPA 可达、APNs 成功或设备展示。
+
+`MonitoringWorkspaceCoordinator.connectBridge` 先验证候选服务，再保存或替换凭据。401、403、404、网络失败及无效响应均不会替换原可用连接。成功连接后只显示服务授权清单；新建前再次核对来源、账号和数量容量，才分配 UUID 或请求本机系统活动。能力接口的 404 表示服务需要升级，不使用公开 healthz 代替验证。
+
+候选地址的网络验证与最终凭据提交分别跟踪。候选或当前服务的只读验证在等待时，原会话仍可查询和停止；只有短暂的凭据切换阶段锁住配置。如果验证返回时原会话仍在处理控制请求，本次切换保留原连接并提示稍后再试，避免中途替换正在停止的身份。
+
+恢复已保存凭据时标为“待验证”，先恢复原会话，不等待新的能力接口；验证入口和新会话启动才执行发现。原会话的查询和停止继续使用原身份与客户端，不依赖新能力验证成功。`MonitoringStore.lastConfirmedAt` 是最近一次接受有效 HTTP 会话响应或持久取消回执的本机时间，不等于额度观察时间，也不代表设备送达。
+
+容量达到阈值时显示提醒，诊断中提供上次查询的计数、阈值和生成时间。此查询不预留名额，也不检查最终序列化字节预算；实际注册仍可能返回 507。v1 历史意图持续计数，不自动删除墓碑；安全回收所需的新协议合同见 [监控服务](MONITOR_SERVICE.md)。
 
 ## 共享 DTO 与内容预算
 
@@ -34,4 +46,4 @@ Go handler 实际响应生成的 `Tests/ContractFixtures/monitoring-lifecycle-v1
 
 ## 验证边界
 
-本地合成测试覆盖 DTO 向量、Unix 秒、安全文本、4KiB分配策略、令牌脱敏、地址/路径、CAS、401与请求级403、429、202、错误保留、迟到响应和 detached 操作。当前源码的本地验证及其范围见 `BACKEND_RELIABILITY_PR.md` 与 `verification/backend-reliability-20261029.json`；Apple 平台以当前 PR Checks 为准。`BACKEND_VERIFICATION.md` 中的 Swift/iOS 交叉编译是 PR #1 的历史结果，不覆盖本次改动。没有访问真实 CPA、Keychain、APNs 或 Apple 账号，也没有修改签名能力或安装 App。
+本地合成测试覆盖 DTO 向量、Unix 秒、安全文本、4KiB分配策略、令牌脱敏、地址/路径、CAS、401与请求级403、429、202、错误保留、迟到响应和 detached 操作。`BACKEND_RELIABILITY_PR.md` 与 `verification/backend-reliability-20261029.json` 记录的是既有版本的历史验证。2026-11-07 审计整改的实际执行范围见 [整改交付记录](AUDIT_REMEDIATION_20261107.md) 与对应候选 SHA 的 PR Checks；新增的合成测试尚需在具备工具链的环境执行。`BACKEND_VERIFICATION.md` 中的 Swift/iOS 交叉编译是 PR #1 的历史结果，不覆盖本次改动。没有访问真实 CPA、Keychain、APNs 或 Apple 账号，也没有修改签名能力或安装 App。

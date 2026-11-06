@@ -31,3 +31,107 @@ struct IntegrationPresentationRegressionTests {
         #expect(!overflowing.secondaryComparisonText.contains("inf"))
     }
 }
+
+@Suite("Audit quota semantics and privacy")
+struct AuditQuotaPresentationTests {
+    @Test(arguments: [0.0, 0.2, 0.999, 1.0, 1.01])
+    func exhaustedReadingIsDistinctFromExplicitUpstreamEnforcement(_ used: Double) {
+        let presentation = WindowPresentation(window: QuotaWindow(id: "window", title: "5-hour limit", usedFraction: used))
+        #expect(presentation.isExhausted == (used >= 1))
+        #expect(!presentation.isExplicitlyLimited)
+        #expect(presentation.isOverQuota == (used >= 1))
+        if used >= 1 {
+            #expect(presentation.statusText == "读数已用完")
+            #expect(presentation.enforcementExplanation != nil)
+            #expect(!presentation.isLowRemainingWarning)
+        } else if used == 0.999 {
+            #expect(presentation.statusText == "剩余额度偏低")
+        } else {
+            #expect(presentation.statusText == nil)
+        }
+    }
+
+    @Test func explicitUpstreamFlagsTakePrecedenceEvenWithoutKnownPercentage() {
+        for window in [
+            QuotaWindow(id: "allowed", title: "Custom", usedFraction: 0, allowed: false),
+            QuotaWindow(id: "limited", title: "Custom", limitReached: true),
+            QuotaWindow(id: "both", title: "Custom", usedFraction: 1, allowed: false, limitReached: true)
+        ] {
+            let presentation = WindowPresentation(window: window)
+            #expect(presentation.isExplicitlyLimited)
+            #expect(presentation.statusText == "上游已限制使用")
+            #expect(presentation.enforcementExplanation == nil)
+        }
+        let unknown = WindowPresentation(window: QuotaWindow(id: "unknown", title: "Custom"))
+        #expect(!unknown.isOverQuota)
+        #expect(unknown.primaryPercentageText(for: .remaining) == "剩余比例未知")
+    }
+
+    @Test func listUsesLowestKnownIndependentWindowAndPreservesUnknownCount() {
+        let account = CPAAccount(id: "a", authIndex: "index-a", provider: "codex", displayName: "Fixture")
+        let snapshot = QuotaSnapshot(accountID: account.id, provider: account.provider, source: .live, fetchedAt: Date(), windows: [
+            QuotaWindow(id: "weekly", title: "7-day limit", usedFraction: 0.2),
+            QuotaWindow(id: "hourly", title: "5-hour limit", usedFraction: 0.9),
+            QuotaWindow(id: "unknown", title: "自定义限额")
+        ])
+        let record = QuotaRecord(account: account, snapshot: snapshot)
+        let summary = AccountQuotaSummary(record: record)
+        #expect(summary.window?.id == "hourly")
+        #expect(summary.window?.primaryPercentageText(for: .remaining) == "10% 剩余")
+        #expect(summary.windowCount == 3)
+        #expect(summary.knownWindowCount == 2)
+        #expect(summary.selectionText?.contains("1 个窗口比例未知") == true)
+        #expect(summary.hasLowQuota)
+        #expect(QuotaAccountStatusFilter.lowQuota.matches(account, record: record))
+        #expect(!QuotaAccountStatusFilter.pending.matches(account, record: record))
+    }
+
+    @Test func emptyAndFailedReadsAreNeverCountedAsZeroQuota() {
+        let pending = CPAAccount(id: "pending", authIndex: "p", provider: "codex", displayName: "Pending")
+        let failed = CPAAccount(id: "failed", authIndex: "f", provider: "codex", displayName: "Failed")
+        let disabled = CPAAccount(id: "disabled", authIndex: "d", provider: "codex", displayName: "Disabled", isDisabled: true)
+        let records = [failed.id: QuotaRecord(account: failed, error: CPAError(.network))]
+        let summary = QuotaOverviewSummary(accounts: [pending, failed, disabled], records: records)
+        #expect(summary.accountCount == 3)
+        #expect(summary.snapshotCount == 0)
+        #expect(summary.lowQuotaCount == 0)
+        #expect(summary.pendingCount == 1)
+        #expect(summary.failedCount == 1)
+        #expect(AccountQuotaSummary(record: records[failed.id]).window == nil)
+    }
+
+    @Test func knownWindowLabelsAreLocalizedAndCustomLabelsRetainTheirOriginalIdentity() {
+        let builtIn = WindowPresentation(window: QuotaWindow(id: "hourly", title: "5-hour limit"))
+        #expect(builtIn.title == "5 小时额度")
+        #expect(builtIn.originalTitle == "5-hour limit")
+        let custom = WindowPresentation(window: QuotaWindow(id: "custom", title: "Partner rolling window (custom)"))
+        #expect(custom.title == "Partner rolling window (custom)")
+        #expect(custom.originalTitle == custom.title)
+    }
+
+    @Test func freeTextMaskingRedactsEveryEmailIncludingUnicodeAndMalformedDomains() {
+        let value = "Owner: first@example.test、second@example.test；用户.测试@例子.公司；broken: missing@；double: alpha@@host"
+        let masked = QuotaFormatter.maskEmails(in: value, enabled: true)
+        #expect(masked.contains("fi***t@example.test"))
+        #expect(masked.contains("se***d@example.test"))
+        #expect(masked.contains("用户***试@例子.公司"))
+        #expect(masked.contains("mi***g@"))
+        #expect(masked.contains("al***a@@host"))
+        #expect(!masked.contains("first@example.test"))
+        #expect(!masked.contains("second@example.test"))
+        #expect(QuotaFormatter.maskEmail(value, enabled: true) == masked)
+        #expect(QuotaFormatter.maskEmails(in: value, enabled: false) == value)
+        #expect(QuotaFormatter.maskEmails(in: "无邮箱的主账号", enabled: true) == "无邮箱的主账号")
+        #expect(QuotaFormatter.maskEmails(in: "张＠example.test", enabled: true) == "***＠example.test")
+        #expect(QuotaFormatter.maskEmails(in: "a@example.test", enabled: true) == "***@example.test")
+    }
+
+    @Test func diagnosticsUseTheSameMaskedFreeTextAsQuotaCards() {
+        let title = "主要账号 first@example.test / second@example.test"
+        let account = CPAAccount(id: "a", authIndex: "fixture", provider: "codex", displayName: title)
+        let presentation = AccountDiagnosticPresentation(account: account, error: nil, maskEmail: true)
+        #expect(presentation.displayName == QuotaFormatter.maskEmails(in: title, enabled: true))
+        #expect(!presentation.displayName.contains("first@example.test"))
+        #expect(!presentation.displayName.contains("second@example.test"))
+    }
+}

@@ -8,6 +8,7 @@ public final class CAPUsageWorkspaceCoordinator {
     public private(set) var store: CAPUsageStore?
     public private(set) var client: CAPUsageClient?
     public private(set) var activeWindow: CAPUsageWindow
+    public private(set) var selectedRange: CAPUsageRange = .last30Minutes
     public private(set) var managementStats: CAPUsageStats?
     public private(set) var managementStatsWindow: CAPUsageWindow?
     public private(set) var managementStatsError: CAPUsageError?
@@ -23,7 +24,10 @@ public final class CAPUsageWorkspaceCoordinator {
     // Immutable presentation data is published with its original query window.
     // Large request aggregation and row identity work never run in View.body.
     private(set) var overviewPresentation: CAPOverviewPresentation?
-    private(set) var analyticsPresentation: CAPAnalyticsPresentation?
+    private(set) var initialPresentation: CAPInitialPresentation?
+    private(set) var trendsPresentation: CAPTrendsPresentation?
+    private(set) var groupsPresentation: CAPGroupsPresentation?
+    private(set) var costsPresentation: CAPCostsPresentation?
     private(set) var requestPagePresentation: CAPRequestPagePresentation?
     private(set) var managementPresentation: CAPManagementPresentation?
 
@@ -65,15 +69,27 @@ public final class CAPUsageWorkspaceCoordinator {
         self.requestPageError = nil
         self.requestPageOffset = 0
         self.overviewPresentation = nil
-        self.analyticsPresentation = nil
+        self.initialPresentation = nil
+        self.trendsPresentation = nil
+        self.groupsPresentation = nil
+        self.costsPresentation = nil
         self.requestPagePresentation = nil
         self.managementPresentation = nil
-        self.activeWindow = CAPUsageWindow(now: clock())
+        self.activeWindow = CAPUsageWindow(now: clock(), range: selectedRange)
         if let client {
             self.store = CAPUsageStore(client: client, access: resourceAccess)
         } else {
             self.store = nil
         }
+    }
+
+    /// Selection cancels in-flight reads without fetching new endpoints. Existing
+    /// presentations keep their original windows until the user refreshes them.
+    public func selectRange(_ range: CAPUsageRange) {
+        guard selectedRange != range else { return }
+        cancelAll()
+        selectedRange = range
+        activeWindow = CAPUsageWindow(now: clock(), range: range)
     }
 
     public func teardown() {
@@ -87,7 +103,10 @@ public final class CAPUsageWorkspaceCoordinator {
         requestPageError = nil
         requestPageOffset = 0
         overviewPresentation = nil
-        analyticsPresentation = nil
+        initialPresentation = nil
+        trendsPresentation = nil
+        groupsPresentation = nil
+        costsPresentation = nil
         requestPagePresentation = nil
         if let client {
             store = CAPUsageStore(client: client, access: resourceAccess)
@@ -104,8 +123,10 @@ public final class CAPUsageWorkspaceCoordinator {
         pageRequestID = nil
         overviewTask?.cancel()
         overviewTask = nil
+        store?.cancelOverview()
         detailsTask?.cancel()
         detailsTask = nil
+        store?.cancelDetails()
         managementTask?.cancel()
         managementTask = nil
         requestPageTask?.cancel()
@@ -119,7 +140,7 @@ public final class CAPUsageWorkspaceCoordinator {
         overviewTask?.cancel()
         let requestID = UUID()
         overviewRequestID = requestID
-        let window = CAPUsageWindow(now: now ?? clock())
+        let window = CAPUsageWindow(now: now ?? clock(), range: selectedRange)
         activeWindow = window
         let currentGen = generation
         let task = Task { @MainActor in
@@ -139,31 +160,54 @@ public final class CAPUsageWorkspaceCoordinator {
         }
     }
 
+    private enum DetailsRead: Sendable {
+        case all(CAPUsageResourceQuery)
+        case groups(CAPUsageResourceQuery)
+        case retry(CAPUsageDetailResource)
+        case retryFailed
+    }
+
     public func refreshDetails(window: CAPUsageWindow? = nil, groupOffset: Int = 0, groupLimit: Int = 100) async {
-        await loadDetails(window: window, groupOffset: groupOffset, groupLimit: groupLimit, groupsOnly: false)
+        let window = window ?? activeWindow
+        await loadDetails(.all(CAPUsageResourceQuery(window: window, groupOffset: groupOffset, groupLimit: groupLimit)))
     }
 
     public func refreshGroupPage(window: CAPUsageWindow, groupOffset: Int, groupLimit: Int) async {
-        await loadDetails(window: window, groupOffset: groupOffset, groupLimit: groupLimit, groupsOnly: true)
+        await loadDetails(.groups(CAPUsageResourceQuery(window: window, groupOffset: groupOffset, groupLimit: groupLimit)))
     }
 
-    private func loadDetails(window: CAPUsageWindow?, groupOffset: Int, groupLimit: Int, groupsOnly: Bool) async {
+    public func retryDetailResource(_ resource: CAPUsageDetailResource) async {
+        await loadDetails(.retry(resource))
+    }
+
+    public func retryFailedDetails() async {
+        await loadDetails(.retryFailed)
+    }
+
+    private func loadDetails(_ read: DetailsRead) async {
         guard let store, !Task.isCancelled else { return }
         detailsTask?.cancel()
         let requestID = UUID()
         detailsRequestID = requestID
-        let window = window ?? store.snapshot?.window ?? activeWindow
         let currentGen = generation
         let task = Task { @MainActor in
-            if groupsOnly {
-                await store.refreshGroupPage(window: window, groupOffset: groupOffset, groupLimit: groupLimit)
-            } else {
-                await store.refreshDetails(window: window, groupOffset: groupOffset, groupLimit: groupLimit)
+            let publish: @MainActor @Sendable (CAPUsageDetailResource) -> Void = { resource in
+                guard !Task.isCancelled, self.generation == currentGen,
+                      self.detailsRequestID == requestID, self.store === store else { return }
+                self.publishResource(resource, from: store)
             }
-            guard !Task.isCancelled, self.generation == currentGen,
-                  self.detailsRequestID == requestID, self.store === store,
-                  store.detailsError == nil, let snapshot = store.details else { return }
-            self.analyticsPresentation = CAPAnalyticsPresentation(snapshot: snapshot)
+            switch read {
+            case .all(let query):
+                await store.refreshDetails(window: query.window, groupOffset: query.groupOffset,
+                    groupLimit: query.groupLimit, onResourceUpdate: publish)
+            case .groups(let query):
+                await store.refreshGroupPage(window: query.window, groupOffset: query.groupOffset,
+                    groupLimit: query.groupLimit, onResourceUpdate: publish)
+            case .retry(let resource):
+                await store.retryDetailResource(resource, onResourceUpdate: publish)
+            case .retryFailed:
+                await store.retryFailedDetails(onResourceUpdate: publish)
+            }
         }
         detailsTask = task
         await withTaskCancellationHandler {
@@ -175,6 +219,27 @@ public final class CAPUsageWorkspaceCoordinator {
         }
     }
 
+    private func publishResource(_ resource: CAPUsageDetailResource, from store: CAPUsageStore) {
+        switch resource {
+        case .initial:
+            if store.initialState.error == nil, let snapshot = store.initialState.snapshot {
+                initialPresentation = CAPInitialPresentation(snapshot: snapshot)
+            }
+        case .trends:
+            if store.trendsState.error == nil, let snapshot = store.trendsState.snapshot {
+                trendsPresentation = CAPTrendsPresentation(snapshot: snapshot)
+            }
+        case .groups:
+            if store.groupsState.error == nil, let snapshot = store.groupsState.snapshot {
+                groupsPresentation = CAPGroupsPresentation(snapshot: snapshot)
+            }
+        case .costs:
+            if store.costsState.error == nil, let snapshot = store.costsState.snapshot {
+                costsPresentation = CAPCostsPresentation(snapshot: snapshot)
+            }
+        }
+    }
+
     public func refreshManagementStats() async {
         guard let client, !Task.isCancelled else { return }
         managementTask?.cancel()
@@ -182,7 +247,7 @@ public final class CAPUsageWorkspaceCoordinator {
         managementRequestID = requestID
         isLoadingManagementStats = true
         managementStatsError = nil
-        let window = store?.snapshot?.window ?? activeWindow
+        let window = activeWindow
         let currentGen = generation
         let task = Task { @MainActor in
             defer {
@@ -227,7 +292,7 @@ public final class CAPUsageWorkspaceCoordinator {
         pageRequestID = requestID
         isLoadingRequestPage = true
         requestPageError = nil
-        let window = window ?? store?.snapshot?.window ?? activeWindow
+        let window = window ?? activeWindow
         let access = resourceAccess
         let currentGen = generation
         let task = Task { @MainActor in
@@ -275,6 +340,36 @@ public final class CAPUsageWorkspaceCoordinator {
 }
 
 public enum CAPUsagePresentation {
+    public static func rangeTitle(_ range: CAPUsageRange) -> String {
+        switch range {
+        case .last30Minutes: "30 分钟"
+        case .last24Hours: "24 小时"
+        case .last7Days: "7 天"
+        }
+    }
+
+    /// A retention timestamp describes available history, not completeness or a
+    /// frozen multi-endpoint snapshot. Missing/malformed metadata stays unknown.
+    public static func retentionDescription(retainedSince: String?, window: CAPUsageWindow) -> String {
+        guard let retainedSince, !retainedSince.isEmpty else {
+            return "服务端保留范围尚未确认；当前结果不能证明所选范围都有数据。"
+        }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let standard = ISO8601DateFormatter()
+        guard let retainedStart = fractional.date(from: retainedSince) ?? standard.date(from: retainedSince),
+              retainedStart.timeIntervalSince1970.isFinite else {
+            return "服务端保留范围尚未确认；当前结果不能证明所选范围都有数据。"
+        }
+        if retainedStart >= window.end {
+            return "查询窗口早于服务端保留起点，不能据此认定该时段没有用量。"
+        }
+        if retainedStart > window.start {
+            return "查询窗口起点早于服务端保留起点，较早时段的数据不可用；不能视为全窗口统计。"
+        }
+        return "服务端保留起点覆盖此窗口；迟到写入、分页和响应预算仍可能影响完整性。"
+    }
+
     public static func windowBadgeText(_ window: CAPUsageWindow, timeZone: TimeZone = .current) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
@@ -370,6 +465,13 @@ public enum CAPUsagePresentation {
         case .some(false): request.result ?? "成功"
         case .none: "结果未知"
         }
+    }
+
+    public static func failureRateText(_ counters: CAPUsageCounters) -> String {
+        guard let requests = counters.requests, let failed = counters.failedRequests,
+              failed <= requests else { return "未知" }
+        guard requests > 0 else { return "暂无请求" }
+        return String(format: "%.1f%%", Double(failed) / Double(requests) * 100)
     }
 
     public static func groupPaginationBanner(offset: Int, limit: Int, count: Int, total: Int) -> String {

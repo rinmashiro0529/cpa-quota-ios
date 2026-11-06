@@ -61,6 +61,8 @@
 		F10000000000000000000023 /* NativeActivityAndWidgetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000023 /* NativeActivityAndWidgetTests.swift */; };
 		F10000000000000000000024 /* NativeWorkspaceLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000024 /* NativeWorkspaceLifecycleTests.swift */; };
 		FA0000000000000000000016 /* CPAQuotaUITestFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000016 /* CPAQuotaUITestFixtureTests.swift */; };
+		72D860CE4927DF145F977DF8 /* BrandContrastTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 446874499DE5A55DA634BEBC /* BrandContrastTests.swift */; };
+		385DF64E1845C3FBF616A576 /* MonitoringCapabilitiesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C11CE6BAFDDAB8B40CD50E3 /* MonitoringCapabilitiesTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -142,6 +144,8 @@
 		F20000000000000000000023 /* NativeActivityAndWidgetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/NativeActivityAndWidgetTests.swift; sourceTree = "<group>"; };
 		F20000000000000000000024 /* NativeWorkspaceLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/NativeWorkspaceLifecycleTests.swift; sourceTree = "<group>"; };
 		FB0000000000000000000016 /* CPAQuotaUITestFixtureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/CPAQuotaUITestFixtureTests.swift; sourceTree = "<group>"; };
+		446874499DE5A55DA634BEBC /* BrandContrastTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/BrandContrastTests.swift; sourceTree = "<group>"; };
+		2C11CE6BAFDDAB8B40CD50E3 /* MonitoringCapabilitiesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/MonitoringCapabilitiesTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -177,6 +181,8 @@
 		A40000000000000000000001 = {
 			isa = PBXGroup;
 			children = (
+				446874499DE5A55DA634BEBC /* BrandContrastTests.swift */,
+				2C11CE6BAFDDAB8B40CD50E3 /* MonitoringCapabilitiesTests.swift */,
 				C20000000000000000000001 /* ContractFixtures */,
 				A20000000000000000000001 /* CPAQuotaiOSApp.swift */,
 				D20000000000000000000001 /* CPAQuotaActivityBundle.swift */,
@@ -362,6 +368,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				385DF64E1845C3FBF616A576 /* MonitoringCapabilitiesTests.swift in Sources */,
+				72D860CE4927DF145F977DF8 /* BrandContrastTests.swift in Sources */,
 				A10000000000000000000006 /* CPAClientTests.swift in Sources */,
 				A10000000000000000000007 /* CPAQuotaStoreTests.swift in Sources */,
 				A10000000000000000000008 /* CPAQuotaUITests.swift in Sources */,

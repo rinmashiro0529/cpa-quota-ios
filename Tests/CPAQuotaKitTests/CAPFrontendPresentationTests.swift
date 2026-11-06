@@ -10,6 +10,7 @@ private actor CAPPresentationTransport: HTTPTransport {
     private let gate: TestGate?
     private let model: String
     private var fails = false
+    private var captured: [URLRequest] = []
 
     init(model: String = "weighted", gate: TestGate? = nil) {
         self.model = model
@@ -17,8 +18,10 @@ private actor CAPPresentationTransport: HTTPTransport {
     }
 
     func failNextReads() { fails = true }
+    func capturedRequests() -> [URLRequest] { captured }
 
     func send(_ request: URLRequest) async throws -> HTTPResponse {
+        captured.append(request)
         if let gate { await gate.enter() }
         if fails { return HTTPResponse(statusCode: 503, headers: [:], body: Data()) }
         let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
@@ -134,6 +137,61 @@ struct CAPFrontendPresentationTests {
         }
     }
 
+    @Test(arguments: CAPUsageRange.allCases)
+    func boundedRangeUsesCompleteMinuteAndElapsedDuration(_ range: CAPUsageRange) {
+        let current = now.addingTimeInterval(37)
+        let window = CAPUsageWindow(now: current, range: range)
+        #expect(window.end == now)
+        #expect(window.end.timeIntervalSince(window.start) == range.duration)
+        #expect([1800, 86400, 604800].contains(range.rawValue))
+    }
+
+    @Test func retentionCannotPromoteUnavailableHistoryToCompleteStatistics() throws {
+        let parser = ISO8601DateFormatter()
+        let end = try #require(parser.date(from: "2026-10-30T12:00:00Z"))
+        let window = CAPUsageWindow(now: end, range: .last7Days)
+        for missing in [nil, "", "not-a-date"] as [String?] {
+            #expect(CAPUsagePresentation.retentionDescription(retainedSince: missing, window: window).contains("尚未确认"))
+        }
+        #expect(CAPUsagePresentation.retentionDescription(retainedSince: "2026-10-30T12:00:00Z", window: window).contains("不能据此认定"))
+        #expect(CAPUsagePresentation.retentionDescription(retainedSince: "2026-10-29T12:00:00.000Z", window: window).contains("不能视为全窗口统计"))
+        #expect(CAPUsagePresentation.retentionDescription(retainedSince: "2026-10-23T12:00:00Z", window: window).contains("仍可能影响完整性"))
+    }
+
+    @Test func failureRateKeepsUnknownAndInconsistentCountersUnknown() throws {
+        let cases = [("{}", "未知"), (#"{"requests":2}"#, "未知"),
+            (#"{"requests":0,"failed_requests":0}"#, "暂无请求"),
+            (#"{"requests":2,"failed_requests":1}"#, "50.0%"),
+            (#"{"requests":2,"failed_requests":3}"#, "未知")]
+        for (json, expected) in cases {
+            #expect(CAPUsagePresentation.failureRateText(try decode(CAPUsageCounters.self, json)) == expected)
+        }
+    }
+
+    @Test @MainActor func selectingRangeRetainsSnapshotAndNextPageUsesSelectedWindow() async throws {
+        let transport = CAPPresentationTransport()
+        let current = now
+        let coordinator = CAPUsageWorkspaceCoordinator(clock: { current })
+        coordinator.bind(client: CAPUsageClient(server: try CPAServer(baseURL: "https://cap.example.test"),
+            managementKey: try ManagementKey("fixture-only"), transport: transport))
+        await coordinator.refreshOverview(now: now)
+        let first = try #require(coordinator.overviewPresentation)
+        let requestCount = await transport.capturedRequests().count
+        coordinator.selectRange(.last7Days)
+        #expect(await transport.capturedRequests().count == requestCount)
+        #expect(coordinator.overviewPresentation?.snapshot.window == first.snapshot.window)
+        #expect(coordinator.activeWindow == CAPUsageWindow(now: now, range: .last7Days))
+        await coordinator.loadRequestPage()
+        #expect(coordinator.requestPageWindow == coordinator.activeWindow)
+        let request = try #require(await transport.capturedRequests().last)
+        let query = try #require(URLComponents(url: try #require(request.url), resolvingAgainstBaseURL: false)?.queryItems)
+        let formatter = ISO8601DateFormatter()
+        #expect(query.first { $0.name == "range" }?.value == "custom")
+        #expect(query.first { $0.name == "start" }?.value == formatter.string(from: coordinator.activeWindow.start))
+        #expect(query.first { $0.name == "end" }?.value == formatter.string(from: coordinator.activeWindow.end))
+        #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+    }
+
     @Test func paginationStopsAtEmptyLastOrOverflowingPages() {
         #expect(CAPPageNavigation.nextOffset(offset: 0, limit: 50, count: 50, total: 100) == 50)
         #expect(CAPPageNavigation.nextOffset(offset: 50, limit: 50, count: 50, total: 100) == nil)
@@ -171,7 +229,10 @@ struct CAPFrontendPresentationTests {
         coordinator.resourceAccess = .managementKey
         #expect(coordinator.overviewPresentation == nil)
         #expect(coordinator.requestPagePresentation == nil)
-        #expect(coordinator.analyticsPresentation == nil)
+        #expect(coordinator.initialPresentation == nil)
+        #expect(coordinator.trendsPresentation == nil)
+        #expect(coordinator.groupsPresentation == nil)
+        #expect(coordinator.costsPresentation == nil)
     }
 
     @Test @MainActor func lateOldWorkspaceCannotPublishPresentationIntoNewConnection() async throws {

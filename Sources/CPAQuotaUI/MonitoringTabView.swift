@@ -9,13 +9,14 @@ import UIKit
 public struct MonitoringTabView: View {
     @Bindable public var session: CPAQuotaSession
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.openURL) private var openURL
     @State private var isConfirmingForget = false
 
     public init(session: CPAQuotaSession) { self.session = session }
 
     private var monitor: MonitoringWorkspaceCoordinator { session.monitoringCoordinator }
-    private var palette: BrandPalette { BrandPalette(colorScheme: colorScheme) }
+    private var palette: BrandPalette { BrandPalette(colorScheme: colorScheme, contrast: contrast) }
     private var hasUnfinishedSession: Bool {
         if monitor.pendingCreateUUID != nil { return true }
         guard let store = monitor.store, store.sessionID != nil else { return false }
@@ -47,9 +48,23 @@ public struct MonitoringTabView: View {
                     } label: {
                         Label("连接监控服务", systemImage: "link")
                     }
+                    Text("第 1 步：连接服务并验证令牌，然后选择服务授权的账号。")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                 case .connected(let address, let saved):
                     LabeledContent("服务", value: address.host ?? "已配置")
                     LabeledContent("连接保存", value: saved ? "已安全保存" : "仅本次使用")
+                    Label(monitor.authorizationSummary,
+                          systemImage: monitor.hasVerifiedAuthorization ? "checkmark.shield" : "questionmark.shield")
+                        .accessibilityIdentifier("monitor.authorization")
+                    if case .verified(let checkedAt) = monitor.authorizationState {
+                        LabeledContent("最近验证") { Text(checkedAt, format: .dateTime.hour().minute()) }
+                    }
+                    Button(monitor.isCheckingAuthorization ? "正在验证授权" : "重新验证授权") {
+                        Task { await monitor.verifyBridgeAuthorization() }
+                    }
+                    .disabled(monitor.isBusy || monitor.isCheckingAuthorization || monitor.isVerifyingCandidateBridge)
+                    .accessibilityIdentifier("monitor.verifyAuthorization")
                     NavigationLink("更改服务连接") {
                         MonitoringConnectionEditor(monitor: monitor)
                     }
@@ -58,109 +73,136 @@ public struct MonitoringTabView: View {
             }
             .listRowBackground(palette.contentSurface)
 
-            Section {
-                TextField("监控服务提供的来源标识", text: $monitor.sourceIDDraft)
-                    .monitoringInputCapitalization()
-                    .autocorrectionDisabled()
-                    .accessibilityLabel("授权来源")
-                    .accessibilityIdentifier("monitor.source")
-                NavigationLink {
-                    MonitoringAccountSelectionView(session: session)
-                } label: {
-                    LabeledContent("监控账号", value: "\(monitor.selectedAccountIDsDraft.count) / 5")
+            if let capacity = monitor.authorizedCapabilities?.capacity, capacity.status != .ok || !capacity.canCreateSession {
+                Section("监控容量") {
+                    Label("上次查询剩余 \(capacity.remaining) / \(capacity.limit)", systemImage: "exclamationmark.circle")
+                    Text(capacity.canCreateSession
+                         ? "历史记录已接近容量上限。请联系维护者评估容量配置；停止不会删除防重放记录。"
+                         : "当前不能新建监控。原会话仍可查询和停止，请联系维护者处理容量。")
+                        .font(.subheadline)
                 }
-                Picker("持续时间", selection: $monitor.durationDraft) {
-                    Text("1 小时").tag(MonitoringDuration.oneHour)
-                    Text("4 小时").tag(MonitoringDuration.fourHours)
-                    Text("8 小时").tag(MonitoringDuration.eightHours)
-                }
-                .pickerStyle(.menu)
-            } header: {
-                Text("监控范围")
-            } footer: {
-                Text(hasUnfinishedSession
-                     ? "本次范围已固定。结束当前监控后，可以选择新的范围。"
-                     : "请使用监控服务授权的来源与账号。可显示的指标和窗口由服务配置决定。")
+                .listRowBackground(palette.contentSurface)
             }
-            .disabled(monitor.isBusy || hasUnfinishedSession)
-            .listRowBackground(palette.contentSurface)
 
-            Section {
-                LabeledContent("本机实时活动",
-                               value: monitor.localActivityID == nil ? "未显示" : "已建立系统活动")
-                if !monitor.isSystemActivitySupported {
-                    Label("当前平台可在应用内查看监控；系统实时活动需要支持的 iPhone 或 iPad。", systemImage: "info.circle")
-                        .font(.subheadline)
-                } else if !monitor.activitiesEnabled {
-                    Label("实时活动尚未允许，可在系统设置中开启。", systemImage: "hand.raised")
-                        .font(.subheadline)
-                    #if os(iOS)
-                    Button("打开系统设置") {
-                        if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
-                    }
-                    #endif
-                }
-
-                if monitor.isWaitingForPushToken {
-                    ProgressView("正在准备系统实时活动")
-                        .accessibilityIdentifier("monitoring.waitingForToken")
-                }
-                if monitor.isSessionActionInProgress || monitor.isChangingBridge {
-                    ProgressView("正在处理")
-                }
-
-                if !hasUnfinishedSession {
-                    Button {
-                        Task { await monitor.startOrReconcileMonitoringSession() }
-                    } label: {
-                        Label("开始监控", systemImage: "play.fill")
-                    }
-                    .quotaPrimaryButtonStyle()
-                    .disabled(monitor.isBusy || monitor.bridgeState == .unconfigured
-                              || !monitor.isSystemActivitySupported || !monitor.activitiesEnabled
-                              || monitor.selectedAccountIDsDraft.isEmpty
-                              || monitor.sourceIDDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .accessibilityIdentifier("monitor.start")
-                } else {
-                    if !monitor.isWaitingForPushToken {
-                        Button {
-                            Task { await monitor.reconcileCurrentSession() }
-                        } label: {
-                            Label("核对监控状态", systemImage: "arrow.clockwise")
+            if monitor.hasVerifiedAuthorization {
+                Section {
+                    Picker("授权来源", selection: Binding(get: { monitor.sourceIDDraft },
+                        set: { monitor.selectAuthorizedSource($0) })) {
+                        Text("选择来源").tag("")
+                        ForEach(monitor.authorizedCapabilities?.sources ?? []) { source in
+                            Text(source.id).tag(source.id)
                         }
-                        .disabled(monitor.isBusy)
-                        if monitor.store?.session?.status == .active {
+                    }
+                        .pickerStyle(.menu)
+                        .accessibilityLabel("授权来源")
+                        .accessibilityIdentifier("monitor.source")
+                    NavigationLink {
+                        MonitoringAccountSelectionView(session: session)
+                    } label: {
+                        LabeledContent("监控账号", value: "\(monitor.selectedAccountIDsDraft.count) / 5")
+                    }
+                    Picker("持续时间", selection: $monitor.durationDraft) {
+                        Text("1 小时").tag(MonitoringDuration.oneHour)
+                        Text("4 小时").tag(MonitoringDuration.fourHours)
+                        Text("8 小时").tag(MonitoringDuration.eightHours)
+                    }
+                    .pickerStyle(.menu)
+                } header: {
+                    Text("第 2 步：选择账号与范围")
+                } footer: {
+                    Text(hasUnfinishedSession
+                         ? "本次范围已固定。结束当前监控后，可以选择新的范围。"
+                         : "请使用监控服务授权的来源与账号。可显示的指标和窗口由服务配置决定。")
+                }
+                .disabled(monitor.isBusy || hasUnfinishedSession)
+                .listRowBackground(palette.contentSurface)
+            }
+
+            if monitor.hasVerifiedAuthorization || hasUnfinishedSession || monitor.localActivityID != nil {
+                Section {
+                    LabeledContent("本机实时活动",
+                                   value: monitor.localActivityID == nil ? "未显示" : "已建立系统活动")
+                    if !monitor.isSystemActivitySupported {
+                        Label("当前平台可在应用内查看监控；系统实时活动需要支持的 iPhone 或 iPad。", systemImage: "info.circle")
+                            .font(.subheadline)
+                    } else if !monitor.activitiesEnabled {
+                        Label("实时活动尚未允许，可在系统设置中开启。", systemImage: "hand.raised")
+                            .font(.subheadline)
+                        #if os(iOS)
+                        Button("打开系统设置") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                        }
+                        #endif
+                    }
+
+                    if monitor.isWaitingForPushToken {
+                        ProgressView("正在准备系统实时活动")
+                            .accessibilityIdentifier("monitoring.waitingForToken")
+                    }
+                    if monitor.isSessionActionInProgress || monitor.isChangingBridge {
+                        ProgressView("正在处理")
+                    }
+
+                    if !hasUnfinishedSession {
+                        Button {
+                            Task { await monitor.startOrReconcileMonitoringSession() }
+                        } label: {
+                            Label("开始监控", systemImage: "play.fill")
+                        }
+                        .quotaPrimaryButtonStyle()
+                        .disabled(monitor.isBusy || monitor.isCheckingAuthorization || monitor.isVerifyingCandidateBridge
+                                  || monitor.bridgeState == .unconfigured
+                                  || !monitor.hasVerifiedAuthorization
+                                  || monitor.authorizedCapabilities?.capacity.canCreateSession != true
+                                  || !monitor.isSystemActivitySupported || !monitor.activitiesEnabled
+                                  || monitor.selectedAccountIDsDraft.isEmpty
+                                  || monitor.sourceIDDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .accessibilityIdentifier("monitor.start")
+                    } else {
+                        if !monitor.isWaitingForPushToken {
                             Button {
-                                Task { await monitor.refreshActiveMonitoringSession() }
+                                Task { await monitor.reconcileCurrentSession() }
                             } label: {
-                                Label("请求更新读数", systemImage: "arrow.down.circle")
+                                Label("核对监控状态", systemImage: "arrow.clockwise")
                             }
                             .disabled(monitor.isBusy)
+                            if monitor.store?.session?.status == .active {
+                                Button {
+                                    Task { await monitor.refreshActiveMonitoringSession() }
+                                } label: {
+                                    Label("请求更新读数", systemImage: "arrow.down.circle")
+                                }
+                                .disabled(monitor.isBusy)
+                            }
                         }
+                        Button(monitor.isWaitingForPushToken ? "取消本次启动" : "停止监控", role: .destructive) {
+                            Task { await monitor.stopActiveMonitoringSession() }
+                        }
+                        .disabled(monitor.isChangingBridge)
+                        .accessibilityIdentifier("monitor.stopRemote")
                     }
-                    Button(monitor.isWaitingForPushToken ? "取消本次启动" : "停止监控", role: .destructive) {
-                        Task { await monitor.stopActiveMonitoringSession() }
+                    if monitor.localActivityID != nil {
+                        Button("仅停止本机实时活动显示", role: .destructive) {
+                            Task { await monitor.stopLocalActivityDisplay() }
+                        }
+                        .disabled(monitor.isEndingLocalActivity)
+                        .accessibilityIdentifier("monitor.stopLocal")
                     }
-                    .disabled(monitor.isChangingBridge)
-                    .accessibilityIdentifier("monitor.stopRemote")
+                } header: {
+                    Text(hasUnfinishedSession ? "实时活动" : "第 3 步：确认并开始")
+                } footer: {
+                    Text("系统决定锁屏与灵动岛的呈现。停止本机显示不会取消远端监控；停止监控需要服务确认。")
                 }
-                if monitor.localActivityID != nil {
-                    Button("仅停止本机实时活动显示", role: .destructive) {
-                        Task { await monitor.stopLocalActivityDisplay() }
-                    }
-                    .disabled(monitor.isEndingLocalActivity)
-                    .accessibilityIdentifier("monitor.stopLocal")
-                }
-            } header: {
-                Text("实时活动")
-            } footer: {
-                Text("系统决定锁屏与灵动岛的呈现。停止本机显示不会取消远端监控；停止监控需要服务确认。")
+                .listRowBackground(palette.contentSurface)
             }
-            .listRowBackground(palette.contentSurface)
 
             if let active = monitor.store?.session {
                 Section("当前监控") {
-                    LabeledContent("状态", value: sessionStatus(active))
+                    LabeledContent("远端状态", value: monitor.store?.state == .uncertain ? "尚未确认（上次：\(sessionStatus(active))）" : sessionStatus(active))
+                    LabeledContent("本机显示", value: monitor.localActivityID == nil ? "未显示" : "已建立系统活动")
+                    if let confirmedAt = monitor.store?.lastConfirmedAt {
+                        LabeledContent("最近确认") { Text(confirmedAt, format: .dateTime.month().day().hour().minute().second()) }
+                    }
                     LabeledContent("来源", value: active.sourceID)
                     LabeledContent("账号", value: "\(active.accountIDs.count) 个")
                     LabeledContent("结束时间") {
@@ -202,7 +244,7 @@ public struct MonitoringTabView: View {
         .scrollContentBackground(.hidden)
         .background(BrandCanvasBackground())
         .tint(palette.actionTint)
-        .navigationTitle("监控")
+        .navigationTitle(CPAWorkspaceTab.monitoring.title)
         .confirmationDialog("忘记监控服务连接？", isPresented: $isConfirmingForget, titleVisibility: .visible) {
             Button("先停止监控，再忘记连接", role: .destructive) {
                 Task { await monitor.stopAndForgetBridge() }
@@ -240,11 +282,12 @@ public struct MonitoringTabView: View {
 private struct MonitoringConnectionEditor: View {
     @Bindable var monitor: MonitoringWorkspaceCoordinator
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
     @FocusState private var focusedField: Field?
     private enum Field: Hashable { case address, token }
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme)
+        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         Form {
             Section {
                 TextField("https://monitor.example.com", text: $monitor.bridgeURLDraft)
@@ -285,7 +328,7 @@ private struct MonitoringConnectionEditor: View {
                         .textSelection(.enabled)
                     Label(saved ? "已保存到本机安全存储" : "仅在本次使用期间保留", systemImage: "lock")
                         .font(.subheadline)
-                    Text("连接配置就绪；服务授权会在读取或开启监控时校验。")
+                    Text(monitor.authorizationSummary)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -293,11 +336,11 @@ private struct MonitoringConnectionEditor: View {
             }
             Section {
                 Button(action: connect) {
-                    if monitor.isChangingBridge { ProgressView("正在连接") }
-                    else { Label("连接监控服务", systemImage: "link") }
+                    if monitor.isBridgeConfigurationInProgress { ProgressView("正在验证服务与授权") }
+                    else { Label("验证并连接监控服务", systemImage: "link") }
                 }
                 .quotaPrimaryButtonStyle()
-                .disabled(monitor.isChangingBridge || monitor.bridgeURLDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                .disabled(monitor.isBridgeConfigurationInProgress || monitor.bridgeURLDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                           || monitor.bridgeTokenDraft.isEmpty)
                 .accessibilityIdentifier("monitor.connect")
             }
@@ -308,15 +351,20 @@ private struct MonitoringConnectionEditor: View {
         .background(BrandCanvasBackground())
         .tint(palette.actionTint)
         .navigationTitle("监控服务")
+        .onDisappear { monitor.bridgeTokenDraft = "" }
     }
 
     private func connect() {
-        guard !monitor.isChangingBridge, !monitor.bridgeTokenDraft.isEmpty else { return }
+        guard !monitor.isBridgeConfigurationInProgress, !monitor.bridgeTokenDraft.isEmpty else { return }
         focusedField = nil
+        let address = monitor.bridgeURLDraft
+        let token = monitor.bridgeTokenDraft
+        let remember = monitor.rememberBridgeDraft
+        monitor.bridgeTokenDraft = ""
         Task {
-            await monitor.connectBridge(rawURLString: monitor.bridgeURLDraft,
-                                        rawTokenString: monitor.bridgeTokenDraft,
-                                        rememberInKeychain: monitor.rememberBridgeDraft)
+            await monitor.connectBridge(rawURLString: address,
+                                        rawTokenString: token,
+                                        rememberInKeychain: remember)
         }
     }
 }
@@ -324,14 +372,15 @@ private struct MonitoringConnectionEditor: View {
 private struct MonitoringAccountSelectionView: View {
     @Bindable var session: CPAQuotaSession
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
         @Bindable var monitor = session.monitoringCoordinator
-        let palette = BrandPalette(colorScheme: colorScheme)
+        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         Form {
-            if !session.accounts.isEmpty {
+            if monitor.hasVerifiedAuthorization {
                 Section {
-                    ForEach(session.accounts) { account in
+                    ForEach(monitor.authorizedAccounts) { account in
                         Toggle(isOn: Binding(
                             get: { monitor.selectedAccountIDsDraft.contains(account.id) },
                             set: { selected in
@@ -340,22 +389,23 @@ private struct MonitoringAccountSelectionView: View {
                             }
                         )) {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(QuotaFormatter.maskEmail(account.displayName, enabled: session.maskEmail))
+                                Text(QuotaFormatter.maskEmail(account.label, enabled: session.maskEmail))
                                 Text(account.provider.uppercased())
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
-                                if account.isDisabled {
-                                    Text("当前 CPA 连接中已禁用").font(.caption).foregroundStyle(.secondary)
-                                }
+                                Text(account.windowLabel).font(.caption).foregroundStyle(.secondary)
                             }
                         }
                         .disabled(!monitor.selectedAccountIDsDraft.contains(account.id)
-                                  && (account.isDisabled || monitor.selectedAccountIDsDraft.count >= 5))
+                                  && monitor.selectedAccountIDsDraft.count >= 5)
+                    }
+                    if monitor.authorizedAccounts.isEmpty {
+                        Text("此来源尚无授权账号。请选择其他来源，或联系服务维护者。")
                     }
                 } header: {
-                    Text("当前 CPA 连接中的账号")
+                    Text("监控服务已授权的账号")
                 } footer: {
-                    Text("这些账号仅作为候选，是否可监控由独立服务授权决定。")
+                    Text("来自当前服务的令牌授权清单；开始前会再次核对授权。每次最多选择 5 个账号，各窗口独立展示。")
                 }
                 .listRowBackground(palette.contentSurface)
             }
@@ -363,8 +413,8 @@ private struct MonitoringAccountSelectionView: View {
             Section {
                 ForEach(monitor.selectedAccountIDsDraft, id: \.self) { id in
                     HStack(alignment: .firstTextBaseline) {
-                        Text(QuotaFormatter.maskEmail(id, enabled: session.maskEmail))
-                            .font(.body.monospaced())
+                        Text(accountLabel(id))
+                            .font(.body)
                             .fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 8)
                         Button(role: .destructive) { monitor.removeAccountIDDraft(id) } label: {
@@ -373,7 +423,7 @@ private struct MonitoringAccountSelectionView: View {
                                 .frame(minWidth: 44, minHeight: 44)
                         }
                         .buttonStyle(.borderless)
-                        .accessibilityLabel("移除 \(QuotaFormatter.maskEmail(id, enabled: session.maskEmail))")
+                        .accessibilityLabel("移除 \(accountLabel(id))")
                     }
                 }
                 if monitor.selectedAccountIDsDraft.isEmpty {
@@ -384,30 +434,26 @@ private struct MonitoringAccountSelectionView: View {
             }
             .listRowBackground(palette.contentSurface)
 
-            Section {
-                TextField("部署方提供的账号标识", text: $monitor.newAccountIDDraft)
-                    .monitoringInputCapitalization()
-                    .autocorrectionDisabled()
-                    .onSubmit { monitor.addAccountIDDraft(monitor.newAccountIDDraft) }
-                    .accessibilityLabel("授权账号标识")
-                Button("添加授权账号") { monitor.addAccountIDDraft(monitor.newAccountIDDraft) }
-                    .disabled(monitor.newAccountIDDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                              || monitor.selectedAccountIDsDraft.count >= 5)
-                if let error = monitor.bridgeFormFeedback {
-                    MonitoringOperationError(feedback: error)
+            if !monitor.hasVerifiedAuthorization || monitor.bridgeFormFeedback != nil {
+                Section {
+                    if let error = monitor.bridgeFormFeedback {
+                        MonitoringOperationError(feedback: error)
+                    }
+                    Text("请返回监控页验证服务授权，再选择来源和账号。")
                 }
-            } header: {
-                Text("手动添加")
-            } footer: {
-                Text("保留原账号标识。不要将系统活动中的安全别名反推为真实账号，或以邮箱、昵称猜测服务授权。")
+                .listRowBackground(palette.contentSurface)
             }
-            .listRowBackground(palette.contentSurface)
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .background(BrandCanvasBackground())
         .tint(palette.actionTint)
         .navigationTitle("监控账号")
+    }
+
+    private func accountLabel(_ id: String) -> String {
+        let label = session.monitoringCoordinator.authorizedAccounts.first(where: { $0.id == id })?.label
+        return label.map { QuotaFormatter.maskEmail($0, enabled: session.maskEmail) } ?? "历史账号（授权待核对）"
     }
 }
 
@@ -447,11 +493,27 @@ private struct MonitoringSnapshotRows: View {
 private struct MonitoringDiagnosticsView: View {
     @Bindable var session: CPAQuotaSession
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
     private var monitor: MonitoringWorkspaceCoordinator { session.monitoringCoordinator }
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme)
+        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         Form {
+            if let capabilities = monitor.authorizedCapabilities {
+                Section("授权与容量") {
+                    Text(monitor.authorizationSummary)
+                    LabeledContent("已记录意图", value: "\(capabilities.capacity.used) / \(capabilities.capacity.limit)")
+                    LabeledContent("剩余意图", value: String(capabilities.capacity.remaining))
+                    LabeledContent("告警阈值", value: String(capabilities.capacity.warningAt))
+                    LabeledContent("容量生成时间") {
+                        Text(capabilities.generatedAt, format: .dateTime.month().day().hour().minute().second())
+                    }
+                    Text("停止和到期记录仍计入防重放容量。此读数未预留名额，也不证明上游读取或设备送达。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .listRowBackground(palette.contentSurface)
+            }
             if let error = monitor.bridgeFormFeedback {
                 Section("最近操作") { MonitoringOperationError(feedback: error) }
                     .listRowBackground(palette.contentSurface)
@@ -640,9 +702,10 @@ private struct MonitoringRecoveryRecordView: View {
     @Bindable var monitor: MonitoringWorkspaceCoordinator
     let maskEmail: Bool
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme)
+        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         Form {
             Section("原会话") {
                 QuotaLabeledValue(title: "服务", value: record.bridgeBaseURLString)
