@@ -127,6 +127,12 @@ jobs:
             --report "$RUNNER_TEMP/FrontendEvidence/simulator.json")"
           echo "udid=$SIMULATOR_UDID" >> "$GITHUB_OUTPUT"
           cat "$RUNNER_TEMP/FrontendEvidence/simulator.json"
+      - name: Prepare the selected simulator
+        run: >-
+          python3 -I ci/prepare_simulator.py
+          --selection "$RUNNER_TEMP/FrontendEvidence/simulator.json"
+          --report "$RUNNER_TEMP/FrontendEvidence/simulator-readiness.json"
+          --timeout-seconds 300
       - name: Run native unit and UI regression tests
         shell: bash
         env:

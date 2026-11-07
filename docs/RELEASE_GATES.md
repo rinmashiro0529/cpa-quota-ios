@@ -1,14 +1,14 @@
 # 发布与合并门禁
 
-本文件定义候选提交的验收要求，不表示这些要求已经通过。审计基线为 `5c7762001bb6f99bce1627f946722247f582782d`；任何后续提交都需要自己的证据。
+本文件定义候选提交的验收要求，不表示这些要求已经通过。原审计基线为 `5c7762001bb6f99bce1627f946722247f582782d`；合并后的稳定化起点为 `a0914ffd77e708fb9485e816495aacee88a8de2a`。任何后续提交都需要自己的证据。
 
 ## 服务端保护与当前限制
 
-2026-11-07（Asia/Shanghai）读取仓库元数据时，`main` 的 `protected=false`；规则集 API 返回 403，说明当前私有仓库需要支持此功能的 GitHub 账户计划。仓库中的文档、PR 模板和成功 CI 均不能代替服务端强制规则。
+仓库已切换为 public。2026-11-08（Asia/Shanghai）复核时，`main` 仍为 `protected=false`，规则集 API 返回空列表；过去私有仓库的 403 限制不能继续作为当前未配置保护的理由。仓库中的文档、PR 模板和成功 CI 均不能代替服务端强制规则。
 
-具备功能后，由维护者在仓库设置中对 `main` 启用以下规则并保存服务端返回的证据：
+维护者应在仓库设置中对 `main` 启用以下规则并保存服务端返回的证据：
 
-- 所有变更经 PR；要求至少一名独立审阅者批准，新增提交使旧批准失效。
+- 所有变更经 PR；要求至少一名独立审阅者批准，新增提交使旧批准失效，最新推送由非推送者批准。
 - 要求解决审阅对话，并要求最新候选提交的必需检查全部成功。
 - 禁止强制推送和删除，避免为管理员或应用设置不必要的绕过例外。
 - 必需检查名称与实际 check run 一致。当前工作流产生下表四个检查。
@@ -20,17 +20,21 @@
 | `Swift and native UI (Xcode 27.1, iPhone 18 Pro)` | 对应工具链与设备的同组检查 |
 | `Swift and native UI (Xcode 27.1, iPhone Duo)` | 对应工具链与设备的同组检查 |
 
-在支持的隔离测试仓库或测试分支验证失败检查不能合并，不对生产 `main` 尝试破坏性推送。配置前重新核对检查名称和 runner 可用性；不能为让检查变绿而跳过失败作业。
+[规则模板](../.github/main-ruleset.example.json) 与上述检查名称保持一致，检查来源绑定 GitHub Actions。它是管理员可审阅、导入的配置，不会随 PR 合入自动生效。导入前确认有符合条件的独立审阅者；单人仓库直接启用批准要求可能阻止之后的合并。先检查现有规则，避免重复创建；不要通过绕过或减少检查来消除失败。
 
-当前可采用人工合并门禁：维护者收敛有写权限的成员，保持修复 PR 为 Draft，核对准确 SHA 的四项检查和审阅记录后再决定合并。如果 GitHub 因付款或支出额度而没有启动作业，记录为“未执行”，不记作测试失败后的修复通过，也不以旧 CI 或本地静态检查替代。更改账户套餐、账单和仓库可见性均是独立管理决策。
+在支持的隔离测试仓库或测试分支验证失败检查不能合并，不对生产 `main` 尝试破坏性推送。配置前重新核对检查名称和 runner 可用性；不能为让检查变绿而跳过失败作业。核对规则 ID、active 状态、main 匹配条件及实际生效规则后，才能将服务端保护记为完成。
 
-参考：[GitHub 分支保护适用范围](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches)、[保护分支配置](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/managing-a-branch-protection-rule)。
+配置完成前维持人工门禁：核对准确 SHA 的四项检查和审阅记录，未完成验证的修复 PR 保持 Draft。如果 GitHub 因付款、支出额度或执行环境没有启动作业，记录为“未执行”；如果测试或运行器已启动但非零退出，保留该次失败及其诊断，不用日志中的局部通过覆盖作业失败。更改账户套餐、账单和仓库可见性仍是独立管理决策。
+
+参考：[GitHub 分支保护适用范围](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches)、[保护分支配置](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/managing-a-branch-protection-rule)、[规则 API](https://docs.github.com/en/rest/repos/rules)。
 
 ## 候选提交证据
 
-每次候选至少记录提交 SHA、工作流 run ID、attempt、工具链版本、检查结果及未运行原因。检查应对应候选提交或 GitHub 记录的相应 PR merge ref；分支继续变化后重新核对。禁止将报告中的历史 344 项测试或后续 PR 的本地结果写成本提交已通过。
+每次候选至少记录提交 SHA、工作流 run ID、attempt、工具链版本、检查结果及未运行原因。检查应对应候选提交或 GitHub 记录的相应 PR merge ref；分支继续变化后重新核对。禁止将报告中的历史测试数量或其他 PR 的本地结果写成本提交已通过。合并后应核对新 main SHA 的独立运行。
 
 所有自动化仅使用合成账号与令牌。部署模板验证不连接真实 CPA、CAP、APNs；健康接口通过不表示上游鉴权或系统活动送达成功。
+
+原生流程先选择精确设备/系统，再通过 `ci/prepare_simulator.py` 等待同一设备启动；300 秒预算覆盖前后核对与等待。预检报告只说明模拟器启动就绪，不说明测试通过。原生测试非零退出仍然阻断，原始日志与 xcresult 保留，不自动重试失败断言。已确认的运行器启动异常可以在保留原 attempt 后针对性重跑，并核对同一 SHA 的新结果；不得不断重跑直到偶然通过而隐去不稳定性。实现说明见 [主线稳定化记录](MAIN_STABILIZATION_20261108.md)。
 
 ## 最低系统与设备验收
 
