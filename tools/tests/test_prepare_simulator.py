@@ -28,13 +28,19 @@ class FakeSimulator:
         self.name = "iPhone Duo"
         self.elapsed = 0.0
         self.cost = 0.0
+        self.command_costs = []
+        self.enforce_timeout = False
 
     def clock(self):
         return self.elapsed
 
     def run(self, command, **kwargs):
         self.calls.append((command, kwargs))
-        self.elapsed += self.cost
+        cost = self.command_costs.pop(0) if self.command_costs else self.cost
+        if self.enforce_timeout and cost > kwargs["timeout"]:
+            self.elapsed += kwargs["timeout"]
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        self.elapsed += cost
         if "bootstatus" in command:
             if self.boot_error:
                 raise self.boot_error
@@ -195,8 +201,40 @@ class PrepareSimulatorTests(unittest.TestCase):
     def test_commands_share_one_deadline(self):
         self.sim.cost = 10
         self.prepare(50)
-        self.assertEqual([opts["timeout"] for _, opts in self.sim.calls], [30, 40, 30])
+        self.assertEqual([opts["timeout"] for _, opts in self.sim.calls], [50, 40, 30])
         self.assertEqual(json.loads(self.report.read_text())["elapsedSeconds"], 30)
+
+    def test_inventory_may_take_over_thirty_seconds_within_shared_budget(self):
+        # Model the observed CI sequence: boot completes, then simctl list is slow.
+        # These are simulated durations; this test does not sleep or start Xcode.
+        for costs in ([2, 57, 45], [45, 57, 2]):
+            with self.subTest(costs=costs):
+                self.sim = FakeSimulator()
+                self.sim.command_costs = list(costs)
+                self.sim.enforce_timeout = True
+                report = self.prepare(300)
+                self.assertEqual(report["status"], "ready")
+                self.assertEqual(report["elapsedSeconds"], sum(costs))
+                self.assertEqual(len(self.sim.calls), 3)
+
+    def test_slow_final_inventory_cannot_extend_total_deadline(self):
+        self.sim.command_costs = [10, 250, 45]
+        self.sim.enforce_timeout = True
+        result = self.failure()
+        self.assertEqual(result["phase"], "verify")
+        self.assertEqual(result["elapsedSeconds"], 300)
+        self.assertEqual(result["timeoutPhase"], "verify")
+        self.assertEqual(result["commandTimeoutSeconds"], 40)
+        self.assertEqual(len(self.sim.calls), 3)
+
+    def test_inventory_timeout_reports_its_phase_without_raw_output(self):
+        self.sim.inventory_error = subprocess.TimeoutExpired(
+            "private command contents", 300, output="private response")
+        result = self.failure()
+        self.assertEqual(result["timeoutPhase"], "inventory")
+        self.assertEqual(result["commandTimeoutSeconds"], 300)
+        self.assertNotIn("private", self.report.read_text())
+        self.assertEqual(len(self.sim.calls), 1)
 
     def test_expired_deadline_cannot_publish_ready(self):
         self.sim.cost = 10

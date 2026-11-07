@@ -59,15 +59,17 @@ def prepare(selection_path: Path, report_path: Path, timeout_seconds: int = 300,
     # Replace a stale success report before attempting any commands.
     _write_report(report_path, report)
 
-    def remaining(cap: float | None = None) -> float:
+    def remaining() -> float:
         value = deadline - clock()
         if value <= 0:
             raise subprocess.TimeoutExpired("simulator preparation", timeout_seconds)
-        return value if cap is None else min(value, cap)
+        return value
 
     def device_state(selection: dict) -> str:
+        # Inventory can be slow while CoreSimulator settles after boot. It shares
+        # the same deadline as bootstatus; a separate short cap rejects healthy boots.
         completed = run(["xcrun", "simctl", "list", "devices", "available", "--json"],
-                        check=True, capture_output=True, text=True, timeout=remaining(30))
+                        check=True, capture_output=True, text=True, timeout=remaining())
         inventory = json.loads(completed.stdout)
         devices = inventory.get("devices") if isinstance(inventory, dict) else None
         if not isinstance(devices, dict):
@@ -120,7 +122,9 @@ def prepare(selection_path: Path, report_path: Path, timeout_seconds: int = 300,
         report["errorType"] = type(exc).__name__
         # Do not copy arbitrary subprocess output into public summaries.
         if isinstance(exc, subprocess.TimeoutExpired):
-            report["message"] = "Simulator preparation exceeded its time budget"
+            report["timeoutPhase"] = report["phase"]
+            report["commandTimeoutSeconds"] = exc.timeout
+            report["message"] = f"Simulator preparation timed out during {report['phase']}"
         elif isinstance(exc, subprocess.CalledProcessError):
             report["message"] = "Simulator command failed"
             report["returnCode"] = exc.returncode
