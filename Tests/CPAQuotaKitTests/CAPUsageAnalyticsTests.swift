@@ -161,7 +161,8 @@ struct CAPPartialResourceTests {
         #expect(requests.last?.url?.path.hasSuffix("/costs") == true)
         #expect(coordinator.costsPresentation?.snapshot.window == failedWindow)
         #expect(coordinator.activeWindow == CAPUsageWindow(now: now, range: .last7Days))
-        let query = try #require(URLComponents(url: try #require(requests.last?.url), resolvingAgainstBaseURL: false)?.queryItems)
+        let requestURL = try #require(requests.last?.url)
+        let query = try #require(URLComponents(url: requestURL, resolvingAgainstBaseURL: false)?.queryItems)
         #expect(query.first { $0.name == "start" }?.value == ISO8601DateFormatter().string(from: failedWindow.start))
     }
 

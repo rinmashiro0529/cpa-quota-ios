@@ -180,7 +180,8 @@ struct AuditConnectionAcceptanceTests {
         #expect(session.records["a"]?.snapshot == prior)
         #expect(session.records["b"] == nil)
         let expectedKey = try ManagementKey("old-fixture-key")
-        #expect(try await credentials.load(for: oldServer) == expectedKey)
+        let restoredKey = try await credentials.load(for: oldServer)
+        #expect(restoredKey?.value == expectedKey.value)
         #expect(try await credentials.load(for: candidateServer) == nil)
         #expect(preferences.loadSavedServerIdentifier() == oldServer.identifier)
     }
