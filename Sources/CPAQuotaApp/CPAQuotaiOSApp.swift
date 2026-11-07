@@ -60,7 +60,9 @@ private struct UITestWorkspace: View {
                 CPAQuotaRootView(session: session)
                     .environment(\.dynamicTypeSize, usesLargeText ? .accessibility5 : .large)
                     .safeAreaInset(edge: .bottom) {
-                        if slowPhase != .idle {
+                        // Do not change the presenting workspace's safe area
+                        // while the real connection sheet is being dismissed.
+                        if slowPhase != .idle, !session.isPresentingConnectionSheet {
                             HStack {
                                 if slowPhase == .pending {
                                     Text("测试夹具：响应等待中")

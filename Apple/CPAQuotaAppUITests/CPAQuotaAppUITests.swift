@@ -87,16 +87,25 @@ final class CPAQuotaAppUITests: XCTestCase {
         reveal(submit, in: app)
         submit.tap()
         expectExists(element("connection.cancel", in: app), in: app)
+        let close = app.buttons["connection.close"]
         if interactively {
-            let bar = app.navigationBars["连接管理"]
-            expectExists(bar, in: app)
-            bar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-                .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
+            let grabber = app.buttons["Sheet Grabber"]
+            expectExists(grabber, in: app)
+            expectPredicate(NSPredicate(format: "hittable == true"), on: grabber, in: app,
+                            message: "The native sheet grabber must be tappable.")
+            grabber.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98)))
         } else {
-            element("connection.close", in: app).tap()
+            reveal(close, in: app, upward: false)
+            verify(close.isHittable, in: app, "The connection sheet close button must be tappable.")
+            close.tap()
         }
+        expectPredicate(NSPredicate(format: "exists == false"), on: close, in: app,
+                        message: "The connection sheet must actually close.")
         let start = element("connection.start", in: app)
         expectExists(start, in: app)
+        expectPredicate(NSPredicate(format: "hittable == true"), on: start, in: app,
+                        message: "The connection start action must be tappable after dismissal.")
         expectExists(element("ui-test.slowResponse.pending", in: app), in: app)
         let release = element("ui-test.slowResponse.release", in: app)
         expectExists(release, in: app)
@@ -394,22 +403,22 @@ final class CPAQuotaAppUITests: XCTestCase {
         // Inspect after every gesture, including the final one. Once a lazy
         // target exists, move toward its center instead of blindly sweeping.
         for attempt in 0...30 {
+            let context = geometry(in: app)
             let exists = element.exists
+            let frame = exists ? element.frame : .null
+            let hittable = exists && element.isHittable
             if exists {
-                if hasVisibleTapCenter(element, in: app) { return }
-                if (!requiresHitTarget || !element.isEnabled), isVisible(element, in: app) { return }
+                if hasVisibleTapCenter(element, frame: frame, hittable: hittable, context: context) { return }
+                if (!requiresHitTarget || !element.isEnabled), isVisible(frame, viewport: context.viewport) { return }
             }
             guard attempt < 30 else { break }
             var direction = attempt < 15 ? upward : !upward
-            if exists, let container = contentContainer(in: app) {
-                let viewport = visibleContentFrame(container, in: app)
-                let frame = element.frame
-                if !frame.isEmpty {
-                    if frame.midY < viewport.midY { direction = false }
-                    else if frame.midY > viewport.midY { direction = true }
-                }
+            if !frame.isEmpty, !frame.isNull, let viewport = context.viewport {
+                if frame.midY < viewport.midY { direction = false }
+                else if frame.midY > viewport.midY { direction = true }
             }
-            scrollContent(upward: direction, target: element, in: app, file: file, line: line)
+            scrollContent(upward: direction, target: element, targetFrame: frame,
+                          targetHittable: hittable, context: context, in: app, file: file, line: line)
         }
         attachDiagnostics(app, name: "unreachable-control")
         XCTFail("Expected control must remain reachable by scrolling.", file: file, line: line)
@@ -428,15 +437,20 @@ final class CPAQuotaAppUITests: XCTestCase {
             // This also works for SecureField without exposing the credential.
             field.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.5)).tap()
             field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previous.count))
-            let cleared = field.value as? String ?? ""
-            verify(cleared.isEmpty || cleared == field.placeholderValue, in: app,
-                   "The existing field value must be cleared before replacement: \(field.identifier).",
+            let placeholder = field.placeholderValue ?? ""
+            let cleared = XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "value == nil OR value == '' OR value == %@", placeholder),
+                object: field)], timeout: 5) == .completed
+            let current = field.value as? String ?? ""
+            verify(cleared, in: app,
+                   "The field must clear before replacement (length=\(current.count), empty=\(current.isEmpty), placeholder=\(current == placeholder)).",
                    file: file, line: line)
         }
         field.typeText(text)
         if field.elementType == .textField {
-            verify(field.value as? String == text, in: app,
-                   "The address field must contain exactly the entered fixture URL.", file: file, line: line)
+            expectPredicate(NSPredicate(format: "value == %@", text), on: field, in: app,
+                            message: "The address field must contain exactly the entered fixture URL.",
+                            file: file, line: line)
         }
     }
 
@@ -467,56 +481,56 @@ final class CPAQuotaAppUITests: XCTestCase {
         verify(picker.value as? String == title, in: app, "The appearance picker must retain the selected option \(title).")
     }
 
-    /// Use the actual visible List/Form viewport. A full-app swipe can start on
-    /// a system side rail or the keyboard instead of scrolling app content.
-    @MainActor
-    private func contentContainer(in app: XCUIApplication) -> XCUIElement? {
-        let containers = app.collectionViews.allElementsBoundByIndex
-            + app.tables.allElementsBoundByIndex
-            + app.scrollViews.allElementsBoundByIndex
-        let visibleContainers = containers
-            .filter {
-                guard $0.exists else { return false }
-                // UIKit can report the CollectionView itself as non-hittable
-                // while its visible rows remain interactive and scrollable.
-                // This occurs with the keyboard and with iOS 27's side rail.
-                // Select the actual viewport; hit testing belongs to the final
-                // button assertion, not to this noninteractive container.
-                let viewport = visibleContentFrame($0, in: app)
-                return !viewport.isNull && viewport.width > 44 && viewport.height > 80
-            }
-        // A presented form can be smaller than the still-visible tab content.
-        // Its stable screen identity prevents scrolling the background list
-        // while seeking a lazily-created accessibility-size detail row.
-        let detailForms = visibleContainers.filter { $0.identifier == "quota.detail.form" }
-        return (detailForms.isEmpty ? visibleContainers : detailForms)
-            .max { left, right in
-                let lhs = visibleContentFrame(left, in: app)
-                let rhs = visibleContentFrame(right, in: app)
-                return lhs.width * lhs.height < rhs.width * rhs.height
-            }
+    private struct GeometryContext {
+        let appFrame: CGRect
+        let bars: [XCUIElement]
+        let container: XCUIElement?
+        let containerFrame: CGRect
+        let viewport: CGRect?
     }
 
+    /// Capture geometry once per attempt, then refresh it after each gesture.
     @MainActor
-    private func visibleContentFrame(_ container: XCUIElement, in app: XCUIApplication) -> CGRect {
-        var viewport = container.frame.intersection(app.frame)
-        for bar in app.navigationBars.allElementsBoundByIndex where bar.exists {
-            let frame = bar.frame.intersection(app.frame)
-            if frame.intersects(viewport), frame.midY < viewport.midY {
-                let top = max(viewport.minY, frame.maxY)
-                viewport = CGRect(x: viewport.minX, y: top, width: viewport.width,
-                                  height: max(0, viewport.maxY - top))
-            }
-        }
-        for bar in app.tabBars.allElementsBoundByIndex where bar.exists {
-            let frame = bar.frame.intersection(app.frame)
-            if frame.intersects(viewport), frame.midY > viewport.midY {
-                viewport.size.height = max(0, min(viewport.maxY, frame.minY) - viewport.minY)
-            }
-        }
+    private func geometry(in app: XCUIApplication) -> GeometryContext {
+        let appFrame = app.frame
+        let navBars = app.navigationBars.allElementsBoundByIndex.filter { $0.exists }
+        let tabBars = app.tabBars.allElementsBoundByIndex.filter { $0.exists }
+        let navFrames = navBars.map { $0.frame.intersection(appFrame) }
+        let tabFrames = tabBars.map { $0.frame.intersection(appFrame) }
         let keyboard = app.keyboards.firstMatch
-        if keyboard.exists, keyboard.frame.intersects(viewport), keyboard.frame.minY > viewport.minY {
-            viewport.size.height = min(viewport.maxY, keyboard.frame.minY) - viewport.minY
+        let keyboardFrame: CGRect? = keyboard.exists ? keyboard.frame : nil
+        let containers = app.collectionViews.allElementsBoundByIndex
+            + app.tables.allElementsBoundByIndex + app.scrollViews.allElementsBoundByIndex
+        let candidates: [(element: XCUIElement, frame: CGRect, viewport: CGRect)] = containers.compactMap { container in
+            guard container.exists else { return nil }
+            let frame = container.frame
+            let viewport = visibleContentFrame(frame, appFrame: appFrame, navFrames: navFrames,
+                                               tabFrames: tabFrames, keyboardFrame: keyboardFrame)
+            guard !viewport.isNull, viewport.width > 44, viewport.height > 80 else { return nil }
+            return (container, frame, viewport)
+        }
+        let detailForms = candidates.filter { $0.element.identifier == "quota.detail.form" }
+        let selected = (detailForms.isEmpty ? candidates : detailForms).max {
+            $0.viewport.width * $0.viewport.height < $1.viewport.width * $1.viewport.height
+        }
+        return GeometryContext(appFrame: appFrame, bars: navBars + tabBars,
+                               container: selected?.element, containerFrame: selected?.frame ?? .null,
+                               viewport: selected?.viewport)
+    }
+
+    private func visibleContentFrame(_ frame: CGRect, appFrame: CGRect, navFrames: [CGRect],
+                                     tabFrames: [CGRect], keyboardFrame: CGRect?) -> CGRect {
+        var viewport = frame.intersection(appFrame)
+        for bar in navFrames where bar.intersects(viewport) && bar.midY < viewport.midY {
+            let top = max(viewport.minY, bar.maxY)
+            viewport = CGRect(x: viewport.minX, y: top, width: viewport.width,
+                              height: max(0, viewport.maxY - top))
+        }
+        for bar in tabFrames where bar.intersects(viewport) && bar.midY > viewport.midY {
+            viewport.size.height = max(0, min(viewport.maxY, bar.minY) - viewport.minY)
+        }
+        if let keyboardFrame, keyboardFrame.intersects(viewport), keyboardFrame.minY > viewport.minY {
+            viewport.size.height = min(viewport.maxY, keyboardFrame.minY) - viewport.minY
         }
         return viewport
     }
@@ -524,42 +538,41 @@ final class CPAQuotaAppUITests: XCTestCase {
     /// Hittable alone can include a stale rotation frame or content beneath
     /// system bars. Keep genuine toolbar buttons reachable in their own bars.
     @MainActor
-    private func hasVisibleTapCenter(_ element: XCUIElement, in app: XCUIApplication) -> Bool {
-        guard element.isHittable else { return false }
-        let frame = element.frame
+    private func hasVisibleTapCenter(_ element: XCUIElement, frame: CGRect, hittable: Bool,
+                                     context: GeometryContext) -> Bool {
+        guard hittable, !frame.isEmpty, !frame.isNull else { return false }
         let center = CGPoint(x: frame.midX, y: frame.midY)
-        guard !frame.isEmpty, app.frame.contains(center) else { return false }
-        let bars = app.navigationBars.allElementsBoundByIndex + app.tabBars.allElementsBoundByIndex
-        if bars.contains(where: { bar in
-            bar.exists && bar.buttons.allElementsBoundByIndex.contains(where: { button in
-                button.exists && button.frame == frame && button.label == element.label
-            })
-        }) { return true }
-        guard let container = contentContainer(in: app) else { return false }
-        return visibleContentFrame(container, in: app).contains(center) && isVisible(element, in: app)
+        guard context.appFrame.contains(center) else { return false }
+        let identifier = element.identifier
+        let label = element.label
+        for bar in context.bars {
+            let buttons = bar.buttons
+            let match = identifier.isEmpty
+                ? buttons.matching(NSPredicate(format: "label == %@", label)).firstMatch
+                : buttons.matching(identifier: identifier).matching(NSPredicate(format: "label == %@", label)).firstMatch
+            if match.exists && match.frame == frame { return true }
+        }
+        guard let viewport = context.viewport else { return false }
+        return viewport.contains(center) && isVisible(frame, viewport: viewport)
     }
 
-    @MainActor
-    private func isVisible(_ element: XCUIElement, in app: XCUIApplication) -> Bool {
-        guard !element.frame.isEmpty, let container = contentContainer(in: app) else { return false }
-        let viewport = visibleContentFrame(container, in: app)
-        let visible = element.frame.intersection(viewport)
+    private func isVisible(_ frame: CGRect, viewport: CGRect?) -> Bool {
+        guard !frame.isEmpty, !frame.isNull, let viewport else { return false }
+        let visible = frame.intersection(viewport)
         guard !visible.isEmpty, !visible.isNull else { return false }
-        // Static text and disabled controls still need to be in the viewport;
-        // an offscreen accessibility record alone cannot satisfy this check.
-        return visible.width >= min(element.frame.width, 44)
-            && visible.height >= min(element.frame.height, 44)
+        return visible.width >= min(frame.width, 44)
+            && visible.height >= min(frame.height, 44)
     }
 
     @MainActor
-    private func scrollContent(upward: Bool, target: XCUIElement, in app: XCUIApplication,
+    private func scrollContent(upward: Bool, target: XCUIElement, targetFrame: CGRect,
+                               targetHittable: Bool, context: GeometryContext, in app: XCUIApplication,
                                file: StaticString, line: UInt) {
-        guard let container = contentContainer(in: app) else {
+        guard let container = context.container, let viewport = context.viewport else {
             attachDiagnostics(app, name: "missing-scroll-container")
             XCTFail("A reachable native List/Form scroll container is required.", file: file, line: line)
             return
         }
-        let viewport = visibleContentFrame(container, in: app)
         guard viewport.width > 44, viewport.height > 80 else {
             attachDiagnostics(app, name: "obscured-scroll-container")
             XCTFail("The native content viewport must remain usable above the keyboard.", file: file, line: line)
@@ -569,21 +582,27 @@ final class CPAQuotaAppUITests: XCTestCase {
         let hasAnchor = anchor.exists && !anchor.frame.isEmpty
         let before = hasAnchor ? anchor.frame : .null
         let preferredX = hasAnchor ? before.minX + 4 : viewport.midX
-        let x = min(max(preferredX, viewport.minX + 8), viewport.maxX - 8) - container.frame.minX
-        let top = viewport.minY + viewport.height * 0.375 - container.frame.minY
-        let bottom = viewport.minY + viewport.height * 0.625 - container.frame.minY
+        let x = min(max(preferredX, viewport.minX + 8), viewport.maxX - 8) - context.containerFrame.minX
+        let top = viewport.minY + viewport.height * 0.375 - context.containerFrame.minY
+        let bottom = viewport.minY + viewport.height * 0.625 - context.containerFrame.minY
         let origin = container.coordinate(withNormalizedOffset: .zero)
         let start = origin.withOffset(CGVector(dx: x, dy: upward ? bottom : top))
         let end = origin.withOffset(CGVector(dx: x, dy: upward ? top : bottom))
-        let targetExists = target.exists
-        let targetFrame = targetExists ? target.frame : .null
-        let targetHittable = targetExists && target.isHittable
         start.press(forDuration: 0.05, thenDragTo: end)
         let after = anchor.exists ? anchor.frame : .null
         let afterExists = target.exists
         let afterFrame = afterExists ? target.frame : .null
         let afterHittable = afterExists && target.isHittable
         print("FRONTEND_SCROLL line=\(line) upward=\(upward) viewport=\(viewport) anchorBefore=\(before) anchorAfter=\(after) targetBefore=\(targetFrame) hittableBefore=\(targetHittable) targetAfter=\(afterFrame) hittableAfter=\(afterHittable)")
+    }
+
+    @MainActor
+    private func expectPredicate(_ predicate: NSPredicate, on element: XCUIElement,
+                                 in app: XCUIApplication, message: String,
+                                 file: StaticString = #filePath, line: UInt = #line) {
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+        verify(XCTWaiter.wait(for: [expectation], timeout: 5) == .completed,
+               in: app, message, file: file, line: line)
     }
 
     @MainActor
