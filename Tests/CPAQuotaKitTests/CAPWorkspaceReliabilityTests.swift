@@ -252,12 +252,12 @@ struct CAPWorkspaceReliabilityTests {
         #expect(coordinator.managementStatsWindow == later)
     }
 
-    @Test func groupPageFallbackValidationAndFailurePreserveFixedWindow() async throws {
+    @Test func groupPageValidationAndFailurePreserveFixedWindow() async throws {
         let transport = WorkspaceCAPTransport()
         let coordinator = try coordinator(transport)
         let first = CAPUsageWindow(now: now)
         let later = CAPUsageWindow(now: now.addingTimeInterval(86_400))
-        await coordinator.refreshGroupPage(window: first, groupOffset: 0, groupLimit: 100)
+        await coordinator.refreshDetails(window: first, groupOffset: 0, groupLimit: 100)
         #expect(await transport.requests().count == 4)
         let original = try #require(coordinator.store?.details)
         await coordinator.refreshGroupPage(window: first, groupOffset: 100, groupLimit: 100)
@@ -288,7 +288,7 @@ struct CAPWorkspaceReliabilityTests {
                 "窗口 · 2027-01-15 07:30–2027-01-15 08:00")
         await transport.fail(nil)
         let before = await transport.requests().count
-        await coordinator.refreshGroupPage(window: later, groupOffset: 0, groupLimit: 100)
+        await coordinator.refreshDetails(window: later, groupOffset: 0, groupLimit: 100)
         #expect(await transport.requests().count == before + 4)
         #expect(coordinator.store?.details?.window == later)
     }
