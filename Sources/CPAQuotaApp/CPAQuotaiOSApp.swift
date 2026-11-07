@@ -50,6 +50,8 @@ private struct UITestWorkspace: View {
     @State private var session: CPAQuotaSession?
     @State private var preparationFailed = false
     @State private var isPreparing = false
+    @State private var slowResponse = CPAQuotaUITestFixtures.SlowResponseControl()
+    @State private var slowPhase: CPAQuotaUITestFixtures.SlowResponseControl.Phase = .idle
     private let usesLargeText = ProcessInfo.processInfo.arguments.contains("--ui-test-large-text")
 
     var body: some View {
@@ -57,6 +59,25 @@ private struct UITestWorkspace: View {
             if let session {
                 CPAQuotaRootView(session: session)
                     .environment(\.dynamicTypeSize, usesLargeText ? .accessibility5 : .large)
+                    .safeAreaInset(edge: .bottom) {
+                        if slowPhase != .idle {
+                            HStack {
+                                if slowPhase == .pending {
+                                    Text("测试夹具：响应等待中")
+                                        .accessibilityIdentifier("ui-test.slowResponse.pending")
+                                    Button("释放测试响应") {
+                                        Task { await slowResponse.release() }
+                                    }
+                                    .accessibilityIdentifier("ui-test.slowResponse.release")
+                                } else {
+                                    Text("测试夹具：响应已返回")
+                                        .accessibilityIdentifier("ui-test.slowResponse.returned")
+                                }
+                            }
+                            .padding(8)
+                            .background(.regularMaterial)
+                        }
+                    }
             } else if preparationFailed {
                 Text("UI 测试夹具准备失败")
                     .accessibilityIdentifier("ui-test.preparationFailed")
@@ -65,6 +86,11 @@ private struct UITestWorkspace: View {
             }
         }
         .task { await prepare() }
+        .task {
+            for await phase in await slowResponse.phases() {
+                slowPhase = phase
+            }
+        }
     }
 
     @MainActor
@@ -88,13 +114,15 @@ private struct UITestWorkspace: View {
             )
             let directory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("CPAQuotaUITest-\(UUID().uuidString)", isDirectory: true)
+            let slowResponse = slowResponse
             session = CPAQuotaSession(
                 credentialStore: credentials,
                 preferences: preferences,
                 monitoringCoordinator: monitoring,
                 widgetSnapshotStore: .init(directoryURL: directory),
                 clientFactory: { server, key in
-                    CPAQuotaUITestFixtures.makeClient(server: server, managementKey: key)
+                    CPAQuotaUITestFixtures.makeClient(server: server, managementKey: key,
+                                                       slowResponse: slowResponse)
                 }
             )
         } catch {

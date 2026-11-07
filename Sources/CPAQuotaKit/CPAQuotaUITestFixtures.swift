@@ -12,11 +12,53 @@ import FoundationNetworking
     public static let managementKey = "ui-test-valid-key"
 
     public static func makeClient(server: CPAServer, managementKey: ManagementKey) -> CPAClient {
-        CPAClient(server: server, managementKey: managementKey, transport: UITestHTTPTransport())
+        makeClient(server: server, managementKey: managementKey, slowResponse: nil)
+    }
+
+    public static func makeClient(server: CPAServer, managementKey: ManagementKey,
+                                  slowResponse: SlowResponseControl?) -> CPAClient {
+        CPAClient(server: server, managementKey: managementKey,
+                  transport: UITestHTTPTransport(slowResponse: slowResponse))
+    }
+
+    public actor SlowResponseControl {
+        public enum Phase: Sendable { case idle, pending, returned }
+        private var phase: Phase = .idle
+        private var observer: AsyncStream<Phase>.Continuation?
+        private var waiter: CheckedContinuation<Void, Never>?
+
+        public init() {}
+
+        public func phases() -> AsyncStream<Phase> {
+            let (stream, continuation) = AsyncStream<Phase>.makeStream()
+            observer = continuation
+            continuation.yield(phase)
+            return stream
+        }
+
+        fileprivate func waitForRelease() async {
+            phase = .pending
+            observer?.yield(phase)
+            await withCheckedContinuation { continuation in
+                waiter = continuation
+            }
+        }
+
+        public func release() {
+            guard let waiter else { return }
+            self.waiter = nil
+            waiter.resume()
+        }
+
+        fileprivate func didReturn() {
+            phase = .returned
+            observer?.yield(phase)
+        }
     }
 }
 
 private struct UITestHTTPTransport: HTTPTransport {
+    let slowResponse: CPAQuotaUITestFixtures.SlowResponseControl?
     func send(_ request: URLRequest) async throws -> HTTPResponse {
         try Task.checkCancellation()
         guard let url = request.url,
@@ -32,11 +74,19 @@ private struct UITestHTTPTransport: HTTPTransport {
             if url.host == "slow-ui-test.invalid" {
                 // Deliberately finish after the caller cancels, like a transport
                 // that has already handed its response to a system callback.
-                await Task.detached {
-                    try? await Task.sleep(for: .seconds(5))
-                }.value
+                if let slowResponse {
+                    await slowResponse.waitForRelease()
+                } else {
+                    await Task.detached {
+                        try? await Task.sleep(for: .seconds(5))
+                    }.value
+                }
             }
-            return response(json: #"{"files":[{"id":"ui-main","auth_index":"ui-index-main","provider":"codex","label":"主要账号","email":"native@example.com","status":"active","disabled":false,"id_token":{"chatgpt_account_id":"ui-owner","plan_type":"team"}},{"id":"ui-empty","auth_index":"ui-index-empty","provider":"codex","label":"额度已用完","email":"zero@example.com","status":"active","disabled":false},{"id":"ui-plugin","auth_index":"ui-index-plugin","provider":"fixture-plugin","label":"摘要指标账号","email":"summary@example.com","status":"active","disabled":false,"supports_quota":true}]}"#)
+            let result = response(json: #"{"files":[{"id":"ui-main","auth_index":"ui-index-main","provider":"codex","label":"主要账号","email":"native@example.com","status":"active","disabled":false,"id_token":{"chatgpt_account_id":"ui-owner","plan_type":"team"}},{"id":"ui-empty","auth_index":"ui-index-empty","provider":"codex","label":"额度已用完","email":"zero@example.com","status":"active","disabled":false},{"id":"ui-plugin","auth_index":"ui-index-plugin","provider":"fixture-plugin","label":"摘要指标账号","email":"summary@example.com","status":"active","disabled":false,"supports_quota":true}]}"#)
+            if url.host == "slow-ui-test.invalid", let slowResponse {
+                await slowResponse.didReturn()
+            }
+            return result
         }
         if path.hasSuffix("/quota/providers") {
             return response(json: #"{"providers":[{"provider":"fixture-plugin","supported_providers":["fixture-plugin"]}]}"#)

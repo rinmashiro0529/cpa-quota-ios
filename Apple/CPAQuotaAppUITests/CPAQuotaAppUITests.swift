@@ -97,6 +97,12 @@ final class CPAQuotaAppUITests: XCTestCase {
         }
         let start = element("connection.start", in: app)
         expectExists(start, in: app)
+        expectExists(element("ui-test.slowResponse.pending", in: app), in: app)
+        let release = element("ui-test.slowResponse.release", in: app)
+        expectExists(release, in: app)
+        verify(release.isHittable, in: app, "The fixture release control must be tappable.")
+        release.tap()
+        expectExists(element("ui-test.slowResponse.returned", in: app), in: app)
         verify(!element("quota.options", in: app).waitForExistence(timeout: 6), in: app,
                "A response received after dismissal must not open or replace the workspace.")
         start.tap()
@@ -385,19 +391,28 @@ final class CPAQuotaAppUITests: XCTestCase {
     private func reveal(_ element: XCUIElement, in app: XCUIApplication, upward: Bool = true,
                         requiresHitTarget: Bool = true,
                         file: StaticString = #filePath, line: UInt = #line) {
-        // A rotation or a restored scroll position may place the target on
-        // either side of the viewport. Try the expected direction, then recover.
-        for direction in [upward, !upward] {
-            for _ in 0..<10 {
-                if element.exists {
-                    if hasVisibleTapCenter(element, in: app) { return }
-                    if (!requiresHitTarget || !element.isEnabled), isVisible(element, in: app) { return }
-                }
-                scrollContent(upward: direction, in: app, file: file, line: line)
+        // Inspect after every gesture, including the final one. Once a lazy
+        // target exists, move toward its center instead of blindly sweeping.
+        for attempt in 0...30 {
+            let exists = element.exists
+            if exists {
+                if hasVisibleTapCenter(element, in: app) { return }
+                if (!requiresHitTarget || !element.isEnabled), isVisible(element, in: app) { return }
             }
+            guard attempt < 30 else { break }
+            var direction = attempt < 15 ? upward : !upward
+            if exists, let container = contentContainer(in: app) {
+                let viewport = visibleContentFrame(container, in: app)
+                let frame = element.frame
+                if !frame.isEmpty {
+                    if frame.midY < viewport.midY { direction = false }
+                    else if frame.midY > viewport.midY { direction = true }
+                }
+            }
+            scrollContent(upward: direction, target: element, in: app, file: file, line: line)
         }
         attachDiagnostics(app, name: "unreachable-control")
-        XCTFail("Expected control must remain reachable by scrolling: \(element.identifier)", file: file, line: line)
+        XCTFail("Expected control must remain reachable by scrolling.", file: file, line: line)
     }
 
     @MainActor
@@ -537,7 +552,7 @@ final class CPAQuotaAppUITests: XCTestCase {
     }
 
     @MainActor
-    private func scrollContent(upward: Bool, in app: XCUIApplication,
+    private func scrollContent(upward: Bool, target: XCUIElement, in app: XCUIApplication,
                                file: StaticString, line: UInt) {
         guard let container = contentContainer(in: app) else {
             attachDiagnostics(app, name: "missing-scroll-container")
@@ -550,20 +565,32 @@ final class CPAQuotaAppUITests: XCTestCase {
             XCTFail("The native content viewport must remain usable above the keyboard.", file: file, line: line)
             return
         }
-        let x = viewport.midX - container.frame.minX
-        let top = viewport.minY + viewport.height * 0.25 - container.frame.minY
-        let bottom = viewport.minY + viewport.height * 0.75 - container.frame.minY
+        let anchor = container.cells.firstMatch
+        let hasAnchor = anchor.exists && !anchor.frame.isEmpty
+        let before = hasAnchor ? anchor.frame : .null
+        let preferredX = hasAnchor ? before.minX + 4 : viewport.midX
+        let x = min(max(preferredX, viewport.minX + 8), viewport.maxX - 8) - container.frame.minX
+        let top = viewport.minY + viewport.height * 0.375 - container.frame.minY
+        let bottom = viewport.minY + viewport.height * 0.625 - container.frame.minY
         let origin = container.coordinate(withNormalizedOffset: .zero)
         let start = origin.withOffset(CGVector(dx: x, dy: upward ? bottom : top))
         let end = origin.withOffset(CGVector(dx: x, dy: upward ? top : bottom))
+        let targetExists = target.exists
+        let targetFrame = targetExists ? target.frame : .null
+        let targetHittable = targetExists && target.isHittable
         start.press(forDuration: 0.05, thenDragTo: end)
+        let after = anchor.exists ? anchor.frame : .null
+        let afterExists = target.exists
+        let afterFrame = afterExists ? target.frame : .null
+        let afterHittable = afterExists && target.isHittable
+        print("FRONTEND_SCROLL line=\(line) upward=\(upward) viewport=\(viewport) anchorBefore=\(before) anchorAfter=\(after) targetBefore=\(targetFrame) hittableBefore=\(targetHittable) targetAfter=\(afterFrame) hittableAfter=\(afterHittable)")
     }
 
     @MainActor
     private func expectExists(_ element: XCUIElement, in app: XCUIApplication, timeout: TimeInterval = 10,
                               file: StaticString = #filePath, line: UInt = #line) {
         verify(element.waitForExistence(timeout: timeout), in: app,
-               "Expected element must exist: \(element.identifier).", file: file, line: line)
+               "Expected element must exist.", file: file, line: line)
     }
 
     @MainActor
