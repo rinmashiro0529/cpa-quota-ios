@@ -316,8 +316,8 @@ public struct AccountQuotaCardView: View {
                         Label(status, systemImage: window.isOverQuota ? "exclamationmark.circle" : "exclamationmark.triangle")
                             .font(.subheadline)
                     }
-                } else if let metric = snapshot.metrics.first.map(MetricPresentation.init) {
-                    QuotaLabeledValue(title: QuotaFormatter.maskEmails(in: metric.label, enabled: maskEmail), value: metric.formattedValue)
+                } else if let metric = snapshot.metrics.first.map({ MetricPresentation(metric: $0, maskEmail: maskEmail) }) {
+                    QuotaLabeledValue(title: metric.label, value: metric.formattedValue)
                 } else if let credits = CreditsPresentation(credits: snapshot.credits) {
                     QuotaLabeledValue(title: credits.title, value: credits.valueText)
                 } else {

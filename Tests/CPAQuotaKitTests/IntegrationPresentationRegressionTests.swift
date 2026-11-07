@@ -126,6 +126,31 @@ struct AuditQuotaPresentationTests {
         #expect(QuotaFormatter.maskEmails(in: "a@example.test", enabled: true) == "***@example.test")
     }
 
+    @Test func metricPresentationMasksEmailInLabelAndUnit() {
+        let metric = QuotaMetric(id: "unit", label: "Owner first@example.test", value: 42, unit: "second@example.test", format: "integer")
+        let presentation = MetricPresentation(metric: metric, maskEmail: true)
+        #expect(presentation.label == "Owner fi***t@example.test")
+        #expect(presentation.formattedValue == "42 se***d@example.test")
+    }
+
+    @Test func metricPresentationPreservesUnmaskedCurrencyAndNumericContracts() {
+        let metric = QuotaMetric(id: "currency", label: "first@example.test", value: 25, unit: "ignored", format: "currency", currency: "second@example.test")
+        let masked = MetricPresentation(metric: metric, maskEmail: true)
+        #expect(masked.label == "fi***t@example.test")
+        #expect(masked.formattedValue == "25.00 se***d@example.test")
+        let unmasked = MetricPresentation(metric: metric, maskEmail: false)
+        #expect(unmasked.label == "first@example.test")
+        #expect(unmasked.formattedValue == "25.00 second@example.test")
+        #expect(MetricPresentation(metric: metric).formattedValue == "25.00 second@example.test")
+        let legacyInitializer: (QuotaMetric) -> MetricPresentation = MetricPresentation.init
+        #expect(legacyInitializer(metric).formattedValue == "25.00 second@example.test")
+        let zero = QuotaMetric(id: "zero", label: "Zero", value: 0, unit: "first@example.test", format: "integer")
+        #expect(MetricPresentation(metric: zero, maskEmail: true).formattedValue == "0 fi***t@example.test")
+        #expect(MetricPresentation(metric: zero, maskEmail: false).formattedValue == "0 first@example.test")
+        let unknown = QuotaMetric(id: "unknown", label: "Unknown", value: nil, unit: "first@example.test")
+        #expect(MetricPresentation(metric: unknown, maskEmail: true).formattedValue == "数值未知")
+    }
+
     @Test func diagnosticsUseTheSameMaskedFreeTextAsQuotaCards() {
         let title = "主要账号 first@example.test / second@example.test"
         let account = CPAAccount(id: "a", authIndex: "fixture", provider: "codex", displayName: title)

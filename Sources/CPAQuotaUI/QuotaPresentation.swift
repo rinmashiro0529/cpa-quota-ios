@@ -179,14 +179,18 @@ public struct MetricPresentation: Identifiable, Equatable, Sendable {
     public let formattedValue: String
 
     public init(metric: QuotaMetric) {
+        self.init(metric: metric, maskEmail: false)
+    }
+
+    public init(metric: QuotaMetric, maskEmail: Bool) {
         self.id = metric.id
-        self.label = metric.label
-        self.formattedValue = Self.formatValue(
+        self.label = QuotaFormatter.maskEmails(in: metric.label, enabled: maskEmail)
+        self.formattedValue = QuotaFormatter.maskEmails(in: Self.formatValue(
             value: metric.value,
             unit: metric.unit,
             format: metric.format,
             currency: metric.currency
-        )
+        ), enabled: maskEmail)
     }
 
     public static func formatValue(

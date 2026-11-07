@@ -390,7 +390,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         for direction in [upward, !upward] {
             for _ in 0..<10 {
                 if element.exists {
-                    if element.isHittable { return }
+                    if hasVisibleTapCenter(element, in: app) { return }
                     if (!requiresHitTarget || !element.isEnabled), isVisible(element, in: app) { return }
                 }
                 scrollContent(upward: direction, in: app, file: file, line: line)
@@ -485,11 +485,43 @@ final class CPAQuotaAppUITests: XCTestCase {
     @MainActor
     private func visibleContentFrame(_ container: XCUIElement, in app: XCUIApplication) -> CGRect {
         var viewport = container.frame.intersection(app.frame)
+        for bar in app.navigationBars.allElementsBoundByIndex where bar.exists {
+            let frame = bar.frame.intersection(app.frame)
+            if frame.intersects(viewport), frame.midY < viewport.midY {
+                let top = max(viewport.minY, frame.maxY)
+                viewport = CGRect(x: viewport.minX, y: top, width: viewport.width,
+                                  height: max(0, viewport.maxY - top))
+            }
+        }
+        for bar in app.tabBars.allElementsBoundByIndex where bar.exists {
+            let frame = bar.frame.intersection(app.frame)
+            if frame.intersects(viewport), frame.midY > viewport.midY {
+                viewport.size.height = max(0, min(viewport.maxY, frame.minY) - viewport.minY)
+            }
+        }
         let keyboard = app.keyboards.firstMatch
         if keyboard.exists, keyboard.frame.intersects(viewport), keyboard.frame.minY > viewport.minY {
             viewport.size.height = min(viewport.maxY, keyboard.frame.minY) - viewport.minY
         }
         return viewport
+    }
+
+    /// Hittable alone can include a stale rotation frame or content beneath
+    /// system bars. Keep genuine toolbar buttons reachable in their own bars.
+    @MainActor
+    private func hasVisibleTapCenter(_ element: XCUIElement, in app: XCUIApplication) -> Bool {
+        guard element.isHittable else { return false }
+        let frame = element.frame
+        let center = CGPoint(x: frame.midX, y: frame.midY)
+        guard !frame.isEmpty, app.frame.contains(center) else { return false }
+        let bars = app.navigationBars.allElementsBoundByIndex + app.tabBars.allElementsBoundByIndex
+        if bars.contains(where: { bar in
+            bar.exists && bar.buttons.allElementsBoundByIndex.contains(where: { button in
+                button.exists && button.frame == frame && button.label == element.label
+            })
+        }) { return true }
+        guard let container = contentContainer(in: app) else { return false }
+        return visibleContentFrame(container, in: app).contains(center) && isVisible(element, in: app)
     }
 
     @MainActor

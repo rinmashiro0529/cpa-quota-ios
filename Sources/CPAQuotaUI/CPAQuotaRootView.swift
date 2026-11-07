@@ -24,6 +24,7 @@ public struct CPAQuotaRootView: View {
                     workspace(tab)
                         .navigationTitle(tab.title)
                         .background(BrandCanvasBackground())
+                        .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("workspace.\(tab.rawValue)")
                         .toolbar {
                             if tab != .usage {
