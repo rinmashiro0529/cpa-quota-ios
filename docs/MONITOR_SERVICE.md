@@ -55,6 +55,22 @@ go -C Services/QuotaMonitor build -o ../../artifacts/quota-monitor.exe ./cmd/quo
 
 这是有界准入，尚未实现无限期历史回收。v1 注册没有可验证的重放截止时间，不能简单给墓碑或终态会话设置 TTL，否则迟到的旧 POST 会重新启动监控。达到容量需评估配额和存储预算，后续安全回收需要版本化重放期限与迁移合同；不要通过删除状态文件来腾出空间。恢复时若现有状态已超过新配额或预留空间预算，启动失败且不重写原文件；升级前应检查现有状态规模并配置足够的兼容配额。
 
+`GET /v1/capabilities` 现在提供当前 Bearer 身份的 `capacity`：`limit`、`used`、`remaining`、`warning_at` 与 `status`。`used` 始终包含终态会话和取消墓碑；`warning_at` 为配额的 80% 向上取整，默认 205，达到后返回 `warning`，剩余为 0 时返回 `exhausted`，其余为 `ok`。它不暴露其他 principal 的名称、标识或精确用量。客户端应在 `warning` 时提示剩余历史意图数，并在耗尽前联系服务管理员评估配额与受保护存储预算；重启、停止活动、换一个 UUID 均不会释放已保留的意图。
+
+`can_create_session` 和 `can_record_cancellation` 额外检查本 principal 及全局会话／墓碑的条目余量，后者只针对一个**新的未知 UUID** 的取消墓碑。两者都是读取时刻的预检，不预留名额、不检查新请求的实际字节预算，也不承诺下次写盘成功；最终原子准入仍可能返回 507。即使标志为 false，既有会话的停止和已确认取消的幂等重试仍可用。能力读取只遍历有界状态，不做全量 JSON 状态编码、同步落盘、到期迁移或网络采集，避免把容量观测变成新的写入放大入口。
+
+### 安全回收的后续协议与迁移合同
+
+本次保持 HTTP v1 和持久状态兼容，**没有启用历史回收**。后续版本须先满足以下合同，再引入回收；仅提高配额或增加 TTL 不满足这些条件。
+
+1. 新注册携带由服务验证的、绑定不可复用意图 ID、principal 和不可延长截止时间的凭证。可采用服务生成新 ID 并签发短期注册票据的独立版本接口；服务不能为同一个旧 ID 重签更晚的截止时间。旧 POST 的截止时间不因重试、token 轮换、重启或客户端修改字段而延后。未经验证的客户端时间戳不足以授权回收。
+2. 先到的取消同样验证该票据，并持久保存墓碑到所有可接受注册的时间窗口关闭；已经确认取消后，迟到或重放的原注册永久不能再次创建活动。活跃租约、待确认停止和必要投递对账未结束时不得回收记录。
+3. 截止判定和回收使用持久的单调时间下界；时钟回拨、进程重启及密钥轮换不能重新打开已关闭的注册窗口。回收和该下界必须原子持久化，保存结果不确定时仍失败关闭。
+4. v1 历史会话与墓碑保留原有永久重放保护；不能凭记录年龄把无截止证明的旧意图转换成可回收意图。新旧准入、容量和记录版本应明确区分，避免新客户端回落到 v1 时误用回收策略。
+5. 新持久格式必须让不理解该协议的旧二进制拒绝启动。升级前留存一致性备份，回退采用理解新格式的已验证版本或前向修复；不能恢复陈旧备份而丢弃其后已经确认的取消。迁移不得在后台静默重写或丢弃原状态。
+
+实现此协议前，回归须覆盖低配额、截止临界、取消先到、晚到 POST、相同 ID 改截止时间、跨 principal 重放、重启、时钟回拨、签名密钥轮换、混合 v1/v2 状态及不兼容回退。当前新增的低配额测试验证告警、计数、重启后保留及终态／墓碑不复活，不能作为未来回收实现已经通过的证据。
+
 ## 来源、身份、窗口和单位
 
 `sources[].base_url` 必须是安全 HTTPS URL，可含反代前缀，也接受末尾 `/v0/management` 的规范形式；禁止 URL 内凭据、查询、片段、点路径和编码路径。一个进程的配置不允许重复 canonical HTTPS origin，以免同一服务绕过共享冷却。调用方不能提交 URL、管理密钥、provider 或任意上游请求，来源仅使用服务端配置。每个 canonical origin 的管理请求最多三路，同来源采集合并；HTTP 单响应最多 4 MiB，单次 HTTP 上限 75 秒，采集 context 超时为 240 秒（不承诺整个轮次包括落盘、锁等待在内的总耗时）。
@@ -87,13 +103,20 @@ Codex `api-call` envelope 的 `header` / `headers` 均可读取，字段名大�
 
 | 路由 | 成功与关键失败语义 |
 | --- | --- |
+| `GET /v1/capabilities` | 200 当前 Bearer 授权的来源、账号安全别名与历史意图容量；无效令牌 401；只读，不创建会话、不采集 CPA、不投递 APNs |
 | `POST /v1/monitoring/sessions` | 201；等价规范化请求幂等，不同意图 409；无权限 403；已写墓碑拒绝迟到创建；新意图容量不足 507 |
 | `GET /v1/monitoring/sessions/{id}` | 200 当前会话；其他 owner 或未知 ID 返回 404 |
 | `PUT .../{id}/token` | `push_token` 与 expected-current `revision`；成功加一，旧版本/溢出 409 |
-| `POST .../{id}/refresh` | 202 当前会话，只表示意图已接受；合并来源采集并守节拍，不表示采集/推送完成 |
+| `POST .../{id}/refresh` | 202 当前会话，只表示意图已接受；重复 pending 不重复落盘；超出会话或 principal 请求预算返回 429 和 `Retry-After`；不表示采集／推送完成 |
 | `DELETE .../{id}` | 已知会话 200，停止版本递增且落盘后发送 end；未知 UUID 在当前 principal 下持久墓碑并 204；无法接纳新墓碑时 507，不确认取消 |
 | `GET /v1/sources/{sourceID}/quota` | 200 授权缓存；无缓存 404，不触发网络；不跨 session 直接用 sequence 选新旧 |
 | `GET /healthz` | 200 最小健康；存储不确定或服务停止时 503 |
+
+能力响应的共享合同样例为 `Tests/ContractFixtures/monitoring-capabilities-v1.json`，Go 处理器输出与 Swift 解码使用同一份夹具。响应字段为 `version: 1`、`generated_at`、`sources` 和 `capacity`；`sources[]` 仅含已授权的 `id` 及 `accounts[]`，账号字段为注册所需的 `id`、非敏感 `safe_id`／`label`、`provider`、`window_id` 和 `window_label`，来源与账号分别按 ID 排序。真实账号 ID 可能包含邮箱，只用于授权选择与注册；日常显示采用安全别名，诊断显示仍应脱敏。响应不包含上游 URL、凭据环境变量名、管理密钥、push token 或内部 principal。成功只证明本次到达监控服务并通过它的 Bearer 授权；不能据此断言 CPA 凭据有效、APNs 已配置或真机能够展示。旧服务返回 404 时应提示升级并保持待验证状态，不回退到公开 `/healthz` 冒充授权成功。
+
+活动 refresh 的服务端请求预算为每个会话 10 秒最多 1 次、每个 principal 滚动 60 秒最多 6 次；两个条件同时满足才接受，剩余等待向上取整为 `Retry-After` 秒数。此预算只分配给已鉴权、可见且仍活跃的会话，有界于配置身份和保留会话数。不存在／其他 principal 的 UUID 不分配预算状态，终态读取不消费预算。预算仅存在当前进程内，重启会清空该请求预算；已保存的采样时间仍按既有恢复逻辑读取。它不是跨进程的频率保证，不替代来源采集节拍与 CPA 冷却；重启也不会释放历史意图或已确认取消的墓碑。
+
+重复请求若 `pending` 与投递状态均未变化，直接返回既有 202 视图，不全量编码／落盘，也不反复扫描来源会话；新的变更先成功落盘才接受。429 不改会话 revision 或持久状态。会话 GET、DELETE 和 token CAS 更新不共用 refresh 预算；反代模板另对总请求设按 IP 的预算，并为 DELETE／PUT 保留独立预算，见部署指南。该策略限制刷新带来的写入与扫描放大，不是无限并发、慢磁盘或设备送达时延的性能保证。
 
 注册字段为 `id`、`source_id`、`account_ids`、`duration_seconds`、`activity_id`、`push_token`。id 为标准 UUID，大小写规范化；account_ids 为 1–5 个已授权标识；租约仅 3600/14400/28800 秒。JSON 空格、键序和 UUID/token 大小写不产生假冲突，账号数组顺序仍是活动意图的一部分。重发原注册不会延长租约，token 轮换也不延长租约。未知 DELETE 的墓碑按 principal 隔离，另一个身份不能预占或结束已有 owner 的 UUID。
 
@@ -129,6 +152,6 @@ HTTP DTO 仍是 v1。仅出现活动 token 失效的持久记录升级为 record
 python -I -X utf8 -B tools/test_monitor_backend.py --project <project>
 ```
 
-工具只运行合成测试、`gofmt -l`、`go vet`、`go test -race`、Windows/当前平台构建、Linux amd64 交叉构建和无配置帮助命令，将源码清单、哈希、逐项退出码、测试计数及二进制哈希保存到新的 `artifacts/backend-verification/*-go/`。缓存、真实配置、加密状态与二进制不进入源码清单；未部署或向真实 APNs 发请求。`BACKEND_VERIFICATION.md` 保留 PR #1 的历史结果。本次整改的执行范围与回执见 `BACKEND_RELIABILITY_PR.md`、`verification/backend-reliability-20261029.json` 和当前 PR Checks，不能仅凭本说明认定已通过。
+工具只运行合成测试、`gofmt -l`、`go vet`、`go test -race`、Windows/当前平台构建、Linux amd64 交叉构建和无配置帮助命令，将源码清单、哈希、逐项退出码、测试计数及二进制哈希保存到新的 `artifacts/backend-verification/*-go/`。缓存、真实配置、加密状态与二进制不进入源码清单；未部署或向真实 APNs 发请求。`BACKEND_VERIFICATION.md` 保留 PR #1 的历史结果。`BACKEND_RELIABILITY_PR.md` 与 `verification/backend-reliability-20261029.json` 也是既有版本的历史证据；2026-11-07 审计整改的实际执行范围见 [整改交付记录](AUDIT_REMEDIATION_20261107.md) 与对应候选 SHA 的 PR Checks，不能用历史结果认定新增改动已通过。
 
 真实接入尚需另外授权和验收：确认用户 CPA/插件协议及鉴权、选定稳定账号/窗口与非敏感别名、服务器 TLS/ACL/备份、APNs 身份/主题/环境、设备 token 与活动扩展，以及后台/锁屏/常亮/强退/离线/过期/轮播。Linux 交叉编译不等于 Linux 实机运行，更不等于 Apple 真机验收。原有 App 安装、main、共享证书和团队资源均不因本地后端源码交付而改变。

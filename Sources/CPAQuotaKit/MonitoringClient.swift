@@ -26,7 +26,9 @@ public actor CPAMonitorClient {
     private let transport: any HTTPTransport
     private let clock: @Sendable () -> Date
     private var blocked: MonitoringError?
-    public private(set) var retryAt: Date?
+    private enum RequestLane: Hashable { case standard, refresh, cancellation, token }
+    private var cooldowns: [RequestLane: Date] = [:]
+    public var retryAt: Date? { cooldowns[.standard] }
 
     public init(baseURL: URL, token: MonitorBridgeToken) throws {
         self.baseURL = try Self.normalize(baseURL)
@@ -95,6 +97,12 @@ public actor CPAMonitorClient {
         catch { throw MonitoringError.invalidResponse }
     }
 
+    public func capabilities() async throws -> MonitoringCapabilities {
+        let data = try await perform("GET", path: ["v1", "capabilities"])
+        do { return try JSONDecoder().decode(MonitoringCapabilities.self, from: data) }
+        catch { throw MonitoringError.invalidResponse }
+    }
+
     private func sessionPath(_ id: UUID) -> [String] { ["v1", "monitoring", "sessions", id.uuidString.lowercased()] }
 
     private func decodeSession(_ data: Data, id: UUID) throws -> MonitoringSession {
@@ -108,8 +116,13 @@ public actor CPAMonitorClient {
     private func perform(_ method: String, path: [String], body: Data? = nil, allowNoContent: Bool = false) async throws -> Data {
         try Task.checkCancellation()
         if let blocked { throw blocked }
-        if let retryAt, retryAt > clock() { throw MonitoringError.rateLimited }
-        retryAt = nil
+        let isRefresh = method == "POST" && path.last == "refresh"
+        let lane: RequestLane = isRefresh ? .refresh : method == "DELETE" ? .cancellation
+            : method == "PUT" && path.last == "token" ? .token : .standard
+        // Honor each lane's own Retry-After without letting a refresh rejection
+        // block reads, cancellation, or replacement of an expired push token.
+        if let deadline = cooldowns[lane], deadline > clock() { throw MonitoringError.rateLimited }
+        cooldowns[lane] = nil
         var url = baseURL
         for component in path { url.appendPathComponent(component) }
         var request = URLRequest(url: url, timeoutInterval: 75)
@@ -143,7 +156,8 @@ public actor CPAMonitorClient {
         case 429:
             let now = clock()
             let parsed = WireDate.retryAfter(response.header("Retry-After"), now: now)
-            retryAt = max(parsed ?? now.addingTimeInterval(60), now.addingTimeInterval(1))
+            let deadline = max(parsed ?? now.addingTimeInterval(60), now.addingTimeInterval(1))
+            cooldowns[lane] = deadline
             throw MonitoringError.rateLimited
         default: throw MonitoringError.rejected
         }

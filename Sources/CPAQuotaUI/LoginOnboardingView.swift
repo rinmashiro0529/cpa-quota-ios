@@ -5,6 +5,7 @@ import CPAQuotaKit
 public struct LoginOnboardingView: View {
     @Bindable var session: CPAQuotaSession
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
     @FocusState private var focusedField: Field?
     public let showCloseButton: Bool
 
@@ -30,7 +31,7 @@ public struct LoginOnboardingView: View {
     }
 
     public var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme)
+        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         Form {
             Section {
                 VStack(alignment: .leading, spacing: 12) {
@@ -115,7 +116,7 @@ public struct LoginOnboardingView: View {
                             ProgressView("正在验证管理密钥并读取账号")
                                 .accessibilityLabel("正在连接，请稍候")
                             Button {
-                                Task { await session.cancelActiveOperation() }
+                                session.cancelConnectionAttempt()
                             } label: {
                                 Label("取消连接", systemImage: "xmark")
                                     .frame(maxWidth: .infinity, minHeight: 44)
@@ -132,7 +133,7 @@ public struct LoginOnboardingView: View {
         .scrollDismissesKeyboard(.interactively)
         .scrollContentBackground(.hidden)
         .background(BrandCanvasBackground())
-        .navigationTitle(showCloseButton ? "更新连接" : "欢迎使用 CPA Quota")
+        .navigationTitle("连接管理")
         .onSubmit {
             if focusedField == .address {
                 focusedField = .managementKey
@@ -144,9 +145,10 @@ public struct LoginOnboardingView: View {
             if showCloseButton {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("关闭") {
-                        session.isPresentingConnectionSheet = false
+                        session.dismissConnectionForm()
                     }
                     .accessibilityLabel("关闭连接设置")
+                    .accessibilityIdentifier("connection.close")
                 }
             }
         }
@@ -171,13 +173,7 @@ public struct LoginOnboardingView: View {
     private func submit() {
         guard canSubmit else { return }
         focusedField = nil
-        Task {
-            await session.connect(
-                serverAddress: session.serverAddressDraft,
-                managementKeyInput: session.managementKeyDraft,
-                rememberInKeychain: session.rememberCredentialsDraft
-            )
-        }
+        session.submitConnectionDraft()
     }
 }
 #endif

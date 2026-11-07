@@ -29,7 +29,7 @@ public actor CPAClient {
 
     private struct InventoryResult: Sendable {
         let inventory: DecodedInventory
-        let providers: Set<String>
+        let providers: Set<String>?
         let warning: CPAError?
         let version: String?
     }
@@ -104,7 +104,9 @@ public actor CPAClient {
                        coordinator: limiter, clock: clock)
     }
 
-    public func loadAccounts() async throws -> [CPAAccount] {
+    /// Initial connection may validate just the inventory, then discover optional
+    /// quota capabilities after the workspace is visible.
+    public func loadAccounts(discoverProviders: Bool = true) async throws -> [CPAAccount] {
         try Task.checkCancellation()
         let flight: InventoryFlight
         if let existing = inventoryFlight, !existing.task.isCancelled {
@@ -113,8 +115,12 @@ public actor CPAClient {
             let task = Task { [server, key, transport, clock, limiter] in
                 let response = try await Self.perform(.accounts, server: server, key: key, transport: transport, clock: clock, limiter: limiter)
                 let inventory = try PayloadDecoder.inventory(response.body, now: clock())
-                let providers: Set<String>
+                let providers: Set<String>?
                 let warning: CPAError?
+                if !discoverProviders {
+                    return InventoryResult(inventory: inventory, providers: nil,
+                                           warning: nil, version: response.header("X-CPA-Version"))
+                }
                 do {
                     let capabilityResponse = try await Self.perform(.providers, server: server, key: key, transport: transport, clock: clock, limiter: limiter)
                     providers = try PayloadDecoder.providers(capabilityResponse.body)
@@ -148,10 +154,36 @@ public actor CPAClient {
                 applyInventory(result)
                 inventoryFlight = nil
             }
+            if discoverProviders, result.providers == nil {
+                try await discoverQuotaProviders()
+            }
             return entries.map(\.account)
         } catch {
             if inventoryFlight?.token == flight.token { inventoryFlight = nil }
             throw CPAError.normalize(error)
+        }
+    }
+
+    /// Shares the same management authorization circuit as inventory and quota reads.
+    /// A cancelled discovery never replaces capability state for a newer epoch.
+    public func discoverQuotaProviders() async throws {
+        let expectedEpoch = epoch
+        try Task.checkCancellation()
+        do {
+            let response = try await Self.perform(.providers, server: server, key: key,
+                                                 transport: transport, clock: clock, limiter: limiter)
+            let providers = try PayloadDecoder.providers(response.body)
+            try Task.checkCancellation()
+            guard epoch == expectedEpoch else { throw CancellationError() }
+            pluginProviders = providers
+            capabilityWarning = nil
+        } catch {
+            try Task.checkCancellation()
+            guard epoch == expectedEpoch else { throw CancellationError() }
+            let failure = CPAError.normalize(error)
+            guard failure.kind != .cancelled, !failure.isManagementBlocking else { throw failure }
+            pluginProviders = []
+            capabilityWarning = failure.kind == .endpointUnavailable ? nil : failure
         }
     }
 
@@ -360,8 +392,10 @@ public actor CPAClient {
         }
         entries = newEntries
         records = updated
-        pluginProviders = result.providers
-        capabilityWarning = result.warning
+        if let providers = result.providers {
+            pluginProviders = providers
+            capabilityWarning = result.warning
+        }
         serverVersion = result.version
         hasInventory = true
     }

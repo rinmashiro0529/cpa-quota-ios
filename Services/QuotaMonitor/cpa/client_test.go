@@ -355,3 +355,111 @@ func TestFixtureOriginsDoNotLeakSecurityState(t *testing.T) {
 		})
 	}
 }
+
+func TestCollectRetainsLastReadingWhenValueMissing(t *testing.T) {
+	var calls atomic.Int32
+	client, _, now := fixtureClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v0/management/auth-files" {
+			io.WriteString(w, `{"files":[{"id":"a","auth_index":"1","provider":"codex"}]}`)
+			return
+		}
+		switch calls.Add(1) {
+		case 1:
+			io.WriteString(w, `{"status_code":200,"body":{"rate_limit":{"primary_window":{"used_percent":10}}}}`)
+		case 2:
+			io.WriteString(w, `{"status_code":200,"body":{"rate_limit":{"primary_window":{}}}}`)
+		default:
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	}), []Account{{ID: "a", Provider: "codex", Selection: "primary"}})
+	first := client.Collect(context.Background())["a"]
+	if first.Status != "ok" || first.Result.Remaining == nil || math.Abs(*first.Result.Remaining-0.9) > 1e-9 || first.ObservedAt != 1_800_000_000 || first.ExpiresAt != 1_800_000_600 {
+		t.Fatalf("initial reading: %+v", first)
+	}
+	for _, step := range []string{"missing value", "subsequent failure"} {
+		now.Add(1)
+		got := client.Collect(context.Background())["a"]
+		if got.Status != "stale" || got.Result.Remaining == nil || math.Abs(*got.Result.Remaining-0.9) > 1e-9 || got.ObservedAt != 1_800_000_000 || got.ExpiresAt != 1_800_000_600 {
+			t.Fatalf("%s: %+v", step, got)
+		}
+	}
+}
+
+func TestCollectRetainsReadingForNegativePercentage(t *testing.T) {
+	var calls atomic.Int32
+	client, _, now := fixtureClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v0/management/auth-files" {
+			io.WriteString(w, `{"files":[{"id":"a","auth_index":"1","provider":"codex"}]}`)
+			return
+		}
+		if calls.Add(1) == 1 {
+			io.WriteString(w, `{"status_code":200,"body":{"rate_limit":{"primary_window":{"used_percent":10}}}}`)
+		} else {
+			io.WriteString(w, `{"status_code":200,"body":{"rate_limit":{"primary_window":{"used_percent":-1}}}}`)
+		}
+	}), []Account{{ID: "a", Provider: "codex", Selection: "primary"}})
+	first := client.Collect(context.Background())["a"]
+	if first.Status != "ok" || first.Result.Remaining == nil || math.Abs(*first.Result.Remaining-0.9) > 1e-9 {
+		t.Fatalf("initial: %+v", first)
+	}
+	now.Add(1)
+	got := client.Collect(context.Background())["a"]
+	if got.Status != "stale" || got.Result.Remaining == nil || math.Abs(*got.Result.Remaining-0.9) > 1e-9 || got.ObservedAt != 1_800_000_000 || got.ExpiresAt != 1_800_000_600 {
+		t.Fatalf("negative: %+v", got)
+	}
+}
+
+func TestCollectFirstMissingValueIsUnavailable(t *testing.T) {
+	client, _, _ := fixtureClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v0/management/auth-files" {
+			io.WriteString(w, `{"files":[{"id":"a","auth_index":"1","provider":"codex"}]}`)
+			return
+		}
+		io.WriteString(w, `{"status_code":200,"body":{"rate_limit":{"primary_window":{}}}}`)
+	}), []Account{{ID: "a", Provider: "codex", Selection: "primary"}})
+	got := client.Collect(context.Background())["a"]
+	if got.Status != "unavailable" || got.Result.Remaining != nil || got.Result.Value != nil || got.ObservedAt != 0 || got.ExpiresAt != 0 {
+		t.Fatalf("first missing: %+v", got)
+	}
+}
+
+func TestCollectAcceptsZeroRemaining(t *testing.T) {
+	client, _, _ := fixtureClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v0/management/auth-files" {
+			io.WriteString(w, `{"files":[{"id":"a","auth_index":"1","provider":"codex"}]}`)
+			return
+		}
+		io.WriteString(w, `{"status_code":200,"body":{"rate_limit":{"primary_window":{"used_percent":100}}}}`)
+	}), []Account{{ID: "a", Provider: "codex", Selection: "primary"}})
+	got := client.Collect(context.Background())["a"]
+	if got.Status != "ok" || got.Result.Remaining == nil || *got.Result.Remaining != 0 || got.ObservedAt != 1_800_000_000 || got.ExpiresAt != 1_800_000_600 {
+		t.Fatalf("zero remaining: %+v", got)
+	}
+}
+
+func TestCollectMissingValueDoesNotRetainPriorIdentity(t *testing.T) {
+	var inventories atomic.Int32
+	client, _, _ := fixtureClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v0/management/auth-files" {
+			if inventories.Add(1) == 1 {
+				io.WriteString(w, `{"files":[{"id":"a","auth_index":"1","provider":"codex"}]}`)
+			} else {
+				io.WriteString(w, `{"files":[{"id":"a","auth_index":"2","provider":"codex"}]}`)
+			}
+			return
+		}
+		if inventories.Load() == 1 {
+			io.WriteString(w, `{"status_code":200,"body":{"rate_limit":{"primary_window":{"used_percent":10}}}}`)
+		} else {
+			io.WriteString(w, `{"status_code":200,"body":{"rate_limit":{"primary_window":{}}}}`)
+		}
+	}), []Account{{ID: "a", Provider: "codex", Selection: "primary"}})
+	first := client.Collect(context.Background())["a"]
+	if first.Status != "ok" || first.Result.Remaining == nil || math.Abs(*first.Result.Remaining-0.9) > 1e-9 || first.Identity == "" {
+		t.Fatalf("initial: %+v", first)
+	}
+	got := client.Collect(context.Background())["a"]
+	if got.Status != "unavailable" || got.Result.Remaining != nil || got.Result.Value != nil || got.ObservedAt != 0 || got.ExpiresAt != 0 || got.Identity == "" || got.Identity == first.Identity {
+		t.Fatalf("changed identity: %+v", got)
+	}
+}

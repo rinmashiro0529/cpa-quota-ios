@@ -68,38 +68,61 @@ struct CAPRequestPagePresentation: Sendable {
     }
 }
 
-struct CAPAnalyticsPresentation: Sendable {
-    let snapshot: CAPUsageDetailSnapshot
+struct CAPInitialPresentation: Sendable {
+    let snapshot: CAPUsageResourceSnapshot<CAPUsageInitialStats>
     let initialModels: [CAPDataRow<CAPUsageStatRow>]
     let initialSeries: [CAPDataRow<CAPUsageStatRow>]
+
+    init(snapshot: CAPUsageResourceSnapshot<CAPUsageInitialStats>) {
+        self.snapshot = snapshot
+        initialModels = CAPRowBuilder.rows(snapshot.value.models, window: snapshot.window,
+            scope: "initial.models", identity: CAPRowBuilder.statIdentity)
+        initialSeries = CAPRowBuilder.rows(snapshot.value.series, window: snapshot.window,
+            scope: "initial.series", identity: CAPRowBuilder.statIdentity)
+    }
+}
+
+struct CAPTrendsPresentation: Sendable {
+    let snapshot: CAPUsageResourceSnapshot<CAPUsageTrends>
     let trendRows: [CAPDataRow<CAPUsageStatRow>]
+    let trends: CAPTrendPresentation
+
+    init(snapshot: CAPUsageResourceSnapshot<CAPUsageTrends>) {
+        self.snapshot = snapshot
+        trendRows = CAPRowBuilder.rows(snapshot.value.modelSeries, window: snapshot.window,
+            scope: "trends", identity: CAPRowBuilder.statIdentity)
+        trends = CAPTrendPresentation(rows: trendRows)
+    }
+}
+
+struct CAPGroupsPresentation: Sendable {
+    let snapshot: CAPUsageResourceSnapshot<CAPUsageGroups>
     let groups: [CAPDataRow<CAPUsageStatRow>]
+
+    init(snapshot: CAPUsageResourceSnapshot<CAPUsageGroups>) {
+        self.snapshot = snapshot
+        groups = CAPRowBuilder.rows(snapshot.value.items, window: snapshot.window,
+            scope: "groups", offset: snapshot.query.groupOffset, identity: CAPRowBuilder.statIdentity)
+    }
+}
+
+struct CAPCostsPresentation: Sendable {
+    let snapshot: CAPUsageResourceSnapshot<CAPUsageCosts>
     let costModels: [CAPDataRow<CAPUsageCostItem>]
     let costSeries: [CAPDataRow<CAPUsageCostItem>]
     let missingPrices: [CAPDataRow<CAPUsageMissingPrice>]
-    let trends: CAPTrendPresentation
 
-    init(snapshot: CAPUsageDetailSnapshot) {
+    init(snapshot: CAPUsageResourceSnapshot<CAPUsageCosts>) {
         self.snapshot = snapshot
-        let window = snapshot.window
-        initialModels = CAPRowBuilder.rows(snapshot.initial.models, window: window,
-            scope: "initial.models", identity: CAPRowBuilder.statIdentity)
-        initialSeries = CAPRowBuilder.rows(snapshot.initial.series, window: window,
-            scope: "initial.series", identity: CAPRowBuilder.statIdentity)
-        trendRows = CAPRowBuilder.rows(snapshot.trends.modelSeries, window: window,
-            scope: "trends", identity: CAPRowBuilder.statIdentity)
-        groups = CAPRowBuilder.rows(snapshot.groups.items, window: window,
-            scope: "groups", offset: snapshot.groupOffset, identity: CAPRowBuilder.statIdentity)
-        costModels = CAPRowBuilder.rows(snapshot.costs.models, window: window, scope: "cost.models") {
+        costModels = CAPRowBuilder.rows(snapshot.value.models, window: snapshot.window, scope: "cost.models") {
             [$0.provider, $0.model, $0.hour]
         }
-        costSeries = CAPRowBuilder.rows(snapshot.costs.series, window: window, scope: "cost.series") {
+        costSeries = CAPRowBuilder.rows(snapshot.value.series, window: snapshot.window, scope: "cost.series") {
             [$0.provider, $0.model, $0.hour]
         }
-        missingPrices = CAPRowBuilder.rows(snapshot.costs.missingPrices, window: window, scope: "cost.missing") {
+        missingPrices = CAPRowBuilder.rows(snapshot.value.missingPrices, window: snapshot.window, scope: "cost.missing") {
             [$0.provider, $0.model]
         }
-        trends = CAPTrendPresentation(rows: trendRows)
     }
 }
 
@@ -212,17 +235,7 @@ enum CAPDisplay {
     /// CAP source and alias fields may contain an email even though they are
     /// diagnostic metadata. The privacy preference also applies to their AX text.
     static func privacyValue(_ value: String, masksEmail: Bool) -> String {
-        guard masksEmail, value.contains("@") else { return value }
-        guard let expression = try? NSRegularExpression(
-            pattern: #"[\p{L}\p{N}._%+\-]+@[\p{L}\p{N}.\-]+"#
-        ) else { return QuotaFormatter.maskEmail(value, enabled: true) }
-        let result = NSMutableString(string: value)
-        let matches = expression.matches(in: value, range: NSRange(location: 0, length: result.length))
-        for match in matches.reversed() {
-            let original = (value as NSString).substring(with: match.range)
-            result.replaceCharacters(in: match.range, with: QuotaFormatter.maskEmail(original, enabled: true))
-        }
-        return result as String
+        QuotaFormatter.maskEmails(in: value, enabled: masksEmail)
     }
 
     static func counter(_ value: UInt64?) -> String { value.map(String.init) ?? "未知" }

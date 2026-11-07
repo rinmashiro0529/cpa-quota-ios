@@ -36,6 +36,15 @@ public final class CPAQuotaStore {
 
     public func load() async { await run(force: false) }
 
+    /// Validate management access and publish the authoritative account list first.
+    /// Quota requests are started only after the session accepts this connection.
+    public func loadInventory() async { await run(force: false, inventoryOnly: true) }
+
+    /// Continue the accepted inventory without fetching the account list again.
+    public func refreshLoadedAccounts(force: Bool = false) async {
+        await run(force: force, reloadInventory: false)
+    }
+
     public func refresh(force: Bool = true) async { await run(force: force) }
 
     public func refresh(accountID: String, force: Bool = true) async {
@@ -64,16 +73,17 @@ public final class CPAQuotaStore {
         task?.cancel()
     }
 
-    private func run(force: Bool, accountID: String? = nil) async {
+    private func run(force: Bool, accountID: String? = nil, inventoryOnly: Bool = false, reloadInventory: Bool = true) async {
         guard operation == nil else { return }
         let token = UUID()
         operation = token
         refreshOperation = QuotaOperation(id: token, phase: .loading, planned: [], processed: [], succeeded: [], failed: [], skipped: [])
-        isLoading = true
+        isLoading = reloadInventory
+        isRefreshing = !reloadInventory
         error = nil
         let task = Task { [weak self] in
             guard let self else { return }
-            await self.performRun(force: force, accountID: accountID, token: token)
+            await self.performRun(force: force, accountID: accountID, token: token, inventoryOnly: inventoryOnly, reloadInventory: reloadInventory)
         }
         operationTask = task
         await withTaskCancellationHandler {
@@ -83,7 +93,7 @@ public final class CPAQuotaStore {
         }
     }
 
-    private func performRun(force: Bool, accountID: String?, token: UUID) async {
+    private func performRun(force: Bool, accountID: String?, token: UUID, inventoryOnly: Bool, reloadInventory: Bool) async {
         defer {
             if operation == token {
                 operation = nil
@@ -93,13 +103,19 @@ public final class CPAQuotaStore {
             }
         }
         do {
-            _ = try await client.loadAccounts()
+            if reloadInventory {
+                _ = try await client.loadAccounts(discoverProviders: !inventoryOnly)
+            }
             try Task.checkCancellation()
             guard operation == token else { return }
             let initial = await client.snapshot()
             try Task.checkCancellation()
             guard operation == token else { return }
             publish(initial)
+            if inventoryOnly {
+                refreshOperation?.phase = .completed
+                return
+            }
             if let accountID {
                 guard initial.records.contains(where: { $0.id == accountID }) else {
                     throw CPAError(.accountNotFound)
@@ -111,6 +127,12 @@ public final class CPAQuotaStore {
             refreshOperation?.phase = .refreshing
             isLoading = false
             isRefreshing = true
+            if !reloadInventory {
+                try await client.discoverQuotaProviders()
+                try Task.checkCancellation()
+                guard operation == token else { return }
+                capabilityWarning = await client.capabilityWarning
+            }
 
             if let accountID {
                 var failure: CPAError?

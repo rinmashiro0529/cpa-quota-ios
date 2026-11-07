@@ -399,6 +399,9 @@ func (o *Origin) readAccount(ctx context.Context, account Account) (reading Read
 	if err != nil {
 		return o.retained(account, "failed")
 	}
+	if result.Remaining == nil && result.Value == nil {
+		return o.retained(account, "unavailable")
+	}
 	if observed == 0 {
 		observed = o.now().Unix()
 	}

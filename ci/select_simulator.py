@@ -1,6 +1,7 @@
 """Choose a real installed simulator and record its runtime; never label an older OS as the SDK."""
 import argparse
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -18,7 +19,12 @@ candidates = []
 for runtime, devices in data.get("devices", {}).items():
     if not runtime.startswith(prefix):
         continue
-    version = tuple(int(part) for part in runtime[len(prefix):].split("-"))
+    # Newer CoreSimulator identifiers may append a device-family suffix (e.g. -iPhone19).
+    # Read only the leading numeric runtime version; keep the complete identifier in evidence.
+    match = re.match(r"^(\d+(?:-\d+)*)(?:-|$)", runtime[len(prefix):])
+    if match is None:
+        continue
+    version = tuple(int(part) for part in match.group(1).split("-"))
     if version[0] != args.major:
         continue
     for device in devices:

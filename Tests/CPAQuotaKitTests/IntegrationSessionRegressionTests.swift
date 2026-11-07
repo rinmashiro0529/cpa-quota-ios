@@ -934,6 +934,56 @@ struct IntegrationSessionRegressionTests {
         #expect(await credentials.storedKey(for: serverB) == nil)
     }
 
+    @Test(arguments: [true, false])
+    func dismissingCandidateDuringCredentialMutationRestoresPreviouslyAcceptedConnection(rememberCandidate: Bool) async throws {
+        let transport = try ScenarioTransport(accounts: [FixtureAccount("account-1")])
+        let credentials = ScriptedCredentialStore()
+        let preferences = MemoryPreferencesStore()
+        let session = makeSession(transport: transport, credentials: credentials, preferences: preferences)
+        let serverA = try CPAServer(baseURL: "https://dismissed-mutation-a.example")
+        let serverB = try CPAServer(baseURL: "https://dismissed-mutation-b.example")
+        await session.connect(
+            serverAddress: serverA.identifier,
+            managementKeyInput: "management-key-a",
+            rememberInKeychain: true
+        )
+        let priorStore = try #require(session.store)
+        let mutationGate = TestGate()
+        if rememberCandidate {
+            // Hold the candidate's save after the accepted connection's first save.
+            await credentials.setSaveGate(mutationGate, atCall: 2)
+        } else {
+            // Hold the second delete: at least one key mutation has already
+            // completed, independent of the dictionary's iteration order.
+            await credentials.setRemoveGate(mutationGate, atCall: 2)
+        }
+        session.isPresentingConnectionSheet = true
+        let switchTask = Task {
+            await session.connect(
+                serverAddress: serverB.identifier,
+                managementKeyInput: "management-key-b",
+                rememberInKeychain: rememberCandidate
+            )
+        }
+        await mutationGate.waitForArrivals()
+        session.managementKeyDraft = "unsubmitted-sensitive-draft"
+        let cleanup = session.dismissConnectionForm()
+        #expect(session.managementKeyDraft.isEmpty)
+        #expect(!session.isPresentingConnectionSheet)
+        #expect(session.authState == .connected(server: serverA, isRememberedInKeychain: true))
+        #expect(session.store === priorStore)
+        await mutationGate.open()
+        await cleanup.value
+        await switchTask.value
+        #expect(session.currentServer == serverA)
+        #expect(session.savedServer == serverA)
+        #expect(session.store === priorStore)
+        #expect(preferences.loadSavedServerIdentifier() == serverA.identifier)
+        #expect(await credentials.storedKey(for: serverA)?.value == "management-key-a")
+        #expect(await credentials.storedKey(for: serverB) == nil)
+        #expect(session.managementKeyDraft.isEmpty)
+    }
+
     @Test
     func inventorySyncDoesNotClaimACompletionPercentage() {
         let state = ConnectionStatusPresentation(

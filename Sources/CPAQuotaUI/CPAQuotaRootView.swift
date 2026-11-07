@@ -7,6 +7,7 @@ import CPAQuotaActivity
 public struct CPAQuotaRootView: View {
     @Bindable var session: CPAQuotaSession
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.scenePhase) private var scenePhase
     @State private var paths: [CPAWorkspaceTab: NavigationPath] = [:]
@@ -23,6 +24,7 @@ public struct CPAQuotaRootView: View {
                     workspace(tab)
                         .navigationTitle(tab.title)
                         .background(BrandCanvasBackground())
+                        .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("workspace.\(tab.rawValue)")
                         .toolbar {
                             if tab != .usage {
@@ -46,7 +48,7 @@ public struct CPAQuotaRootView: View {
                 .tag(tab)
             }
         }
-        .tint(BrandPalette(colorScheme: colorScheme).actionTint)
+        .tint(BrandPalette(colorScheme: colorScheme, contrast: contrast).actionTint)
         .preferredColorScheme(session.themeMode.preferredColorScheme)
         .sheet(item: presentedSheet) { sheet in
             NavigationStack {
@@ -57,7 +59,7 @@ public struct CPAQuotaRootView: View {
                     AccountDetailSheetView(session: session, account: account)
                 }
             }
-            .tint(BrandPalette(colorScheme: colorScheme).actionTint)
+            .tint(BrandPalette(colorScheme: colorScheme, contrast: contrast).actionTint)
             // Presentations share the current system/host text setting; do not
             // reset or cap Dynamic Type at the sheet's hosting boundary.
             .environment(\.dynamicTypeSize, dynamicTypeSize)
@@ -83,8 +85,7 @@ public struct CPAQuotaRootView: View {
             guard let destination = CPAQuotaDeepLink(url: url) else { return }
             deepLinkGeneration &+= 1
             let generation = deepLinkGeneration
-            session.isPresentingConnectionSheet = false
-            session.selectedAccountIDForDetail = nil
+            session.prepareForExternalNavigation()
             switch destination {
             case .quotas:
                 session.activeTab = .quotas
@@ -106,7 +107,7 @@ public struct CPAQuotaRootView: View {
     @ViewBuilder
     private func workspace(_ tab: CPAWorkspaceTab) -> some View {
         if !session.isWorkspaceReady, tab != .connection, tab != .monitoring {
-            LoginOnboardingView(session: session, showCloseButton: false)
+            connectionRequired(for: tab)
         } else {
             switch tab {
             case .quotas: QuotasOverviewTabView(session: session)
@@ -143,8 +144,43 @@ public struct CPAQuotaRootView: View {
             return .account(account)
         } set: { value in
             guard value == nil else { return }
-            session.isPresentingConnectionSheet = false
+            if session.isPresentingConnectionSheet {
+                session.dismissConnectionForm()
+            }
             session.selectedAccountIDForDetail = nil
+        }
+    }
+
+    private func connectionRequired(for tab: CPAWorkspaceTab) -> some View {
+        ContentUnavailableView {
+            Label(tab.title, systemImage: tab.symbolName)
+        } description: {
+            if case .connecting = session.authState {
+                Text("正在验证 CPA 连接，账号列表读取成功后即可进入。")
+            } else {
+                Text(connectionDescription(for: tab))
+            }
+        } actions: {
+            if case .connecting = session.authState {
+                ProgressView("正在验证连接")
+            }
+            Button {
+                session.isPresentingConnectionSheet = true
+            } label: {
+                Label("连接 CPA 服务", systemImage: "link")
+                    .frame(minHeight: 44)
+            }
+            .quotaPrimaryButtonStyle()
+            .accessibilityIdentifier("connection.start")
+        }
+    }
+
+    private func connectionDescription(for tab: CPAWorkspaceTab) -> String {
+        switch tab {
+        case .quotas: "连接个人 CPA 服务后，查看账号额度、读取状态和重置时间。"
+        case .usage: "连接个人 CPA 服务后，查看 CAP 插件记录的请求、Token 用量与费用估算。"
+        case .accounts: "连接个人 CPA 服务后，检查授权账号、读取能力与异常原因。"
+        case .monitoring, .connection: "连接个人 CPA 服务，开始读取账号。"
         }
     }
 }

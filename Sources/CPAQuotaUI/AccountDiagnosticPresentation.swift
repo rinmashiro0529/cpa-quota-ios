@@ -12,7 +12,7 @@ public struct AccountDiagnosticPresentation: Equatable, Sendable {
     public let readerDescription: String
 
     public init(account: CPAAccount, error: CPAError?, maskEmail: Bool) {
-        self.displayName = QuotaFormatter.maskEmail(account.displayName, enabled: maskEmail)
+        self.displayName = QuotaFormatter.maskEmails(in: account.displayName, enabled: maskEmail)
         self.email = QuotaFormatter.maskEmail(account.email, enabled: maskEmail)
 
         if account.isDisabled {

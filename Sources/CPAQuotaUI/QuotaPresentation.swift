@@ -38,6 +38,7 @@ public struct WindowPresentation: Identifiable, Equatable, Sendable {
 
     public let id: String
     public let title: String
+    public let originalTitle: String
     public let durationText: String
     public let usedFraction: Double?
     public let remainingFraction: Double?
@@ -47,7 +48,8 @@ public struct WindowPresentation: Identifiable, Equatable, Sendable {
 
     public init(window: QuotaWindow) {
         self.id = window.id
-        self.title = window.title
+        self.originalTitle = window.title
+        self.title = Self.localizedWindowTitle(window.title)
         self.durationText = Self.formatDuration(window.durationSeconds)
         self.usedFraction = window.usedFraction
         self.remainingFraction = window.remainingFraction
@@ -56,11 +58,35 @@ public struct WindowPresentation: Identifiable, Equatable, Sendable {
         self.limitReached = window.limitReached
     }
 
-    public var isOverQuota: Bool {
-        if let usedFraction, usedFraction > 1.0 { return true }
-        if limitReached == true { return true }
-        if allowed == false { return true }
-        return false
+    /// A percentage can report exhaustion without proving upstream enforcement.
+    public var isExhausted: Bool { usedFraction.map { $0 >= 1.0 } ?? false }
+
+    public var isExplicitlyLimited: Bool { limitReached == true || allowed == false }
+
+    public var isOverQuota: Bool { isExhausted || isExplicitlyLimited }
+
+    public var statusText: String? {
+        if isExplicitlyLimited { return "上游已限制使用" }
+        if isExhausted { return "读数已用完" }
+        if isLowRemainingWarning { return "剩余额度偏低" }
+        return nil
+    }
+
+    public var enforcementExplanation: String? {
+        guard isExhausted, !isExplicitlyLimited else { return nil }
+        return "当前比例读数已用完；是否仍可使用以上游实际响应为准。"
+    }
+
+    private static func localizedWindowTitle(_ raw: String) -> String {
+        // Match only known built-in labels. Unrecognized plugin labels stay intact.
+        switch raw {
+        case "5-hour limit": "5 小时额度"
+        case "7-day limit": "7 天额度"
+        case "Monthly limit": "月度额度"
+        case "Code review · 5-hour limit": "代码审查 · 5 小时额度"
+        case "Code review · 7-day limit": "代码审查 · 7 天额度"
+        default: raw
+        }
     }
 
     public var isLowRemainingWarning: Bool {
@@ -153,14 +179,18 @@ public struct MetricPresentation: Identifiable, Equatable, Sendable {
     public let formattedValue: String
 
     public init(metric: QuotaMetric) {
+        self.init(metric: metric, maskEmail: false)
+    }
+
+    public init(metric: QuotaMetric, maskEmail: Bool) {
         self.id = metric.id
-        self.label = metric.label
-        self.formattedValue = Self.formatValue(
+        self.label = QuotaFormatter.maskEmails(in: metric.label, enabled: maskEmail)
+        self.formattedValue = QuotaFormatter.maskEmails(in: Self.formatValue(
             value: metric.value,
             unit: metric.unit,
             format: metric.format,
             currency: metric.currency
-        )
+        ), enabled: maskEmail)
     }
 
     public static func formatValue(
@@ -219,6 +249,72 @@ public struct CreditsPresentation: Equatable, Sendable {
     }
 }
 
+/// List-level status choices keep unknown reads separate from zero remaining.
+public enum QuotaAccountStatusFilter: String, CaseIterable, Identifiable, Sendable {
+    case all, lowQuota, failed, pending
+
+    public var id: String { rawValue }
+    public var title: String {
+        switch self {
+        case .all: "全部状态"
+        case .lowQuota: "额度偏低"
+        case .failed: "读取异常"
+        case .pending: "尚未读取"
+        }
+    }
+
+    public func matches(_ account: CPAAccount, record: QuotaRecord?) -> Bool {
+        switch self {
+        case .all: true
+        case .lowQuota: AccountQuotaSummary(record: record).hasLowQuota
+        case .failed: record?.error != nil || account.isUnavailable
+        case .pending: !account.isDisabled && record?.snapshot == nil && record?.error == nil
+        }
+    }
+}
+
+/// A compact account row shows one independent window, never a sum across windows.
+public struct AccountQuotaSummary: Equatable, Sendable {
+    public let window: WindowPresentation?
+    public let windowCount: Int
+    public let knownWindowCount: Int
+    public let hasLowQuota: Bool
+
+    public init(record: QuotaRecord?) {
+        let windows = record?.snapshot?.windows.map(WindowPresentation.init) ?? []
+        let known = windows.filter { $0.remainingFraction != nil }
+        self.window = known.min { ($0.remainingFraction ?? 1) < ($1.remainingFraction ?? 1) } ?? windows.first
+        self.windowCount = windows.count
+        self.knownWindowCount = known.count
+        self.hasLowQuota = windows.contains { $0.isOverQuota || $0.isLowRemainingWarning }
+    }
+
+    public var selectionText: String? {
+        guard windowCount > 1 else { return nil }
+        if knownWindowCount == 0 { return "共 \(windowCount) 个窗口，比例均未知" }
+        if knownWindowCount < windowCount {
+            return "已知窗口中的最低剩余；另有 \(windowCount - knownWindowCount) 个窗口比例未知"
+        }
+        return "\(windowCount) 个独立窗口中的最低剩余"
+    }
+}
+
+public struct QuotaOverviewSummary: Equatable, Sendable {
+    public let accountCount: Int
+    public let snapshotCount: Int
+    public let lowQuotaCount: Int
+    public let failedCount: Int
+    public let pendingCount: Int
+
+    public init(accounts: [CPAAccount], records: [String: QuotaRecord]) {
+        self.accountCount = accounts.count
+        self.snapshotCount = accounts.filter { records[$0.id]?.snapshot != nil }.count
+        self.lowQuotaCount = accounts.filter { QuotaAccountStatusFilter.lowQuota.matches($0, record: records[$0.id]) }.count
+        self.failedCount = accounts.filter { QuotaAccountStatusFilter.failed.matches($0, record: records[$0.id]) }.count
+        self.pendingCount = accounts.filter { QuotaAccountStatusFilter.pending.matches($0, record: records[$0.id]) }.count
+    }
+}
+
 public enum QuotaFormatter {
     public static func freshnessBadge(
         for snapshot: QuotaSnapshot,
@@ -269,21 +365,39 @@ public enum QuotaFormatter {
         return formatter.string(from: date)
     }
 
+    /// Mask a dedicated email field. Nonstandard input is processed as free text
+    /// so a server-provided display label can never disable privacy redaction.
     public static func maskEmail(_ email: String?, enabled: Bool) -> String {
         guard let raw = email?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
             return "未提供邮箱标识"
         }
-        guard enabled else { return raw }
-        let parts = raw.split(separator: "@", omittingEmptySubsequences: false)
-        guard parts.count == 2 else { return raw }
-        let name = String(parts[0])
-        let domain = String(parts[1])
-        if name.count <= 2 {
-            let prefix = name.prefix(1)
-            return "\(prefix)***@\(domain)"
+        return maskEmails(in: raw, enabled: enabled)
+    }
+
+    /// Shared display/accessibility policy for CPA, CAP and diagnostic labels.
+    /// Match each local part independently, including Unicode and malformed
+    /// addresses with a missing domain or repeated @. Ordinary text is unchanged.
+    public static func maskEmails(in value: String, enabled: Bool) -> String {
+        guard enabled else { return value }
+        let pattern = #"(?:"[^"\r\n]*"|[\p{L}\p{N}\p{M}._%+!#$&'*=/^`{|}~\-]+)[@＠]"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return value.contains("@") || value.contains("＠") ? "邮箱标识已隐藏" : value
         }
-        let prefix = name.prefix(2)
-        let suffix = name.suffix(1)
-        return "\(prefix)***\(suffix)@\(domain)"
+        let result = NSMutableString(string: value)
+        for match in regex.matches(in: value, range: NSRange(value.startIndex..., in: value)).reversed() {
+            let matched = (value as NSString).substring(with: match.range)
+            let separator = matched.suffix(1)
+            let local = String(matched.dropLast())
+            let replacement: String
+            if local.count <= 1 {
+                replacement = "***"
+            } else if local.count <= 2 {
+                replacement = "\(local.prefix(1))***"
+            } else {
+                replacement = "\(local.prefix(2))***\(local.suffix(1))"
+            }
+            result.replaceCharacters(in: match.range, with: "\(replacement)\(separator)")
+        }
+        return result as String
     }
 }

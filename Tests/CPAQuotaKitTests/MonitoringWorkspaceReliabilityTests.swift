@@ -9,6 +9,203 @@ import CPAQuotaUI
 @Suite("Monitoring workspace identity and lifecycle", .timeLimit(.minutes(1)))
 @MainActor
 struct MonitoringWorkspaceReliabilityTests {
+    @Test func candidateDiscoveryKeepsOriginalSessionRecoveryAndStopAvailable() async throws {
+        let first = WorkspaceMonitorTransport()
+        let gate = WorkspaceGate()
+        let second = WorkspaceMonitorTransport(capabilitiesGate: gate)
+        await second.setCapabilitiesStatus(503)
+        let coordinator = workspace(transport: first, second: second)
+        await connect(coordinator)
+        drafts(coordinator)
+        await coordinator.startOrReconcileMonitoringSession()
+        let originalID = try #require(coordinator.store?.sessionID)
+        let originalBinding = coordinator.credentialBindingID
+        let candidate = Task { await connect(coordinator, host: "second.invalid", token: "candidate-fixture") }
+        await gate.waitUntilEntered()
+        #expect(coordinator.isVerifyingCandidateBridge)
+        #expect(!coordinator.isChangingBridge)
+        #expect(!coordinator.isBusy)
+        await coordinator.reconcileCurrentSession()
+        #expect(await first.count(method: "GET", suffix: originalID.uuidString.lowercased()) == 1)
+        await coordinator.stopActiveMonitoringSession()
+        #expect(coordinator.store?.session?.status == .stopped)
+        #expect(await first.count(method: "DELETE") == 1)
+        await gate.open()
+        await candidate.value
+        #expect(coordinator.credentialBindingID == originalBinding)
+        #expect(coordinator.store?.sessionID == originalID)
+        #expect(!coordinator.isBridgeConfigurationInProgress)
+    }
+
+    @Test func explicitAuthorizationReadKeepsOriginalSessionRecoveryAndStopAvailable() async throws {
+        let transport = WorkspaceMonitorTransport()
+        let coordinator = workspace(transport: transport)
+        await connect(coordinator)
+        drafts(coordinator)
+        await coordinator.startOrReconcileMonitoringSession()
+        let gate = WorkspaceGate()
+        await transport.setCapabilitiesGate(gate)
+        let verification = Task { await coordinator.verifyBridgeAuthorization() }
+        await gate.waitUntilEntered()
+        #expect(coordinator.isCheckingAuthorization)
+        #expect(!coordinator.isBusy)
+        await coordinator.reconcileCurrentSession()
+        await coordinator.stopActiveMonitoringSession()
+        #expect(coordinator.store?.session?.status == .stopped)
+        #expect(await transport.count(method: "DELETE") == 1)
+        await gate.open()
+        await verification.value
+        #expect(coordinator.hasVerifiedAuthorization)
+    }
+
+    @Test func rejectedCandidateAuthorizationPreservesTheWorkingConnectionAndCredential() async throws {
+        for status in [401, 403, 404, 503, -1] {
+            let storage = WorkspaceCredentialStorage()
+            let credentials = MonitoringBridgeCredentialStore(storage: storage)
+            let transport = WorkspaceMonitorTransport()
+            let driver = WorkspaceActivityDriver()
+            let coordinator = workspace(transport: transport, credentials: credentials, driver: driver)
+            await connect(coordinator, token: "original-fixture")
+            let originalBinding = coordinator.credentialBindingID
+            let originalStore = coordinator.store
+            await transport.setCapabilitiesStatus(status)
+            await connect(coordinator, token: "invalid-candidate-fixture")
+            #expect(coordinator.credentialBindingID == originalBinding)
+            #expect(coordinator.store === originalStore)
+            #expect(coordinator.hasVerifiedAuthorization)
+            #expect(coordinator.bridgeFormFeedback != nil)
+            #expect(driver.startCount == 0)
+            #expect(await storage.writeCount() == 1)
+            let address = try MonitorBridgeAddress(baseURL: #require(URL(string: "https://first.invalid")))
+            let credential = try #require(await credentials.loadCredential(for: address))
+            #expect(credential.matches(try MonitorBridgeToken("original-fixture")))
+            #expect(await transport.count(method: "POST") == 0)
+        }
+    }
+
+    @Test func revokedScopeIsDetectedBeforeCreatingAnActivityOrIntent() async throws {
+        let transport = WorkspaceMonitorTransport()
+        let driver = WorkspaceActivityDriver()
+        let coordinator = workspace(transport: transport, driver: driver)
+        await connect(coordinator)
+        drafts(coordinator)
+        await transport.setAuthorizedAccounts(["different-account"])
+        await coordinator.startOrReconcileMonitoringSession()
+        #expect(driver.startCount == 0)
+        #expect(coordinator.pendingCreateUUID == nil)
+        #expect(coordinator.persistedRecords.isEmpty)
+        #expect(coordinator.bridgeFormFeedback?.summary.contains("未获得") == true)
+        #expect(await transport.count(method: "POST") == 0)
+        #expect(await transport.count(method: "GET", suffix: "/capabilities") == 2)
+    }
+
+    @Test func exhaustedCapacityIsReportedBeforeAllocatingADeviceActivity() async {
+        let transport = WorkspaceMonitorTransport()
+        let driver = WorkspaceActivityDriver()
+        let coordinator = workspace(transport: transport, driver: driver)
+        await connect(coordinator)
+        drafts(coordinator)
+        await transport.setCapacityUsed(256)
+        await coordinator.startOrReconcileMonitoringSession()
+        #expect(driver.startCount == 0)
+        #expect(coordinator.pendingCreateUUID == nil)
+        #expect(coordinator.authorizedCapabilities?.capacity.status == .exhausted)
+        #expect(coordinator.bridgeFormFeedback?.summary.contains("容量已满") == true)
+    }
+
+    @Test func restoredCredentialsKeepRecoveryAvailableWhenDiscoveryIsUnavailable() async throws {
+        let transport = WorkspaceMonitorTransport()
+        let credentials = MonitoringBridgeCredentialStore(storage: MemoryCredentialStore())
+        let metadata = MemoryMonitoringMetadataPersistence()
+        let first = workspace(transport: transport, credentials: credentials, metadata: metadata)
+        await connect(first)
+        drafts(first)
+        await first.startOrReconcileMonitoringSession()
+        let sessionID = try #require(first.store?.sessionID)
+        await transport.setCapabilitiesStatus(404)
+        let restored = workspace(transport: transport, credentials: credentials, metadata: metadata)
+        await restored.restoreBridgeIfAvailable()
+        #expect(!restored.hasVerifiedAuthorization)
+        #expect(restored.authorizationState == .unverified)
+        #expect(restored.store?.sessionID == sessionID)
+        await restored.verifyBridgeAuthorization()
+        #expect(restored.authorizationState == .unavailable(.notFound))
+        await restored.stopActiveMonitoringSession()
+        #expect(restored.store?.session?.status == .stopped)
+        #expect(restored.store?.lastConfirmedAt != nil)
+    }
+
+    @Test func operationFeedbackShowsSpecificValidation() async {
+        let coordinator = workspace(transport: WorkspaceMonitorTransport())
+        await coordinator.startOrReconcileMonitoringSession()
+        #expect(coordinator.bridgeFormFeedback?.summary == "请先连接监控桥接。")
+        coordinator.addAccountIDDraft("invalid account!")
+        #expect(coordinator.bridgeFormFeedback?.summary == "账号标识格式无效，请使用监控服务授权的原标识。")
+        #expect(coordinator.bridgeFormFeedback?.diagnostics == coordinator.bridgeFormError)
+    }
+
+    @Test func cacheErrorsExposeActionableSummaryAndOriginalDiagnostic() async throws {
+        for (status, summary, diagnostic) in [
+            (401, "监控访问令牌鉴权失败，请检查并更新服务连接。", "桥接 Token 鉴权失败 (401 unauthorized · 已熔断当前桥接客户端后续请求)"),
+            (403, "此来源或账号尚未获得监控服务授权，请联系服务维护者。", "当前 Source 或账号未获桥接白名单授权 (403 forbidden · 仅拒绝当前请求，不影响合法旧会话 DELETE)")
+        ] {
+            let transport = WorkspaceMonitorTransport()
+            await transport.setQuotaStatus(status)
+            let coordinator = workspace(transport: transport)
+            await connect(coordinator, remember: false)
+            coordinator.sourceIDDraft = "personal"
+            await coordinator.loadCachedQuotaForDraftSource()
+            let feedback = try #require(coordinator.bridgeFormFeedback)
+            #expect(feedback.summary == summary)
+            #expect(feedback.diagnostics == diagnostic)
+            #expect(feedback.diagnostics == coordinator.bridgeFormError)
+            #expect(!feedback.summary.contains(String(status)))
+        }
+    }
+
+    @Test func networkFailureAndMissingStopRemainUnconfirmed() async throws {
+        let failed = workspace(transport: WorkspaceMonitorTransport(createFails: true))
+        await connect(failed)
+        drafts(failed)
+        await failed.startOrReconcileMonitoringSession()
+        let network = try #require(failed.storeErrorFeedback)
+        #expect(network.isUncertain)
+        #expect(network.diagnostics == failed.monitoringErrorText(.network))
+        #expect(failed.bridgeStatusFeedback?.isUncertain == true)
+
+        let transport = WorkspaceMonitorTransport()
+        let coordinator = workspace(transport: transport)
+        await connect(coordinator)
+        drafts(coordinator)
+        await coordinator.startOrReconcileMonitoringSession()
+        await transport.setDeleteStatus(404)
+        await coordinator.stopActiveMonitoringSession()
+        let status = try #require(coordinator.bridgeStatusFeedback)
+        #expect(status.isUncertain)
+        #expect(status.summary.contains("尚未确认"))
+        #expect(status.summary.contains("不代表停止成功"))
+        #expect(coordinator.store?.cancellationReceipt == nil)
+        #expect(coordinator.storeErrorFeedback?.diagnostics == coordinator.monitoringErrorText(.notFound))
+    }
+
+    @Test func overallFeedbackKeepsValidationAndUnconfirmedStopVisible() async throws {
+        let transport = WorkspaceMonitorTransport()
+        let coordinator = workspace(transport: transport)
+        await connect(coordinator)
+        drafts(coordinator)
+        await coordinator.startOrReconcileMonitoringSession()
+        coordinator.addAccountIDDraft("invalid account!")
+        await transport.setDeleteStatus(404)
+        await coordinator.stopActiveMonitoringSession()
+        let feedback = try #require(coordinator.operationFeedback)
+        #expect(feedback.summary.contains("账号标识格式无效"))
+        #expect(feedback.summary.contains("尚未确认"))
+        #expect(feedback.summary.contains("不代表停止成功"))
+        #expect(feedback.isUncertain)
+        #expect(coordinator.bridgeFormError == "账号标识格式无效，请使用监控服务授权的原标识。")
+        #expect(coordinator.store?.cancellationReceipt == nil)
+    }
+
     @Test func temporaryCacheUsesTheBoundClientAndSharesCooldown() async throws {
         let transport = WorkspaceMonitorTransport()
         await transport.setQuotaStatus(429)
@@ -52,7 +249,7 @@ struct MonitoringWorkspaceReliabilityTests {
         await connect(coordinator, host: "second.invalid", token: "second-fixture-token")
         await coordinator.loadPersistedRecord(original)
         await coordinator.stopActiveMonitoringSession()
-        #expect(await second.totalCount() == 0)
+        #expect(await second.workRequestCount() == 0)
         #expect(coordinator.persistedRecords.contains(original))
         #expect(coordinator.store?.sessionID == nil)
         #expect(coordinator.store?.detachedSessions.count == 1)
@@ -93,7 +290,7 @@ struct MonitoringWorkspaceReliabilityTests {
         let id = try #require(coordinator.pendingCreateUUID)
         #expect(coordinator.isWaitingForPushToken)
         #expect(driver.startCount == 1)
-        #expect(await transport.totalCount() == 0)
+        #expect(await transport.workRequestCount() == 0)
         coordinator.sourceIDDraft = "changed"
         coordinator.selectedAccountIDsDraft = ["other"]
         await coordinator.startOrReconcileMonitoringSession()
@@ -137,9 +334,9 @@ struct MonitoringWorkspaceReliabilityTests {
         #expect(coordinator.pendingCreateUUID == pending)
         #expect(coordinator.store?.sessionID == nil)
         #expect(coordinator.isWaitingForPushToken)
-        #expect(await transport.totalCount() == 0)
+        #expect(await transport.workRequestCount() == 0)
         await coordinator.stopActiveMonitoringSession()
-        #expect(await transport.totalCount() == 0)
+        #expect(await transport.workRequestCount() == 0)
     }
 
     @Test func restoreUsesTheLatestObservedTokenAndStartRequiresALiveActivity() async throws {
@@ -159,7 +356,7 @@ struct MonitoringWorkspaceReliabilityTests {
         await connect(ended)
         drafts(ended)
         await ended.startOrReconcileMonitoringSession()
-        #expect(await endedTransport.totalCount() == 0)
+        #expect(await endedTransport.workRequestCount() == 0)
         #expect(ended.pendingCreateUUID != nil)
         await ended.stopActiveMonitoringSession()
         #expect(ended.pendingCreateUUID == nil)
@@ -201,7 +398,7 @@ struct MonitoringWorkspaceReliabilityTests {
         #expect(coordinator.pendingCreateUUID == nil)
         #expect(coordinator.persistedRecords.isEmpty)
         #expect(driver.endedIDs == ["activity-1"])
-        #expect(await transport.totalCount() == 0)
+        #expect(await transport.workRequestCount() == 0)
     }
 
     @Test func forgetReleasesAllClientsAndRejectsOldCallbacks() async throws {
@@ -211,7 +408,7 @@ struct MonitoringWorkspaceReliabilityTests {
         await connect(coordinator)
         drafts(coordinator)
         await coordinator.startOrReconcileMonitoringSession()
-        let count = await transport.totalCount()
+        let count = await transport.workRequestCount()
         await coordinator.forgetBridgeLocallyOnly()
         await coordinator.reconcileCurrentSession()
         await coordinator.refreshActiveMonitoringSession()
@@ -222,7 +419,7 @@ struct MonitoringWorkspaceReliabilityTests {
         #expect(coordinator.credentialBindingID == nil)
         #expect(coordinator.bridgeState == .unconfigured)
         #expect(!coordinator.persistedRecords.isEmpty)
-        #expect(await transport.totalCount() == count)
+        #expect(await transport.workRequestCount() == count)
     }
 
     @Test func restartKeepsTheUncertainUUIDAndDoesNotCreateAnotherActivity() async throws {
@@ -329,14 +526,14 @@ struct MonitoringWorkspaceReliabilityTests {
         #expect(coordinator.store?.error == .capacityExceeded)
         #expect(coordinator.store?.cancellationReceipt == nil)
         #expect(driver.endedIDs.isEmpty)
-        let requests = await transport.totalCount()
+        let requests = await transport.workRequestCount()
         await coordinator.stopLocalActivityDisplay()
         #expect(driver.endedIDs == ["activity-1"])
         #expect(coordinator.localActivityID == nil)
         #expect(coordinator.store?.sessionID == originalID)
         #expect(coordinator.store?.cancellationReceipt == nil)
         #expect(coordinator.persistedRecords.first?.stopIntentRecorded == false)
-        #expect(await transport.totalCount() == requests)
+        #expect(await transport.workRequestCount() == requests)
         await coordinator.reconcileCurrentSession()
         #expect(coordinator.store?.session?.status == .active)
         #expect(coordinator.localActivityID == nil)
@@ -383,7 +580,7 @@ struct MonitoringWorkspaceReliabilityTests {
         #expect(!coordinator.isWaitingForPushToken)
         #expect(coordinator.persistedRecords.isEmpty)
         #expect(driver.endedIDs == ["activity-1"])
-        #expect(await transport.totalCount() == 0)
+        #expect(await transport.workRequestCount() == 0)
     }
 
     @Test func appActivationRestoresTheExactActivityWithoutVisitingATabOrStartingAnother() async throws {
@@ -422,13 +619,13 @@ struct MonitoringWorkspaceReliabilityTests {
         await coordinator.startOrReconcileMonitoringSession()
         let original = coordinator.store?.sessionID
         coordinator.sourceIDDraft = "current-draft"
-        let requests = await transport.totalCount()
+        let requests = await transport.workRequestCount()
         await coordinator.openSourceFromDeepLink("unknown-source")
         await coordinator.openSourceFromDeepLink("personal")
         #expect(coordinator.sourceIDDraft == "current-draft")
         #expect(coordinator.store?.sessionID == original)
         #expect(coordinator.persistedRecords.contains(other))
-        #expect(await transport.totalCount() == requests)
+        #expect(await transport.workRequestCount() == requests)
     }
 
     @Test func invalidSelectionDoesNotCreateASystemActivity() async throws {
@@ -441,7 +638,7 @@ struct MonitoringWorkspaceReliabilityTests {
         await coordinator.startOrReconcileMonitoringSession()
         #expect(driver.startCount == 0)
         #expect(coordinator.pendingCreateUUID == nil)
-        #expect(await transport.totalCount() == 0)
+        #expect(await transport.workRequestCount() == 0)
     }
 
     @Test func knownLocalActivityCanBeExplicitlyEndedAfterForgettingTheBridge() async throws {
@@ -455,13 +652,13 @@ struct MonitoringWorkspaceReliabilityTests {
         await coordinator.forgetBridgeLocallyOnly()
         coordinator.refreshLocalActivityInventory()
         let local = try #require(coordinator.localActivities.first)
-        let requests = await transport.totalCount()
+        let requests = await transport.workRequestCount()
         await coordinator.endLocalActivity(local)
         #expect(driver.endedIDs == ["activity-1"])
         #expect(coordinator.bridgeState == .unconfigured)
         #expect(coordinator.store == nil)
         #expect(coordinator.persistedRecords.contains(originalRecord))
-        #expect(await transport.totalCount() == requests)
+        #expect(await transport.workRequestCount() == requests)
     }
 
     private func workspace(transport: WorkspaceMonitorTransport, second: WorkspaceMonitorTransport? = nil,
@@ -632,18 +829,29 @@ private actor WorkspaceMonitorTransport: HTTPTransport {
     private var createGate: WorkspaceGate?
     private var quotaGate: WorkspaceGate?
     private var rotateGate: WorkspaceGate?
+    private var capabilitiesGate: WorkspaceGate?
     private let createFails: Bool
     private var quotaStatus = 200
     private var getsHidden = false
     private var deleteStatus: Int?
+    private var capabilitiesStatus = 200
+    private var authorizedAccountIDs = ["account-1"]
+    private var capacityUsed = 0
     init(createGate: WorkspaceGate? = nil, quotaGate: WorkspaceGate? = nil,
-         rotateGate: WorkspaceGate? = nil, createFails: Bool = false) {
+         rotateGate: WorkspaceGate? = nil, capabilitiesGate: WorkspaceGate? = nil, createFails: Bool = false) {
         self.createGate = createGate; self.quotaGate = quotaGate; self.rotateGate = rotateGate; self.createFails = createFails
+        self.capabilitiesGate = capabilitiesGate
     }
     func setQuotaStatus(_ status: Int) { quotaStatus = status }
     func setGetsHidden(_ value: Bool) { getsHidden = value }
     func setDeleteStatus(_ value: Int) { deleteStatus = value }
-    func totalCount() -> Int { requests.count }
+    func setCapabilitiesStatus(_ value: Int) { capabilitiesStatus = value }
+    func setCapabilitiesGate(_ value: WorkspaceGate) { capabilitiesGate = value }
+    func setAuthorizedAccounts(_ value: [String]) { authorizedAccountIDs = value }
+    func setCapacityUsed(_ value: Int) { capacityUsed = value }
+    // Historical lifecycle assertions count session/cache work separately from
+    // the new read-only authorization preflight. Discovery is asserted explicitly.
+    func workRequestCount() -> Int { requests.filter { !$0.1.hasSuffix("/capabilities") }.count }
     func count(method: String, suffix: String? = nil) -> Int {
         requests.filter { $0.0 == method && (suffix == nil || $0.1.hasSuffix(suffix!)) }.count
     }
@@ -651,6 +859,13 @@ private actor WorkspaceMonitorTransport: HTTPTransport {
     func send(_ request: URLRequest) async throws -> HTTPResponse {
         let method = request.httpMethod ?? "GET", path = request.url?.path ?? ""
         requests.append((method, path))
+        if path.hasSuffix("/capabilities") {
+            let gate = capabilitiesGate; capabilitiesGate = nil
+            await gate?.wait()
+            if capabilitiesStatus == -1 { throw URLError(.timedOut) }
+            guard capabilitiesStatus == 200 else { return response(capabilitiesStatus) }
+            return response(200, try MonitoringCapabilityFixture.data(accountIDs: authorizedAccountIDs, used: capacityUsed))
+        }
         if path.hasSuffix("/quota") {
             let gate = quotaGate; quotaGate = nil
             await gate?.wait()

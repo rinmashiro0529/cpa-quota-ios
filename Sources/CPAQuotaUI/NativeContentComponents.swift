@@ -10,6 +10,7 @@ public struct QuotaLabeledValue: View {
     public let monospaced: Bool
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
 
     public init(title: String, value: String, monospaced: Bool = true) {
         self.title = title
@@ -47,13 +48,13 @@ public struct QuotaLabeledValue: View {
     private var titleText: some View {
         Text(title)
             .font(.subheadline)
-            .foregroundStyle(BrandPalette(colorScheme: colorScheme).textSecondary)
+            .foregroundStyle(BrandPalette(colorScheme: colorScheme, contrast: contrast).textSecondary)
     }
 
     private var valueText: some View {
         Text(value)
             .font(monospaced ? QuotaTypography.dataDetail : .body)
-            .foregroundStyle(BrandPalette(colorScheme: colorScheme).textPrimary)
+            .foregroundStyle(BrandPalette(colorScheme: colorScheme, contrast: contrast).textPrimary)
             .monospacedDigit()
     }
 }
@@ -63,6 +64,7 @@ public struct QuotaErrorNotice: View {
     public let presentation: ErrorPresentation
     public let showsRecoveryAdvice: Bool
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
 
     public init(presentation: ErrorPresentation, showsRecoveryAdvice: Bool = true) {
         self.presentation = presentation
@@ -70,7 +72,7 @@ public struct QuotaErrorNotice: View {
     }
 
     public var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme)
+        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         VStack(alignment: .leading, spacing: 8) {
             Label {
                 Text(presentation.title)
@@ -105,6 +107,7 @@ public struct QuotaErrorNotice: View {
 public struct QuotaFreshnessLabel: View {
     public let snapshot: QuotaSnapshot
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.scenePhase) private var scenePhase
 
     public init(snapshot: QuotaSnapshot) {
@@ -127,7 +130,7 @@ public struct QuotaFreshnessLabel: View {
 
     private func label(at date: Date) -> some View {
         let badge = QuotaFormatter.freshnessBadge(for: snapshot, now: date)
-        let palette = BrandPalette(colorScheme: colorScheme)
+        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         return Label {
             Text(badge.badgeText).foregroundStyle(palette.textSecondary)
         } icon: {
@@ -142,22 +145,22 @@ public struct QuotaFreshnessLabel: View {
 public struct QuotaWindowView: View {
     public let window: WindowPresentation
     public let displayMode: QuotaDisplayMode
+    public let maskEmail: Bool
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
 
-    public init(window: WindowPresentation, displayMode: QuotaDisplayMode) {
+    public init(window: WindowPresentation, displayMode: QuotaDisplayMode, maskEmail: Bool = true) {
         self.window = window
         self.displayMode = displayMode
+        self.maskEmail = maskEmail
     }
 
     public var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme)
+        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         VStack(alignment: .leading, spacing: 8) {
-            Text(window.title)
+            Text(QuotaFormatter.maskEmails(in: window.title, enabled: maskEmail))
                 .font(.headline)
                 .foregroundStyle(palette.textPrimary)
-            Text(window.durationText)
-                .font(.caption)
-                .foregroundStyle(palette.textSecondary)
             Text(window.primaryPercentageText(for: displayMode))
                 .font(.system(.title3, design: .monospaced).weight(.semibold))
                 .foregroundStyle(palette.textPrimary)
@@ -167,14 +170,15 @@ public struct QuotaWindowView: View {
                     .tint(progressTint(palette))
                     .accessibilityHidden(true)
             }
-            if window.isOverQuota {
-                Label("已达额度限制", systemImage: "exclamationmark.circle.fill")
+            if let status = window.statusText {
+                Label(status, systemImage: window.isOverQuota ? "exclamationmark.circle.fill" : "exclamationmark.triangle")
                     .font(.subheadline)
                     .foregroundStyle(palette.textPrimary)
-            } else if window.isLowRemainingWarning {
-                Label("剩余额度偏低", systemImage: "exclamationmark.triangle")
-                    .font(.subheadline)
-                    .foregroundStyle(palette.textPrimary)
+            }
+            if let explanation = window.enforcementExplanation {
+                Text(explanation)
+                    .font(.caption)
+                    .foregroundStyle(palette.textSecondary)
             }
             Text(window.secondaryComparisonText)
                 .font(QuotaTypography.dataDetail)
@@ -182,9 +186,14 @@ public struct QuotaWindowView: View {
             Text(window.resetTimeText())
                 .font(.caption)
                 .foregroundStyle(palette.textSecondary)
+            DisclosureGroup("窗口原始信息") {
+                QuotaLabeledValue(title: "上游名称", value: QuotaFormatter.maskEmails(in: window.originalTitle, enabled: maskEmail), monospaced: false)
+                QuotaLabeledValue(title: "窗口长度", value: window.durationText)
+            }
+            .font(.caption)
         }
         .fixedSize(horizontal: false, vertical: true)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
     }
 
     private func progressTint(_ palette: BrandPalette) -> Color {

@@ -5,6 +5,7 @@ import CPAQuotaKit
 public struct ConnectionManagementTabView: View {
     @Bindable var session: CPAQuotaSession
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
     @State private var isConfirmingForget = false
 
     public init(session: CPAQuotaSession) {
@@ -12,7 +13,7 @@ public struct ConnectionManagementTabView: View {
     }
 
     public var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme)
+        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         Form {
             Section {
                 QuotaLabeledValue(
@@ -122,7 +123,7 @@ public struct ConnectionManagementTabView: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .background(BrandCanvasBackground())
-        .navigationTitle("连接与设置")
+        .navigationTitle(CPAWorkspaceTab.connection.title)
         .tint(palette.actionTint)
         .confirmationDialog(
             "确认忘记此 CPA 连接？",

@@ -211,6 +211,18 @@ public extension SystemLiveActivityDriver {
     func stopObservingAuthorizationChanges() {}
 }
 
+public struct MonitoringOperationFeedback: Equatable, Sendable {
+    public let summary: String
+    public let diagnostics: String
+    public let isUncertain: Bool
+
+    public init(summary: String, diagnostics: String, isUncertain: Bool = false) {
+        self.summary = summary
+        self.diagnostics = diagnostics
+        self.isUncertain = isUncertain
+    }
+}
+
 @MainActor
 @Observable
 public final class MonitoringWorkspaceCoordinator {
@@ -219,19 +231,78 @@ public final class MonitoringWorkspaceCoordinator {
         case connected(address: URL, isSavedInKeychain: Bool)
     }
 
+    public enum AuthorizationState: Equatable, Sendable {
+        case unverified
+        case checking
+        case verified(checkedAt: Date)
+        case unavailable(MonitoringError)
+    }
+
     public private(set) var bridgeState: BridgeState = .unconfigured
+    public private(set) var authorizationState: AuthorizationState = .unverified
+    public private(set) var authorizedCapabilities: MonitoringCapabilities?
+    public private(set) var isCheckingAuthorization = false
+    public var authorizedAccounts: [MonitoringCapabilities.Account] {
+        authorizedCapabilities?.sources.first(where: { $0.id == sourceIDDraft })?.accounts ?? []
+    }
+    public var hasVerifiedAuthorization: Bool {
+        if case .verified = authorizationState { return authorizedCapabilities != nil }
+        return false
+    }
+    public var authorizationSummary: String {
+        switch authorizationState {
+        case .unverified: return "已配置，尚未验证服务授权"
+        case .checking: return "正在验证服务与令牌授权"
+        case .verified: return "服务授权已验证"
+        case .unavailable(.unauthorized): return "令牌未通过验证，请更新监控连接"
+        case .unavailable(.forbidden): return "此令牌没有所需授权"
+        case .unavailable(.notFound): return "服务需升级以支持授权验证"
+        case .unavailable: return "暂时无法验证服务，请检查连接后重试"
+        }
+    }
     public private(set) var store: MonitoringStore?
     public private(set) var activeAddress: MonitorBridgeAddress?
     public private(set) var credentialBindingID: UUID?
     public private(set) var isSavedInKeychain = false
-    public private(set) var bridgeFormError: String?
-    public private(set) var bridgeStatusNotice: String?
+    public private(set) var bridgeFormFeedback: MonitoringOperationFeedback?
+    private var storedStatusFeedback: MonitoringOperationFeedback?
+    public var bridgeStatusFeedback: MonitoringOperationFeedback? {
+        guard let feedback = storedStatusFeedback else { return nil }
+        return MonitoringOperationFeedback(summary: feedback.summary, diagnostics: feedback.diagnostics,
+            isUncertain: feedback.isUncertain || (store?.state == .uncertain && store?.cancellationReceipt == nil))
+    }
+    public private(set) var bridgeFormError: String? {
+        get { bridgeFormFeedback?.diagnostics }
+        set { bridgeFormFeedback = newValue.map { MonitoringOperationFeedback(summary: $0, diagnostics: $0) } }
+    }
+    public private(set) var bridgeStatusNotice: String? {
+        get { storedStatusFeedback?.diagnostics }
+        set { storedStatusFeedback = newValue.map { MonitoringOperationFeedback(summary: $0, diagnostics: $0) } }
+    }
+    public var storeErrorFeedback: MonitoringOperationFeedback? {
+        guard let error = store?.error else { return nil }
+        return feedback(for: error, isUncertain: store?.state == .uncertain && store?.cancellationReceipt == nil)
+    }
+    public var operationFeedback: MonitoringOperationFeedback? {
+        let items = [bridgeFormFeedback, bridgeStatusFeedback, storeErrorFeedback].compactMap { $0 }
+        guard !items.isEmpty else { return nil }
+        var summaries: [String] = []
+        var diagnostics: [String] = []
+        for item in items {
+            if !summaries.contains(item.summary) { summaries.append(item.summary) }
+            if !diagnostics.contains(item.diagnostics) { diagnostics.append(item.diagnostics) }
+        }
+        return MonitoringOperationFeedback(summary: summaries.joined(separator: " "),
+            diagnostics: diagnostics.joined(separator: "\n"), isUncertain: items.contains { $0.isUncertain })
+    }
     public private(set) var cachedSourceSnapshot: MonitoringSnapshot?
     public private(set) var cachedSourceID: String?
     public private(set) var persistedRecords: [PersistedMonitoringRecord] = []
     public private(set) var pendingCreateUUID: UUID?
     public private(set) var isWaitingForPushToken = false
     public private(set) var isChangingBridge = false
+    public private(set) var isVerifyingCandidateBridge = false
+    public var isBridgeConfigurationInProgress: Bool { isChangingBridge || isVerifyingCandidateBridge }
     public private(set) var isSessionActionInProgress = false
     public private(set) var isRotatingToken = false
     public private(set) var isLoadingCachedQuota = false
@@ -295,6 +366,7 @@ public final class MonitoringWorkspaceCoordinator {
     @ObservationIgnored private var connectionGeneration: UInt64 = 0
     @ObservationIgnored private var configurationGeneration: UInt64 = 0
     @ObservationIgnored private var configurationTask: Task<Void, Never>?
+    @ObservationIgnored private var authorizationTask: Task<MonitoringCapabilities, any Error>?
     @ObservationIgnored private var configurationAddresses: Set<MonitorBridgeAddress> = []
     @ObservationIgnored private var pendingIntent: PendingIntent?
     @ObservationIgnored private var operationID: UUID?
@@ -466,7 +538,7 @@ public final class MonitoringWorkspaceCoordinator {
     public func restoreBridgeIfAvailable() async {
         beginSystemActivityObservation()
         defer { refreshLocalActivityInventory() }
-        guard connection == nil, !isChangingBridge,
+        guard connection == nil, !isBridgeConfigurationInProgress,
               let saved = metadataStore.loadSavedBridgeAddress(),
               let url = URL(string: saved), let address = try? MonitorBridgeAddress(baseURL: url) else { return }
         configurationGeneration &+= 1
@@ -491,11 +563,13 @@ public final class MonitoringWorkspaceCoordinator {
         await task.value
         guard configurationGeneration == generation else { return }
         finishConfiguration()
+        // Restore existing recovery handles first. Discovery is an explicit
+        // separate step, so a slow/new endpoint cannot delay stopping an old lease.
         await restoreMatchingRecord()
     }
 
     public func connectBridge(rawURLString: String, rawTokenString: String, rememberInKeychain: Bool) async {
-        guard !isChangingBridge else {
+        guard !isBridgeConfigurationInProgress else {
             bridgeFormError = "桥接凭据正在处理，请等待完成后再连接；仍可选择仅在本机忘记。"
             return
         }
@@ -515,7 +589,7 @@ public final class MonitoringWorkspaceCoordinator {
         }
         configurationGeneration &+= 1
         let generation = configurationGeneration
-        isChangingBridge = true
+        isVerifyingCandidateBridge = true
         bridgeFormError = nil
         bridgeStatusNotice = nil
         configurationAddresses.insert(address)
@@ -525,13 +599,32 @@ public final class MonitoringWorkspaceCoordinator {
             await previousTask?.value
             guard let self, self.configurationGeneration == generation else { return }
             do {
+                // Validate the proposed service before replacing a working
+                // credential or creating a local Activity. healthz is public.
+                let capabilities = try await client.capabilities()
+                try Task.checkCancellation()
+                guard self.configurationGeneration == generation else { return }
+                // The original connection stays usable during network discovery.
+                // Do not replace it while a recovery/stop request is still pending.
+                guard self.operationID == nil else {
+                    self.bridgeFormError = "原监控会话正在处理，请完成查询或停止后再连接新服务。"
+                    return
+                }
+                self.isVerifyingCandidateBridge = false
+                self.isChangingBridge = true
                 let credential = try await self.credentialStore.bind(token, for: address,
                     remember: rememberInKeychain, previous: priorCredential)
                 guard self.configurationGeneration == generation else { return }
                 self.metadataStore.saveBridgeAddress(rememberInKeychain ? address.baseURL.absoluteString : nil)
                 self.bindClient(client, credential: credential, isSaved: rememberInKeychain)
+                self.acceptCapabilities(capabilities)
                 self.bridgeURLDraft = address.baseURL.absoluteString
                 self.bridgeTokenDraft = ""
+            } catch is CancellationError {
+                return
+            } catch let error as MonitoringError {
+                guard self.configurationGeneration == generation else { return }
+                self.bridgeFormFeedback = self.authorizationFeedback(error)
             } catch let error as CPAError {
                 guard self.configurationGeneration == generation else { return }
                 self.bridgeFormError = ErrorPresentation(error: error).summary
@@ -550,6 +643,7 @@ public final class MonitoringWorkspaceCoordinator {
 
     private func finishConfiguration(clearAddresses: Bool = true) {
         isChangingBridge = false
+        isVerifyingCandidateBridge = false
         configurationTask = nil
         if clearAddresses { configurationAddresses.removeAll() }
     }
@@ -571,6 +665,63 @@ public final class MonitoringWorkspaceCoordinator {
         bridgeState = .connected(address: credential.address.baseURL, isSavedInKeychain: isSaved)
         cachedSourceSnapshot = nil
         cachedSourceID = nil
+        authorizedCapabilities = nil
+        authorizationState = .unverified
+    }
+
+    /// This is an authenticated read. Existing session recovery and stopping
+    /// remain available even if an older/offline service cannot expose discovery.
+    public func verifyBridgeAuthorization() async {
+        guard let context = connection, !isBusy, !isCheckingAuthorization, !isVerifyingCandidateBridge else { return }
+        isCheckingAuthorization = true
+        authorizationState = .checking
+        let task = Task { try await context.client.capabilities() }
+        authorizationTask = task
+        defer {
+            if isCurrent(context) {
+                isCheckingAuthorization = false
+                authorizationTask = nil
+            }
+        }
+        do {
+            let capabilities = try await task.value
+            guard isCurrent(context) else { return }
+            acceptCapabilities(capabilities)
+            bridgeFormError = nil
+        } catch is CancellationError {
+            guard isCurrent(context) else { return }
+            authorizedCapabilities = nil
+            authorizationState = .unverified
+        } catch {
+            guard isCurrent(context) else { return }
+            let error = error as? MonitoringError ?? .network
+            authorizedCapabilities = nil
+            authorizationState = .unavailable(error)
+            bridgeFormFeedback = authorizationFeedback(error)
+        }
+    }
+
+    private func acceptCapabilities(_ capabilities: MonitoringCapabilities) {
+        authorizedCapabilities = capabilities
+        authorizationState = .verified(checkedAt: Date())
+        if sourceIDDraft.isEmpty, capabilities.sources.count == 1 {
+            sourceIDDraft = capabilities.sources[0].id
+        }
+    }
+
+    public func selectAuthorizedSource(_ id: String) {
+        guard authorizedCapabilities?.sources.contains(where: { $0.id == id }) == true else { return }
+        sourceIDDraft = id
+        let allowed = Set(authorizedAccounts.map(\.id))
+        selectedAccountIDsDraft.removeAll { !allowed.contains($0) }
+    }
+
+    private func authorizationFeedback(_ error: MonitoringError) -> MonitoringOperationFeedback {
+        if error == .notFound {
+            return MonitoringOperationFeedback(summary: "监控服务尚不支持授权验证，请联系维护者升级服务。原连接与会话保留。",
+                diagnostics: "Authenticated GET /v1/capabilities returned 404; no credential replacement or new Activity was performed.")
+        }
+        return feedback(for: error)
     }
 
     private func restoreMatchingRecord() async {
@@ -591,6 +742,9 @@ public final class MonitoringWorkspaceCoordinator {
         isChangingBridge = true
         bridgeFormError = nil
         let previousTask = configurationTask
+        // A pending read-only authorization probe must not keep the local
+        // forget action waiting for its full network timeout.
+        previousTask?.cancel()
         let task = Task { @MainActor [weak self] in
             await previousTask?.value
             guard let self, self.configurationGeneration == generation else { return }
@@ -614,6 +768,8 @@ public final class MonitoringWorkspaceCoordinator {
                 self.credentialBindingID = nil
                 self.isSavedInKeychain = false
                 self.bridgeState = .unconfigured
+                self.authorizedCapabilities = nil
+                self.authorizationState = .unverified
                 self.bridgeTokenDraft = ""
                 self.manualPushTokenDraft = ""
                 self.cachedSourceSnapshot = nil
@@ -655,6 +811,10 @@ public final class MonitoringWorkspaceCoordinator {
             bridgeFormError = "账号标识格式无效，请使用监控服务授权的原标识。"
             return
         }
+        guard hasVerifiedAuthorization, authorizedAccounts.contains(where: { $0.id == id }) else {
+            bridgeFormError = "请从当前监控服务返回的授权账号中选择；CPA 账号清单不能证明监控授权。"
+            return
+        }
         guard selectedAccountIDsDraft.count < 5 else { bridgeFormError = "单次监控最多选择 5 个授权账号。"; return }
         selectedAccountIDsDraft.append(id)
         newAccountIDDraft = ""
@@ -669,11 +829,17 @@ public final class MonitoringWorkspaceCoordinator {
         defer { finishOperation(operation) }
 
         if pendingIntent == nil {
+            guard !isCheckingAuthorization, !isVerifyingCandidateBridge else {
+                bridgeFormError = "正在验证服务授权，请等待验证完成后开始监控。"
+                return
+            }
             guard store.sessionID == nil || isCurrentSessionTerminal else {
                 bridgeFormError = "现有会话尚未确认结束，请先查询或停止；未创建新的系统活动。"
                 return
             }
             let source = sourceIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+            let accounts = selectedAccountIDsDraft
+            let duration = durationDraft
             guard (try? CPAQuotaActivityAttributes(sourceID: source)) != nil,
                   (1...5).contains(selectedAccountIDsDraft.count),
                   Set(selectedAccountIDsDraft).count == selectedAccountIDsDraft.count,
@@ -681,8 +847,31 @@ public final class MonitoringWorkspaceCoordinator {
                 bridgeFormError = "请填写来源 ID（由监控服务管理员提供）并选择 1–5 个账号。"
                 return
             }
-            let intent = PendingIntent(id: UUID(), sourceID: source, accountIDs: selectedAccountIDsDraft,
-                duration: durationDraft, activityID: nil, registration: nil, submittedToken: nil, wasSubmitted: false)
+            do {
+                // Revalidate immediately before allocating a local activity;
+                // a previously displayed grant may have been revoked meanwhile.
+                let capabilities = try await context.client.capabilities()
+                guard isCurrent(context, operation), source == sourceIDDraft.trimmingCharacters(in: .whitespacesAndNewlines),
+                      accounts == selectedAccountIDsDraft, duration == durationDraft else { return }
+                acceptCapabilities(capabilities)
+                guard capabilities.authorizes(sourceID: source, accountIDs: accounts) else {
+                    bridgeFormFeedback = authorizationFeedback(.forbidden)
+                    return
+                }
+                guard capabilities.capacity.canCreateSession else {
+                    bridgeFormFeedback = feedback(for: .capacityExceeded)
+                    return
+                }
+            } catch {
+                guard isCurrent(context, operation) else { return }
+                let error = error as? MonitoringError ?? .network
+                authorizedCapabilities = nil
+                authorizationState = .unavailable(error)
+                bridgeFormFeedback = authorizationFeedback(error)
+                return
+            }
+            let intent = PendingIntent(id: UUID(), sourceID: source, accountIDs: accounts,
+                duration: duration, activityID: nil, registration: nil, submittedToken: nil, wasSubmitted: false)
             pendingIntent = intent
             pendingCreateUUID = intent.id
             latestToken = nil
@@ -929,7 +1118,12 @@ public final class MonitoringWorkspaceCoordinator {
             bridgeStatusNotice = "已读取来源缓存，供本页查看；它不代表所选账号的活动注册内容。"
         } catch {
             guard isCurrent(context), source == sourceIDDraft.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
-            bridgeFormError = monitoringErrorText(error as? MonitoringError)
+            if let error = error as? MonitoringError {
+                bridgeFormFeedback = feedback(for: error)
+            } else {
+                bridgeFormFeedback = MonitoringOperationFeedback(summary: "无法读取来源缓存，请检查连接后重试。",
+                    diagnostics: monitoringErrorText(nil))
+            }
         }
     }
 
@@ -1040,7 +1234,14 @@ public final class MonitoringWorkspaceCoordinator {
             let result = try await store.loadDetached(handle: handle)
             guard isCurrent(current), detachedConnections[handle]?.client === context.client else { return }
             syncDetached(handle, context: context)
-            bridgeStatusNotice = "原桥接分离会话已查询：\(result.status.rawValue)。"
+            let summary: String
+            switch result.status {
+            case .active: summary = "原桥接分离会话仍在运行；如需结束，请明确停止。"
+            case .stopped: summary = "原桥接已确认分离会话停止。"
+            case .expired: summary = "原桥接已确认分离会话到期。"
+            }
+            storedStatusFeedback = MonitoringOperationFeedback(summary: summary,
+                diagnostics: "原桥接分离会话已查询：\(result.status.rawValue)。")
         } catch {
             guard isCurrent(current) else { return }
             bridgeFormError = "原桥接分离会话查询未确认。"
@@ -1131,6 +1332,9 @@ public final class MonitoringWorkspaceCoordinator {
     }
 
     private func cancelLocalWork() {
+        authorizationTask?.cancel()
+        authorizationTask = nil
+        isCheckingAuthorization = false
         operationID = nil
         isSessionActionInProgress = false
         isRotatingToken = false
@@ -1277,6 +1481,11 @@ public final class MonitoringWorkspaceCoordinator {
         metadataStore.savePersistedRecords(persistedRecords)
     }
 
+    public func feedback(for error: MonitoringError, isUncertain: Bool = false) -> MonitoringOperationFeedback {
+        MonitoringOperationFeedback(summary: monitoringErrorSummary(error), diagnostics: monitoringErrorText(error),
+                                    isUncertain: isUncertain)
+    }
+
     public func monitoringErrorText(_ error: MonitoringError?) -> String {
         guard let error else { return "无错误" }
         switch error {
@@ -1305,5 +1514,20 @@ public final class MonitoringWorkspaceCoordinator {
         case .network:
             return "网络或连接超时 (network · 状态保持 uncertain 待对账)"
         }
+    }
+}
+
+private func monitoringErrorSummary(_ error: MonitoringError) -> String {
+    switch error {
+    case .unauthorized: return "监控访问令牌鉴权失败，请检查并更新服务连接。"
+    case .forbidden: return "此来源或账号尚未获得监控服务授权，请联系服务维护者。"
+    case .notFound: return "暂未找到原会话；不能据此确认已经停止。"
+    case .conflict: return "原会话需要先核对，才能继续操作。"
+    case .rateLimited: return "服务正在冷却，请稍后再试。"
+    case .capacityExceeded: return "监控服务的历史记录容量已满。原会话仍可查询和停止，请联系服务维护者。"
+    case .network, .serviceUnavailable: return "暂时无法联系监控服务，原会话状态已保留；请检查连接后对账。"
+    case .invalidConfiguration: return "请检查来源、账号和连接设置。"
+    case .redirectRefused: return "服务返回了不安全的跳转，请检查连接地址。"
+    case .rejected, .invalidResponse: return "监控服务未能确认此次操作，请查看诊断后重试。"
     }
 }
