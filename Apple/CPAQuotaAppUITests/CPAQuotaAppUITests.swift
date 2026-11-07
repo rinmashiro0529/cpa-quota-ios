@@ -623,8 +623,10 @@ final class CPAQuotaAppUITests: XCTestCase {
     @MainActor
     private func expectExists(_ element: XCUIElement, in app: XCUIApplication, timeout: TimeInterval = 10,
                               file: StaticString = #filePath, line: UInt = #line) {
-        verify(element.waitForExistence(timeout: timeout), in: app,
-               "Expected element must exist.", file: file, line: line)
+        // Already-present controls need no polling round trip to the snapshot
+        // service. Keep the same bounded wait for genuinely pending elements.
+        let exists = element.exists || element.waitForExistence(timeout: timeout)
+        verify(exists, in: app, "Expected element must exist.", file: file, line: line)
     }
 
     @MainActor
