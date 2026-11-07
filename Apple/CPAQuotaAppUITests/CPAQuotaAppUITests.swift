@@ -13,9 +13,9 @@ final class CPAQuotaAppUITests: XCTestCase {
     func testLoginValidatesHTTPSAndRejectsManagement401BeforeConnecting() {
         let app = launch(connected: false)
         defer { app.terminate() }
-        let address = element("connection.server", in: app)
-        let key = element("connection.key", in: app)
-        let submit = element("connection.submit", in: app)
+        let address = app.textFields["connection.server"]
+        let key = app.secureTextFields["connection.key"]
+        let submit = app.buttons["connection.submit"]
         expectExists(address, in: app)
         reveal(submit, in: app)
         verify(!submit.isEnabled, in: app, "An empty connection must not be submitted.")
@@ -78,21 +78,22 @@ final class CPAQuotaAppUITests: XCTestCase {
     private func verifySlowConnectionDismissal(interactively: Bool) {
         let app = launch(connected: false)
         defer { app.terminate() }
-        let address = element("connection.server", in: app)
-        let key = element("connection.key", in: app)
-        let submit = element("connection.submit", in: app)
+        let address = app.textFields["connection.server"]
+        let key = app.secureTextFields["connection.key"]
+        let submit = app.buttons["connection.submit"]
         replaceText(in: address, with: "https://slow-ui-test.invalid", app: app)
         reveal(key, in: app)
         replaceText(in: key, with: "ui-test-valid-key", app: app)
         reveal(submit, in: app)
         submit.tap()
-        expectExists(element("connection.cancel", in: app), in: app)
+        expectExists(app.buttons["connection.cancel"], in: app)
         let close = app.buttons["connection.close"]
         if interactively {
             let grabber = app.buttons["Sheet Grabber"]
             expectExists(grabber, in: app)
             expectPredicate(NSPredicate(format: "hittable == true"), on: grabber, in: app,
-                            message: "The native sheet grabber must be tappable.")
+                            message: "The native sheet grabber must be tappable.",
+                            finalCheck: { grabber.isHittable })
             grabber.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
                 .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98)))
         } else {
@@ -101,17 +102,19 @@ final class CPAQuotaAppUITests: XCTestCase {
             close.tap()
         }
         expectPredicate(NSPredicate(format: "exists == false"), on: close, in: app,
-                        message: "The connection sheet must actually close.")
-        let start = element("connection.start", in: app)
+                        message: "The connection sheet must actually close.",
+                        finalCheck: { !close.exists })
+        let start = app.buttons["connection.start"]
         expectExists(start, in: app)
         expectPredicate(NSPredicate(format: "hittable == true"), on: start, in: app,
-                        message: "The connection start action must be tappable after dismissal.")
-        expectExists(element("ui-test.slowResponse.pending", in: app), in: app)
-        let release = element("ui-test.slowResponse.release", in: app)
+                        message: "The connection start action must be tappable after dismissal.",
+                        finalCheck: { start.isHittable })
+        expectExists(app.staticTexts["ui-test.slowResponse.pending"], in: app)
+        let release = app.buttons["ui-test.slowResponse.release"]
         expectExists(release, in: app)
         verify(release.isHittable, in: app, "The fixture release control must be tappable.")
         release.tap()
-        expectExists(element("ui-test.slowResponse.returned", in: app), in: app)
+        expectExists(app.staticTexts["ui-test.slowResponse.returned"], in: app)
         verify(!element("quota.options", in: app).waitForExistence(timeout: 6), in: app,
                "A response received after dismissal must not open or replace the workspace.")
         start.tap()
@@ -176,13 +179,13 @@ final class CPAQuotaAppUITests: XCTestCase {
             ("管理统计", "cap.loadManagement", "cap.management.loaded")
         ]
         for (title, loadID, loadedID) in sections {
-            let picker = element("cap.sectionPicker", in: app)
+            let picker = app.buttons["cap.sectionPicker"]
             reveal(picker, in: app, upward: false)
             picker.tap()
             let option = app.buttons[title]
             expectExists(option, in: app, timeout: 5)
             option.tap()
-            let load = element(loadID, in: app)
+            let load = app.buttons[loadID]
             reveal(load, in: app)
             verify(load.isEnabled, in: app, "The selected CAP section must be loadable.")
             load.tap()
@@ -377,10 +380,10 @@ final class CPAQuotaAppUITests: XCTestCase {
             expectExists(element("quota.options", in: app), in: app, timeout: 15)
             reveal(element("quota.account.ui-main", in: app), in: app)
         } else {
-            let start = element("connection.start", in: app)
+            let start = app.buttons["connection.start"]
             expectExists(start, in: app, timeout: 15)
             start.tap()
-            expectExists(element("connection.server", in: app), in: app, timeout: 15)
+            expectExists(app.textFields["connection.server"], in: app, timeout: 15)
         }
         return app
     }
@@ -409,7 +412,7 @@ final class CPAQuotaAppUITests: XCTestCase {
             let hittable = exists && element.isHittable
             if exists {
                 if hasVisibleTapCenter(element, frame: frame, hittable: hittable, context: context) { return }
-                if (!requiresHitTarget || !element.isEnabled), isVisible(frame, viewport: context.viewport) { return }
+                if isVisible(frame, viewport: context.viewport) && (!requiresHitTarget || !element.isEnabled) { return }
             }
             guard attempt < 30 else { break }
             var direction = attempt < 15 ? upward : !upward
@@ -438,19 +441,26 @@ final class CPAQuotaAppUITests: XCTestCase {
             field.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.5)).tap()
             field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previous.count))
             let placeholder = field.placeholderValue ?? ""
-            let cleared = XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            let started = Date()
+            let result = XCTWaiter.wait(for: [XCTNSPredicateExpectation(
                 predicate: NSPredicate(format: "value == nil OR value == '' OR value == %@", placeholder),
-                object: field)], timeout: 5) == .completed
-            let current = field.value as? String ?? ""
+                object: field)], timeout: 5)
+            let elapsed = Date().timeIntervalSince(started)
+            let current = field.value
+            let currentString = current as? String
+            let empty = currentString?.isEmpty ?? false
+            let isPlaceholder = currentString.map { $0 == placeholder } ?? false
+            let cleared = current == nil || empty || isPlaceholder
+            print("FRONTEND_CLEAR_WAIT line=\(line) result=\(result) elapsed=\(elapsed) length=\(currentString?.count ?? -1) nil=\(current == nil) empty=\(empty) placeholder=\(isPlaceholder)")
             verify(cleared, in: app,
-                   "The field must clear before replacement (length=\(current.count), empty=\(current.isEmpty), placeholder=\(current == placeholder)).",
+                   "The field must clear before replacement (length=\(currentString?.count ?? -1), nil=\(current == nil), empty=\(empty), placeholder=\(isPlaceholder)).",
                    file: file, line: line)
         }
         field.typeText(text)
         if field.elementType == .textField {
             expectPredicate(NSPredicate(format: "value == %@", text), on: field, in: app,
                             message: "The address field must contain exactly the entered fixture URL.",
-                            file: file, line: line)
+                            finalCheck: { field.value as? String == text }, file: file, line: line)
         }
     }
 
@@ -599,10 +609,15 @@ final class CPAQuotaAppUITests: XCTestCase {
     @MainActor
     private func expectPredicate(_ predicate: NSPredicate, on element: XCUIElement,
                                  in app: XCUIApplication, message: String,
+                                 finalCheck: @MainActor () -> Bool,
                                  file: StaticString = #filePath, line: UInt = #line) {
         let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
-        verify(XCTWaiter.wait(for: [expectation], timeout: 5) == .completed,
-               in: app, message, file: file, line: line)
+        let started = Date()
+        let result = XCTWaiter.wait(for: [expectation], timeout: 5)
+        let elapsed = Date().timeIntervalSince(started)
+        let condition = finalCheck()
+        print("FRONTEND_PREDICATE_WAIT line=\(line) result=\(result) elapsed=\(elapsed) final=\(condition)")
+        verify(condition, in: app, message, file: file, line: line)
     }
 
     @MainActor
