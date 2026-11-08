@@ -63,3 +63,42 @@ struct MonitoringSnapshotTests {
         #expect(try JSONDecoder().decode(MonitoringSnapshot.self, from: encoded) == snapshot)
     }
 }
+
+@Suite("Monitoring calendar boundaries")
+struct MonitoringCalendarBoundaryTests {
+    @Test func unsafeObservationEpochIsRejectedByConstructorAndDecoder() throws {
+        for epoch in [Double.greatestFiniteMagnitude, -62_135_596_801, 253_402_300_800] {
+            #expect(throws: MonitoringError.invalidConfiguration) {
+                try MonitoringAccount(id: "a", label: "Safe", provider: "codex", windowID: "w", windowLabel: "Week", observedAt: Date(timeIntervalSince1970: epoch), status: .ok)
+            }
+            let payload: [String: Any] = ["id": "a", "label": "Safe", "provider": "codex", "window_id": "w", "window_label": "Week", "observed_at": epoch, "status": "ok"]
+            let data = try JSONSerialization.data(withJSONObject: payload)
+            #expect(throws: (any Error).self) { try JSONDecoder().decode(MonitoringAccount.self, from: data) }
+        }
+    }
+
+    @Test func unsafeSnapshotEpochIsRejectedButAlreadyExpiredDataIsPreserved() throws {
+        let account = try MonitoringAccount(id: "a", label: "Safe", provider: "codex", windowID: "w", windowLabel: "Week", remainingFraction: 0.25, status: .stale)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        for epoch in [Double.greatestFiniteMagnitude, -62_135_596_801, 253_402_300_800] {
+            #expect(throws: MonitoringError.invalidConfiguration) {
+                try MonitoringSnapshot(sequence: 1, phase: .ready, generatedAt: now, expiresAt: Date(timeIntervalSince1970: epoch), accounts: [account])
+            }
+            let payload: [String: Any] = ["version": 1, "sequence": 1, "phase": "ready", "generated_at": epoch, "expires_at": 1_800_000_001, "accounts": [try JSONSerialization.jsonObject(with: JSONEncoder().encode(account))]]
+            let data = try JSONSerialization.data(withJSONObject: payload)
+            #expect(throws: (any Error).self) { try JSONDecoder().decode(MonitoringSnapshot.self, from: data) }
+        }
+        let expired = try MonitoringSnapshot(sequence: 2, phase: .partial, generatedAt: now, expiresAt: now.addingTimeInterval(-1), accounts: [account])
+        let decoded = try JSONDecoder().decode(MonitoringSnapshot.self, from: expired.activityContentData())
+        #expect(decoded == expired)
+        #expect(decoded.accounts.first?.remainingFraction == 0.25)
+    }
+
+    @Test func sessionRejectsUnsupportedEpochEvenWithValidDuration() throws {
+        for start in [1_000_000_000_000.0, -62_135_600_400] {
+            let payload: [String: Any] = ["version": 1, "id": UUID().uuidString, "source_id": "safe", "account_ids": ["a"], "activity_id": "activity", "starts_at": start, "expires_at": start + 3600, "status": "active", "revision": 1, "delivery_state": "disabled"]
+            let data = try JSONSerialization.data(withJSONObject: payload)
+            #expect(throws: (any Error).self) { try JSONDecoder().decode(MonitoringSession.self, from: data) }
+        }
+    }
+}

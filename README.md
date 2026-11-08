@@ -52,6 +52,8 @@ CPA Quota 是连接个人 CPA 服务、只读查看账号额度的原生 iOS 客
 
 ## 测试与已知限制
 
+常规 CI 包含源码/历史秘密扫描与 Duo 展开内屏冒烟验证。扫描匹配不被整目录忽略；只有经原始 Git 对象核对的精确源码散列可被分类为非凭据。复审范围和仍待验收的项目见[复审台账](docs/READINESS_REAUDIT_20261108.md)。
+
 ```powershell
 python -I -X utf8 -B ci/validate_source_layout.py --root .
 python -I -X utf8 -B ci/test_source_layout.py

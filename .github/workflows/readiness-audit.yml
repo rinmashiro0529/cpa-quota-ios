@@ -1,70 +1,62 @@
 name: Public readiness audit
 
 on:
+  pull_request:
   push:
-    branches: [fix/readiness-hardening-20261108]
+    branches: [main, fix/readiness-hardening-20261108]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: public-readiness-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  inventory:
-    name: Public source and history inventory
+  secrets:
+    name: Source and history secret scan
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - name: Check out exact candidate
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Check out exact candidate and history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Collect public reachable references
+      - name: Include all public refs on main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/AuditEvidence" "$RUNNER_TEMP/Scanner"
           git fetch --no-tags "https://github.com/${GITHUB_REPOSITORY}.git" '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*' '+refs/pull/*/head:refs/remotes/pull/*'
-          git for-each-ref --format='%(objectname) %(refname)' > "$RUNNER_TEMP/AuditEvidence/refs.txt"
-          git rev-list --all --count > "$RUNNER_TEMP/AuditEvidence/reachable-commit-count.txt"
-          git rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/AuditEvidence/candidate.txt"
-          git bundle create "$RUNNER_TEMP/AuditEvidence/public-history.bundle" --all
-          git archive --format=tar.gz --output="$RUNNER_TEMP/AuditEvidence/main-source.tar.gz" 122eb0499c437491546894cc28a8e5f6eb697dd6
-      - name: Install checksum-verified scanner
+      - name: Install checksum-verified Gitleaks
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/Scanner" "$RUNNER_TEMP/SecretEvidence"
           cd "$RUNNER_TEMP/Scanner"
           curl --fail --location --silent --show-error --max-time 120 --proto '=https' --tlsv1.2 -o scanner.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
           echo '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  scanner.tar.gz' | sha256sum --check --status
           tar -xzf scanner.tar.gz gitleaks
-          ./gitleaks version > "$RUNNER_TEMP/AuditEvidence/scanner-version.txt"
-          printf '[extend]\nuseDefault = true\n' > config.toml
-          touch empty.ignore
-      - name: Scan and export finding locations without values
+          ./gitleaks version > "$RUNNER_TEMP/SecretEvidence/scanner-version.txt"
+      - name: Run scanner-gate regressions
+        run: python3 -I -B -m unittest discover -s tools/tests -p 'test_secret_scan.py'
+      - name: Scan tracked snapshot and merge-aware history
         shell: bash
+        env:
+          SCAN_ALL_REFS: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         run: |
           set -euo pipefail
-          python3 -I - "$RUNNER_TEMP" <<'PY'
-          import json, os, subprocess, sys
-          from pathlib import Path
-          root = Path(sys.argv[1]); scanner = root / 'Scanner'; out = root / 'AuditEvidence'
-          raw = scanner / 'findings.json'
-          args = [str(scanner / 'gitleaks'), 'git', '.', '--log-opts=--all --full-history -m', '--config', str(scanner / 'config.toml'), '--gitleaks-ignore-path', str(scanner / 'empty.ignore'), '--ignore-gitleaks-allow', '--redact=100', '--no-banner', '--report-format=json', '--report-path', str(raw), '--exit-code=10']
-          with (scanner / 'scan.log').open('w') as log:
-              code = subprocess.run(args, stdout=log, stderr=subprocess.STDOUT, timeout=240).returncode
-          if code not in (0, 10) or not raw.exists():
-              raise SystemExit('Scanner execution failed; no clean result is claimed')
-          findings = json.loads(raw.read_text())
-          allowed = ('RuleID', 'File', 'StartLine', 'EndLine', 'StartColumn', 'EndColumn', 'Commit', 'Fingerprint')
-          report = {'scanExitCode': code, 'scope': 'visible branches, tags and PR heads; reachable merge-aware history', 'unreachableObjectsIncluded': False, 'findingCount': len(findings), 'findings': [{k: f[k] for k in allowed if k in f} for f in findings]}
-          (out / 'finding-locations.json').write_text(json.dumps(report, indent=2) + '\n')
-          print(f'Scan completed; {len(findings)} findings require review. No secret values exported.')
-          PY
-      - name: Preserve audit inputs and metadata
-        if: success()
+          SCOPE=()
+          if [ "$SCAN_ALL_REFS" = true ]; then SCOPE+=(--all-refs); fi
+          git for-each-ref --format='%(objectname) %(refname)' > "$RUNNER_TEMP/SecretEvidence/refs.txt"
+          python3 -I -B ci/scan_secrets.py --scanner "$RUNNER_TEMP/Scanner/gitleaks" --report "$RUNNER_TEMP/SecretEvidence/scan-summary.json" "${SCOPE[@]}"
+      - name: Preserve metadata only, never raw findings
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: public-readiness-inventory-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/AuditEvidence
-          retention-days: 3
+          name: secret-scan-metadata-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/SecretEvidence
+          retention-days: 7
           if-no-files-found: error

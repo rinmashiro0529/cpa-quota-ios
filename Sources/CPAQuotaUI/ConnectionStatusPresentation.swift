@@ -103,7 +103,8 @@ public struct ConnectionStatusPresentation: Equatable, Sendable {
         case .syncing: "正在同步"
         case .rateLimited: "限流冷却中"
         case .managementBlocked(let kind): "管理鉴权已阻断：\(Self.connectionFailureLabel(kind))"
-        case .connectionFailed(let kind): "连接异常：\(Self.connectionFailureLabel(kind))"
+        case .connectionFailed(let kind):
+            kind == .rateLimited ? "限流后待验证" : "连接异常：\(Self.connectionFailureLabel(kind))"
         }
     }
 
@@ -111,8 +112,10 @@ public struct ConnectionStatusPresentation: Equatable, Sendable {
         switch phase {
         case .managementBlocked:
             "请更新服务地址或管理密钥，并显式重新连接；原连接的鉴权熔断不会自动解除。"
-        case .connectionFailed:
-            "请检查网络或服务地址后重试。"
+        case .connectionFailed(let kind):
+            kind == .rateLimited
+                ? "倒计时结束不代表连接或数据已恢复；请在允许重试后显式刷新验证。"
+                : "请检查网络或服务地址后重试。"
         default: nil
         }
     }

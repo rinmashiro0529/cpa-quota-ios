@@ -1246,8 +1246,8 @@ public final class CPAQuotaSession {
 
         if let globalError = store.error {
             if globalError.kind == .rateLimited,
-               let retryAfter = globalError.retryAfter {
-                let remaining = Int(ceil(retryAfter.timeIntervalSince(now)))
+               let retryAfter = globalError.retryAfter,
+               let remaining = QuotaTime.remainingSeconds(until: retryAfter, now: now) {
                 if remaining > 0 {
                     return ConnectionStatusPresentation(
                         phase: .rateLimited(layer: globalError.layer, remainingSeconds: remaining),
@@ -1255,18 +1255,16 @@ public final class CPAQuotaSession {
                     )
                 }
             }
-            if globalError.kind != .rateLimited {
-                return ConnectionStatusPresentation(
-                    phase: .connectionFailed(kind: globalError.kind),
-                    isExpanded: isExpanded
-                )
-            }
+            // A spent cooldown grants retry eligibility, not evidence of recovery.
+            return ConnectionStatusPresentation(
+                phase: .connectionFailed(kind: globalError.kind),
+                isExpanded: isExpanded
+            )
         }
 
         for record in store.records.values {
             if let err = record.error, err.kind == .rateLimited, let retryAfter = err.retryAfter {
-                let remaining = Int(ceil(retryAfter.timeIntervalSince(now)))
-                if remaining > 0 {
+                if let remaining = QuotaTime.remainingSeconds(until: retryAfter, now: now), remaining > 0 {
                     return ConnectionStatusPresentation(
                         phase: .rateLimited(layer: err.layer, remainingSeconds: remaining),
                         isExpanded: isExpanded

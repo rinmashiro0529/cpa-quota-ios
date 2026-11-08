@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "record_path": "docs/verification/backend-reliability-20261029.json",
+      "line_sha256": "3d82572235ecd70ee676455ca1ead1764d2a7720558fbdac9b0474c05d22764b",
+      "source_path": "Sources/CPAQuotaKit/CredentialStore.swift",
+      "source_blob": "5a82a4fd400bf647b4c38406a0ccc29bfbe3c5c9",
+      "source_sha256": "2bb5cebcd41448a1ef4b810865629d4bb507c1090bd07a71be57e6d9844e5a66",
+      "reason": "Exact JSON source checksum; verified against the referenced Git blob, not a credential."
+    },
+    {
+      "record_path": "docs/verification/backend-reliability-20261029.json",
+      "line_sha256": "3db549ddde5b077405d4d380f2a0317a5001f903ca71d00b07980bedfde146cb",
+      "source_path": "Sources/CPAQuotaKit/MonitoringBridgeCredentials.swift",
+      "source_blob": "ddaabf255f76ce1415463dd24190e9cc74643ab2",
+      "source_sha256": "f39e35678444eff2fd73c9d996a017ffab95dbd302e06c7b9205cf833dadc49d",
+      "reason": "Exact JSON source checksum; verified against the referenced Git blob, not a credential."
+    },
+    {
+      "record_path": "docs/verification/backend-reliability-20261029.json",
+      "line_sha256": "1fda94e39a596298a8f4f29778df2990825aa505637e01b1035bfc879e0537c2",
+      "source_path": "Tests/CPAQuotaKitTests/CredentialStoreTests.swift",
+      "source_blob": "900c98b9ab6c12f1fe2a390752c6965ffe1ea040",
+      "source_sha256": "018ad282036e6651d39249fec6a8c12d84e89c7bb26b123c05b440d5f810a4d9",
+      "reason": "Exact JSON source checksum; verified against the referenced Git blob, not a credential."
+    },
+    {
+      "record_path": "docs/verification/backend-reliability-20261029.json",
+      "line_sha256": "ae0d8ab1380e12f595e64c5e0b66ab68e1a1e9a052d600e315fc58510d6868dc",
+      "source_path": "Tests/CPAQuotaKitTests/MonitoringBridgeCredentialTests.swift",
+      "source_blob": "00e2dafcbb27b520cffd105ae413d1e1916aadb1",
+      "source_sha256": "612211a29aae3d988b7dbc3a1117486349361cac144f84e898373eefa78fb897",
+      "reason": "Exact JSON source checksum; verified against the referenced Git blob, not a credential."
+    },
+    {
+      "record_path": "artifacts/source-audit.json",
+      "line_sha256": "3d82572235ecd70ee676455ca1ead1764d2a7720558fbdac9b0474c05d22764b",
+      "source_path": "Sources/CPAQuotaKit/CredentialStore.swift",
+      "source_blob": "5a82a4fd400bf647b4c38406a0ccc29bfbe3c5c9",
+      "source_sha256": "2bb5cebcd41448a1ef4b810865629d4bb507c1090bd07a71be57e6d9844e5a66",
+      "reason": "Exact JSON source checksum; verified against the referenced Git blob, not a credential."
+    },
+    {
+      "record_path": "artifacts/source-audit.json",
+      "line_sha256": "1fda94e39a596298a8f4f29778df2990825aa505637e01b1035bfc879e0537c2",
+      "source_path": "Tests/CPAQuotaKitTests/CredentialStoreTests.swift",
+      "source_blob": "900c98b9ab6c12f1fe2a390752c6965ffe1ea040",
+      "source_sha256": "018ad282036e6651d39249fec6a8c12d84e89c7bb26b123c05b440d5f810a4d9",
+      "reason": "Exact JSON source checksum; verified against the referenced Git blob, not a credential."
+    },
+    {
+      "record_path": "docs/verification/backend-20261029.json",
+      "line_sha256": "84d436487ae0936cd0274f5427bcaa85547153fd5717a1b532182c2c9d0218a0",
+      "source_path": "Sources/CPAQuotaKit/CredentialStore.swift",
+      "source_blob": "5a82a4fd400bf647b4c38406a0ccc29bfbe3c5c9",
+      "source_sha256": "2bb5cebcd41448a1ef4b810865629d4bb507c1090bd07a71be57e6d9844e5a66",
+      "reason": "Exact JSON source checksum; verified against the referenced Git blob, not a credential."
+    },
+    {
+      "record_path": "docs/verification/backend-20261029.json",
+      "line_sha256": "652e0f967a4fd5162ebb535ddee8255ce2bd9cd54ec03d90dacfe361f5608565",
+      "source_path": "Sources/CPAQuotaKit/MonitoringBridgeCredentials.swift",
+      "source_blob": "ddaabf255f76ce1415463dd24190e9cc74643ab2",
+      "source_sha256": "f39e35678444eff2fd73c9d996a017ffab95dbd302e06c7b9205cf833dadc49d",
+      "reason": "Exact JSON source checksum; verified against the referenced Git blob, not a credential."
+    },
+    {
+      "record_path": "docs/verification/backend-20261029.json",
+      "line_sha256": "9637dee9f161ee9dc982017bc8d78c456d8b623e6cc8f39db728dc059b12ec50",
+      "source_path": "Tests/CPAQuotaKitTests/CredentialStoreTests.swift",
+      "source_blob": "900c98b9ab6c12f1fe2a390752c6965ffe1ea040",
+      "source_sha256": "018ad282036e6651d39249fec6a8c12d84e89c7bb26b123c05b440d5f810a4d9",
+      "reason": "Exact JSON source checksum; verified against the referenced Git blob, not a credential."
+    },
+    {
+      "record_path": "docs/verification/backend-20261029.json",
+      "line_sha256": "141a251ea81a040e18d0d8141836565b8de383fd582e48a20c6fcf8d27d0a16a",
+      "source_path": "Tests/CPAQuotaKitTests/MonitoringBridgeCredentialTests.swift",
+      "source_blob": "00e2dafcbb27b520cffd105ae413d1e1916aadb1",
+      "source_sha256": "612211a29aae3d988b7dbc3a1117486349361cac144f84e898373eefa78fb897",
+      "reason": "Exact JSON source checksum; verified against the referenced Git blob, not a credential."
+    }
+  ]
+}

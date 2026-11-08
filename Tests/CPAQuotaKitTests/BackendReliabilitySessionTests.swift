@@ -231,3 +231,28 @@ struct AuditConnectionAcceptanceTests {
         #expect(session.store?.refreshOperation?.succeeded == ["b"])
     }
 }
+
+@Suite("Cooldown recovery projection", .timeLimit(.minutes(1)))
+@MainActor
+struct CooldownRecoveryProjectionTests {
+    @Test func elapsedGlobalCooldownRequiresASuccessfulResponseBeforeConnected() async throws {
+        let base = try ScenarioTransport(accounts: [FixtureAccount("a")])
+        let transport = FaultInjectingTransport(base: base)
+        let session = CPAQuotaSession(credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore()) { server, key in
+            CPAClient(server: server, managementKey: key, transport: transport)
+        }
+        await session.connect(serverAddress: "https://cooldown.example", managementKeyInput: "fixture-key", rememberInKeychain: false)
+        let now = Date()
+        let deadline = now.addingTimeInterval(30)
+        await transport.setFailure(CPAError(.rateLimited, layer: .management, retryAfter: deadline))
+        await session.refreshAll()
+        #expect(session.store?.error?.kind == .rateLimited)
+        #expect(session.connectionStatus(now: now).phase == .rateLimited(layer: .management, remainingSeconds: 30))
+        #expect(session.connectionStatus(now: deadline.addingTimeInterval(1)).phase == .connectionFailed(kind: .rateLimited))
+        #expect(session.connectionStatus(now: deadline.addingTimeInterval(1)).connectionPageText != "已连接")
+        await transport.setFailure(nil)
+        // A new validated connection is explicit evidence; the clock alone is not.
+        await session.connect(serverAddress: "https://cooldown.example", managementKeyInput: "fixture-key", rememberInKeychain: false)
+        #expect(session.connectionStatus().connectionPageText == "已连接")
+    }
+}

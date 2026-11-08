@@ -219,8 +219,7 @@ public struct ErrorPresentation: Equatable, Sendable {
     }
 
     public func remainingCooldownSeconds(at now: Date = Date()) -> Int? {
-        guard let retryAfter else { return nil }
-        let remaining = Int(ceil(retryAfter.timeIntervalSince(now)))
+        guard let retryAfter, let remaining = QuotaTime.remainingSeconds(until: retryAfter, now: now) else { return nil }
         return remaining > 0 ? remaining : nil
     }
 }

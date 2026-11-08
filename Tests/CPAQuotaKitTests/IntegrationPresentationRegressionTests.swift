@@ -160,3 +160,46 @@ struct AuditQuotaPresentationTests {
         #expect(!presentation.displayName.contains("second@example.test"))
     }
 }
+
+@Suite("Time presentation boundaries")
+struct TimePresentationBoundaryTests {
+    @Test func invalidDurationsRemainUnknownInsteadOfTrapping() {
+        for value in [Double.nan, .infinity, -.infinity, .greatestFiniteMagnitude, Double(Int.max), -1, 0] {
+            #expect(WindowPresentation.formatDuration(value) == "窗口长度未知")
+        }
+        #expect(WindowPresentation.formatDuration(3600) == "1 小时窗口 (3600s)")
+    }
+
+    @Test func invalidInstantsNeverLookFreshOrReachDateFormatter() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        for seconds in [Double.nan, .infinity, -.infinity, .greatestFiniteMagnitude, -62_135_596_801, 253_402_300_800] {
+            let date = Date(timeIntervalSince1970: seconds)
+            #expect(QuotaFormatter.relativeAgeString(from: date, to: now) == "时间偏移异常")
+            #expect(QuotaFormatter.exactTimestampString(date) == "时间未知")
+            #expect(QuotaTime.remainingSeconds(until: date, now: now) == nil)
+            let error = ErrorPresentation(error: CPAError(.rateLimited, retryAfter: date))
+            #expect(error.remainingCooldownSeconds(at: now) == nil)
+        }
+    }
+
+    @Test func countdownKeepsRoundingAndUnknownSeparateFromExpired() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        #expect(QuotaTime.remainingSeconds(until: now.addingTimeInterval(0.1), now: now) == 1)
+        #expect(QuotaTime.remainingSeconds(until: now, now: now) == 0)
+        #expect(QuotaTime.remainingSeconds(until: now.addingTimeInterval(-5), now: now) == 0)
+        #expect(QuotaTime.remainingSeconds(until: now, now: Date(timeIntervalSince1970: .infinity)) == nil)
+        #expect(QuotaTime.isSupported(Date(timeIntervalSince1970: -62_135_596_800)))
+        #expect(QuotaTime.isSupported(Date(timeIntervalSince1970: 253_402_300_799)))
+        #expect(QuotaFormatter.relativeAgeString(from: now.addingTimeInterval(-300), to: now) == "5 分钟前")
+    }
+
+    @MainActor
+    @Test func expiredCAPCooldownDoesNotClaimFreshData() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let result = CAPUsagePresentation.errorDescription(.resourceRejected(statusCode: 429, retryAt: now.addingTimeInterval(-1)), now: now)
+        #expect(result.detail.contains("等待重试验证"))
+        #expect(!result.detail.contains("0 秒"))
+        let presentation = ConnectionStatusPresentation(phase: .connectionFailed(kind: .rateLimited), isExpanded: false)
+        #expect(presentation.connectionPageText == "限流后待验证")
+    }
+}

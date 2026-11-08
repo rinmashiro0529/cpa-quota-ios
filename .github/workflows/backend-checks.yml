@@ -23,7 +23,7 @@ jobs:
         working-directory: Services/QuotaMonitor
     steps:
       - name: Check out source
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
       - name: Run offline operator tooling regressions
@@ -89,7 +89,7 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_${{ matrix.xcode }}.app/Contents/Developer
     steps:
       - name: Check out source
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
       - name: Record toolchain and verify native membership

@@ -500,14 +500,13 @@ public enum CAPUsagePresentation {
             return (pres.title, pres.summary + " " + pres.recoveryAdvice)
         case .resourceRejected(let statusCode, let retryAt):
             if statusCode == 429 {
-                if let retryAt {
-                    let secs = max(0, Int(ceil(retryAt.timeIntervalSince(now))))
+                if let retryAt, let secs = QuotaTime.remainingSeconds(until: retryAt, now: now), secs > 0 {
                     return (
                         "CAP 资源接口触发限流 (429)",
                         "独立资源冷却中（剩余约 \(secs) 秒），冷却结束前不会绕过限制重复请求。"
                     )
                 }
-                return ("CAP 资源接口触发限流 (429)", "独立资源冷却中，请稍后重试。")
+                return ("CAP 资源接口触发限流 (429)", "上次请求被限流，等待重试验证；倒计时结束不代表服务已恢复。")
             }
             if statusCode == 401 || statusCode == 403 {
                 return (
