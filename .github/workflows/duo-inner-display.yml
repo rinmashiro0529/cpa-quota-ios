@@ -22,7 +22,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Select and boot exact Duo simulator
+      - name: Select exact Duo simulator
         id: simulator
         shell: bash
         run: |
@@ -31,8 +31,7 @@ jobs:
           xcodebuild -version | tee "$EVIDENCE/xcode-version.txt"
           UDID="$(python3 -I ci/select_simulator.py --major 27 --preferred-runtime 27.1 --preferred-device 'iPhone Duo' --require-preferred --report "$EVIDENCE/simulator.json")"
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
-          python3 -I ci/prepare_simulator.py --selection "$EVIDENCE/simulator.json" --report "$EVIDENCE/simulator-readiness.json" --timeout-seconds 300
-          xcrun simctl io "$UDID" enumerate > "$EVIDENCE/displays.txt"
+          echo "Exact available simulator recorded; startup follows the app build" > "$EVIDENCE/boot-plan.txt"
 
       - name: Install pinned Duo posture controller
         id: tool
@@ -60,6 +59,16 @@ jobs:
           xcodebuild build -project Apple/CPAQuota.xcodeproj -scheme CPAQuota -configuration Debug -destination "platform=iOS Simulator,id=$DUO_UDID" -derivedDataPath "$RUNNER_TEMP/DuoInnerDerivedData" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= > "$EVIDENCE/app-build.log" 2>&1 || { tail -n 100 "$EVIDENCE/app-build.log"; exit 1; }
           APP="$RUNNER_TEMP/DuoInnerDerivedData/Build/Products/Debug-iphonesimulator/CPAQuota.app"
           test -d "$APP"
+          # The ordinary CI readiness verifier is inventory-heavy on a cold Duo.
+          # For this one-off screenshot proof, boot the exact recorded UUID and
+          # rely on an independent, live hinge/display readback after unfolding.
+          python3 -I - "$DUO_UDID" "$EVIDENCE/bootstatus.log" <<'PY'
+          import subprocess, sys
+          from pathlib import Path
+          with Path(sys.argv[2]).open("w") as log:
+              subprocess.run(["xcrun","simctl","bootstatus",sys.argv[1],"-b"],
+                             check=True,stdout=log,stderr=subprocess.STDOUT,timeout=360)
+          PY
           xcrun simctl install "$DUO_UDID" "$APP"
           xcrun simctl launch "$DUO_UDID" icu.nahida.cpaquota --ui-testing --fixture=connected | tee "$EVIDENCE/app-launch.txt"
           sleep 6
