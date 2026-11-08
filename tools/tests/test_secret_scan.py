@@ -2,6 +2,7 @@
 import hashlib
 import importlib.util
 import json
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -147,6 +148,15 @@ class SecretScanTests(unittest.TestCase):
             path.write_text(json.dumps(value))
             with self.assertRaises(scan.ScanError):
                 scan.load_proofs(path)
+
+    def test_canary_matches_the_pinned_scanners_minimum_payload(self):
+        # Gitleaks 8.30.1 private-key requires at least 64 payload characters.
+        # This tests the rule shape, not validity of any cryptographic key.
+        pattern = re.compile(r"(?i)-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----[\s\S-]{64,}?KEY(?: BLOCK)?-----")
+        self.assertIsNotNone(pattern.search(scan.scanner_canary()))
+        short = "-----BEGIN " + "PRIVATE KEY-----\nnot-a-key\n" + "-----END " + "PRIVATE KEY-----\n"
+        self.assertIsNone(pattern.search(short))
+        self.assertIn("not-a-key", scan.scanner_canary())
 
     def test_checked_in_manifest_is_valid(self):
         self.assertEqual(len(scan.load_proofs(ROOT / "ci/reviewed-source-digests.json")), 10)

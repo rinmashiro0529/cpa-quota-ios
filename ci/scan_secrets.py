@@ -146,6 +146,12 @@ def run_scan(scanner: Path, cwd: Path, mode: str, private: Path, log_opts: str |
     return findings
 
 
+def scanner_canary() -> str:
+    # The pinned private-key rule requires a payload of at least 64 characters.
+    # Repeated invalid text is deliberately not a functional key.
+    return "-----BEGIN " + "PRIVATE KEY-----\n" + "not-a-key\n" * 16 + "-----END " + "PRIVATE KEY-----\n"
+
+
 def audit(repo: Path, scanner: Path, proof_path: Path, all_refs: bool = False) -> dict:
     repo, scanner = repo.resolve(), scanner.resolve()
     if git(repo, "rev-parse", "--is-shallow-repository").strip() != b"false":
@@ -164,7 +170,7 @@ def audit(repo: Path, scanner: Path, proof_path: Path, all_refs: bool = False) -
         canary = private / "canary"
         canary.mkdir()
         # Nonfunctional synthetic marker, assembled to avoid a source false hit.
-        (canary / "synthetic.txt").write_text("-----BEGIN " + "PRIVATE KEY-----\nnot-a-key\n" + "-----END " + "PRIVATE KEY-----\n")
+        (canary / "synthetic.txt").write_text(scanner_canary(), encoding="utf-8")
         detected = run_scan(scanner, canary, "dir", private, None)
         if not any(f.get("RuleID") == "private-key" for f in detected):
             raise ScanError("Scanner canary was not detected")
@@ -202,8 +208,11 @@ def main() -> int:
     args.report.write_text('{"version":1,"status":"failed","reason":"scan-not-completed"}\n')
     try:
         report = audit(args.repo, args.scanner, args.proofs, args.all_refs)
-    except (ScanError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
-        print("Secret scan failed to complete; details and secret values were not exported.")
+    except (ScanError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+        # ScanError messages are fixed strings; never serialize subprocess output.
+        reason = str(exc) if isinstance(exc, ScanError) else "scan-prerequisite-error"
+        args.report.write_text(json.dumps({"version": 1, "status": "failed", "reason": reason}) + "\n")
+        print("Secret scan failed to complete; inspect the sanitized summary.")
         return 2
     args.report.write_text(json.dumps(report, indent=2, ensure_ascii=True) + "\n")
     print("Secret scan status: " + report["status"])
