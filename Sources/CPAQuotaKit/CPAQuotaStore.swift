@@ -80,7 +80,8 @@ public final class CPAQuotaStore {
         refreshOperation = QuotaOperation(id: token, phase: .loading, planned: [], processed: [], succeeded: [], failed: [], skipped: [])
         isLoading = reloadInventory
         isRefreshing = !reloadInventory
-        error = nil
+        // Starting an attempt is not recovery. Cancellation must retain the
+        // previous failure until a successful response validates this connection.
         let task = Task { [weak self] in
             guard let self else { return }
             await self.performRun(force: force, accountID: accountID, token: token, inventoryOnly: inventoryOnly, reloadInventory: reloadInventory)
@@ -111,6 +112,7 @@ public final class CPAQuotaStore {
             let initial = await client.snapshot()
             try Task.checkCancellation()
             guard operation == token else { return }
+            if reloadInventory { error = nil }
             publish(initial)
             if inventoryOnly {
                 refreshOperation?.phase = .completed
@@ -161,6 +163,7 @@ public final class CPAQuotaStore {
             let final = await client.snapshot()
             try Task.checkCancellation()
             guard operation == token else { return }
+            error = nil
             publish(final)
             if var current = refreshOperation, current.id == token {
                 current.skipped.formUnion(current.planned.subtracting(current.processed))
