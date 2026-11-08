@@ -87,6 +87,7 @@ struct BackendReliabilitySessionTests {
         #expect(session.authState == .connected(server: server, isRememberedInKeychain: true))
         #expect(session.currentServer == server)
         #expect(session.records["a"]?.snapshot == snapshot)
+        #expect(session.records["b"] == nil)
         #expect(session.connectionFormError?.kind == .managementUnauthorized)
     }
 }
@@ -229,5 +230,63 @@ struct AuditConnectionAcceptanceTests {
         #expect(session.records["b"]?.error == nil)
         #expect(session.store?.refreshOperation?.planned == ["b"])
         #expect(session.store?.refreshOperation?.succeeded == ["b"])
+    }
+}
+
+@Suite("Cooldown recovery projection", .timeLimit(.minutes(1)))
+@MainActor
+struct CooldownRecoveryProjectionTests {
+    @Test func elapsedGlobalCooldownRequiresASuccessfulResponseBeforeConnected() async throws {
+        let base = try ScenarioTransport(accounts: [FixtureAccount("a")])
+        let transport = FaultInjectingTransport(base: base)
+        let session = CPAQuotaSession(credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore()) { server, key in
+            CPAClient(server: server, managementKey: key, transport: transport)
+        }
+        await session.connect(serverAddress: "https://cooldown.example", managementKeyInput: "fixture-key", rememberInKeychain: false)
+        let now = Date()
+        let deadline = now.addingTimeInterval(30)
+        await transport.setFailure(CPAError(.rateLimited, layer: .management, retryAfter: deadline))
+        await session.refreshAll()
+        #expect(session.store?.error?.kind == .rateLimited)
+        #expect(session.connectionStatus(now: now).phase == .rateLimited(layer: .management, remainingSeconds: 30))
+        #expect(session.connectionStatus(now: deadline.addingTimeInterval(1)).phase == .connectionFailed(kind: .rateLimited))
+        #expect(session.connectionStatus(now: deadline.addingTimeInterval(1)).connectionPageText != "已连接")
+        await transport.setFailure(nil)
+        // A new validated connection is explicit evidence; the clock alone is not.
+        await session.connect(serverAddress: "https://cooldown.example", managementKeyInput: "fixture-key", rememberInKeychain: false)
+        #expect(session.connectionStatus().connectionPageText == "已连接")
+    }
+
+    @Test(arguments: [CPAError.Kind.network, .rateLimited])
+    func cancelledRetryCannotEraseThePreviousFailure(_ kind: CPAError.Kind) async throws {
+        let base = try ScenarioTransport(accounts: [FixtureAccount("a")])
+        let transport = FaultInjectingTransport(base: base)
+        let session = CPAQuotaSession(credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore()) { server, key in
+            CPAClient(server: server, managementKey: key, transport: transport)
+        }
+        await session.connect(serverAddress: "https://retry.example", managementKeyInput: "fixture-key", rememberInKeychain: false)
+        let snapshot = try #require(session.records["a"]?.snapshot)
+        let failure = CPAError(kind, layer: .management, retryAfter: kind == .rateLimited ? Date(timeIntervalSince1970: 0) : nil)
+        await transport.setFailure(failure)
+        await session.refreshAll()
+        #expect(session.store?.error?.kind == kind)
+        await transport.setFailure(nil)
+        let gate = TestGate()
+        await base.setInventoryGate(gate)
+        let retry = Task { await session.refreshAll() }
+        await gate.waitForArrivals()
+        #expect(session.store?.isLoading == true)
+        #expect(session.store?.error?.kind == kind)
+        await session.cancelActiveOperation()
+        #expect(session.connectionStatus().phase == .connectionFailed(kind: kind))
+        #expect(session.records["a"]?.snapshot == snapshot)
+        await gate.open()
+        await retry.value
+        #expect(session.store?.error?.kind == kind)
+        #expect(session.connectionStatus().phase == .connectionFailed(kind: kind))
+        await base.setInventoryGate(nil)
+        await session.refreshAll()
+        #expect(session.store?.error == nil)
+        #expect(session.connectionStatus().connectionPageText == "\u{5df2}\u{8fde}\u{63a5}")
     }
 }

@@ -26,7 +26,7 @@ public struct MonitoringAccount: Codable, Sendable, Hashable {
               Self.display(label), Self.display(windowLabel), unit.map(Self.display) ?? true,
               remainingFraction.map({ $0.isFinite && (0...1).contains($0) }) ?? true,
               value.map(\.isFinite) ?? true,
-              observedAt.map({ $0.timeIntervalSince1970.isFinite }) ?? true else {
+              observedAt.map(QuotaTime.isSupported) ?? true else {
             throw MonitoringError.invalidConfiguration
         }
         self.id = id; self.label = label; self.provider = provider
@@ -52,7 +52,7 @@ public struct MonitoringAccount: Codable, Sendable, Hashable {
               Self.display(label), Self.display(windowLabel), unit.map(Self.display) ?? true,
               remainingFraction.map({ $0.isFinite && (0...1).contains($0) }) ?? true,
               value.map(\.isFinite) ?? true,
-              seconds.map(\.isFinite) ?? true else {
+              seconds.map({ WireDate.epochDate($0) != nil }) ?? true else {
             throw DecodingError.dataCorruptedError(forKey: .label, in: c, debugDescription: "Invalid safe account")
         }
     }
@@ -99,7 +99,7 @@ public struct MonitoringSnapshot: Codable, Sendable, Hashable {
 
     public init(sequence: UInt64, phase: Phase, generatedAt: Date, expiresAt: Date,
                 accounts: [MonitoringAccount]) throws {
-        guard generatedAt.timeIntervalSince1970.isFinite, expiresAt.timeIntervalSince1970.isFinite,
+        guard QuotaTime.isSupported(generatedAt), QuotaTime.isSupported(expiresAt),
               (1...5).contains(accounts.count), Set(accounts.map(\.id)).count == accounts.count else {
             throw MonitoringError.invalidConfiguration
         }
@@ -119,7 +119,7 @@ public struct MonitoringSnapshot: Codable, Sendable, Hashable {
         generatedAt = Date(timeIntervalSince1970: generated)
         expiresAt = Date(timeIntervalSince1970: expires)
         accounts = try c.decode([MonitoringAccount].self, forKey: .accounts)
-        guard generated.isFinite, expires.isFinite,
+        guard WireDate.epochDate(generated) != nil, WireDate.epochDate(expires) != nil,
               (1...5).contains(accounts.count), Set(accounts.map(\.id)).count == accounts.count else {
             throw DecodingError.dataCorruptedError(forKey: .accounts, in: c, debugDescription: "Invalid snapshot")
         }

@@ -56,8 +56,9 @@ public struct MonitoringSession: Codable, Sendable, Equatable {
               Set(accountIDs).count == accountIDs.count, accountIDs.allSatisfy(MonitoringIdentifier.validAccount),
               !activityID.isEmpty, activityID.utf8.count <= 256,
               !activityID.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
-              startsAt.isFinite, expiresAt.isFinite, expiresAt > startsAt, expiresAt - startsAt <= 28800,
-              nextRefreshAt.map(\.isFinite) ?? true else {
+              WireDate.epochDate(startsAt) != nil, WireDate.epochDate(expiresAt) != nil,
+              expiresAt > startsAt, expiresAt - startsAt <= 28800,
+              nextRefreshAt.map({ WireDate.epochDate($0) != nil }) ?? true else {
             throw DecodingError.dataCorruptedError(forKey: .version, in: c, debugDescription: "Invalid session")
         }
     }

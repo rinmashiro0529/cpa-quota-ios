@@ -56,3 +56,18 @@ public struct QuotaFreshness: Sendable, Equatable {
         state = observedAt == nil ? .unknown : (snapshot.isStale(at: now) ? .stale : .fresh)
     }
 }
+
+/// Shared calendar and countdown bounds. Invalid input is unknown, not zero.
+public enum QuotaTime {
+    public static func isSupported(_ date: Date) -> Bool {
+        WireDate.epochDate(date.timeIntervalSince1970) != nil
+    }
+
+    /// Zero permits another attempt; it does not prove a successful response.
+    public static func remainingSeconds(until deadline: Date, now: Date) -> Int? {
+        guard isSupported(deadline), isSupported(now) else { return nil }
+        let remaining = deadline.timeIntervalSince(now)
+        guard remaining.isFinite else { return nil }
+        return Int(exactly: max(0, ceil(remaining)))
+    }
+}

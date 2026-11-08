@@ -146,7 +146,7 @@ public struct WindowPresentation: Identifiable, Equatable, Sendable {
     }
 
     public func resetTimeText(timeZone: TimeZone = .current) -> String {
-        guard let resetAt else { return "重置时间点未知" }
+        guard let resetAt, QuotaTime.isSupported(resetAt) else { return "重置时间点未知" }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.timeZone = timeZone
@@ -158,8 +158,7 @@ public struct WindowPresentation: Identifiable, Equatable, Sendable {
         guard let seconds, seconds.isFinite, seconds > 0 else {
             return "窗口长度未知"
         }
-        let whole = Int(seconds.rounded(.towardZero))
-        guard whole > 0 else { return "窗口长度未知" }
+        guard let whole = Int(exactly: seconds.rounded(.towardZero)), whole > 0 else { return "窗口长度未知" }
         if whole % 86_400 == 0 {
             return "\(whole / 86_400) 天窗口 (\(whole)s)"
         }
@@ -337,7 +336,10 @@ public enum QuotaFormatter {
     }
 
     public static func relativeAgeString(from date: Date, to now: Date = Date()) -> String {
-        let delta = Int(now.timeIntervalSince(date).rounded())
+        guard QuotaTime.isSupported(date), QuotaTime.isSupported(now),
+              let delta = Int(exactly: now.timeIntervalSince(date).rounded()) else {
+            return "时间偏移异常"
+        }
         if delta < -60 {
             return "时间偏移异常"
         }
@@ -357,7 +359,7 @@ public enum QuotaFormatter {
     }
 
     public static func exactTimestampString(_ date: Date?, timeZone: TimeZone = .current) -> String {
-        guard let date else { return "时间未知" }
+        guard let date, QuotaTime.isSupported(date) else { return "时间未知" }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.timeZone = timeZone

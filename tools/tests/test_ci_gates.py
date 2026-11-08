@@ -40,12 +40,12 @@ class CIGateTests(unittest.TestCase):
     def test_ruleset_requires_exact_matrix_checks_from_github_actions(self):
         pairs = re.findall(r"xcode: '([^']+)'[\s\S]*?device: '([^']+)'", self.workflow)
         self.assertEqual(len(pairs), 3)
-        expected = {"Go tests, race and vet"} | {
+        expected = {"Go tests, race and vet", "Source and history secret scan", "Duo inner-display smoke"} | {
             f"Swift and native UI (Xcode {xcode}, {device})" for xcode, device in pairs}
         parameters = self.rules["required_status_checks"]["parameters"]
         checks = parameters["required_status_checks"]
         self.assertEqual({check["context"] for check in checks}, expected)
-        self.assertEqual(len(checks), 4)
+        self.assertEqual(len(checks), 6)
         self.assertTrue(all(check["integration_id"] == 15368 for check in checks))
         self.assertTrue(parameters["strict_required_status_checks_policy"])
 

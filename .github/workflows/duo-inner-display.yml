@@ -1,0 +1,124 @@
+name: Duo unfolded inner-display evidence
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: duo-inner-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  capture-duo-inner:
+    name: Duo inner-display smoke
+    runs-on: xcode-27
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+      EVIDENCE: /tmp/DuoInnerEvidence
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      - name: Select exact Duo simulator
+        id: simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE"
+          xcodebuild -version | tee "$EVIDENCE/xcode-version.txt"
+          UDID="$(python3 -I ci/select_simulator.py --major 27 --preferred-runtime 27.1 --preferred-device 'iPhone Duo' --require-preferred --report "$EVIDENCE/simulator.json")"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          echo "Exact available simulator recorded; startup follows the app build" > "$EVIDENCE/boot-plan.txt"
+
+      - name: Install pinned Duo posture controller
+        id: tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/duoctl"
+          mkdir -p "$DIR"
+          git -C "$DIR" init -q
+          git -C "$DIR" remote add origin https://github.com/skarol/duoctl.git
+          git -C "$DIR" fetch -q --depth 1 origin c6ff3e961a9858fb061907448e702d7d1617dc4a
+          git -C "$DIR" checkout -q --detach c6ff3e961a9858fb061907448e702d7d1617dc4a
+          test "$(git -C "$DIR" rev-parse HEAD)" = c6ff3e961a9858fb061907448e702d7d1617dc4a
+          TOOL="$DIR/skills/duoctl/scripts/duoctl"
+          test -f "$DIR/skills/duoctl/scripts/duoctl-helper.m"
+          echo "executable=$TOOL" >> "$GITHUB_OUTPUT"
+          python3 -I "$TOOL" --version | tee "$EVIDENCE/duoctl-version.txt"
+
+      - name: Build and launch debug app using isolated fixture
+        shell: bash
+        env:
+          DUO_UDID: ${{ steps.simulator.outputs.udid }}
+        run: |
+          set -euo pipefail
+          xcodebuild build -project Apple/CPAQuota.xcodeproj -scheme CPAQuota -configuration Debug -destination "platform=iOS Simulator,id=$DUO_UDID" -derivedDataPath "$RUNNER_TEMP/DuoInnerDerivedData" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= > "$EVIDENCE/app-build.log" 2>&1 || { tail -n 100 "$EVIDENCE/app-build.log"; exit 1; }
+          APP="$RUNNER_TEMP/DuoInnerDerivedData/Build/Products/Debug-iphonesimulator/CPAQuota.app"
+          test -d "$APP"
+          # The ordinary CI readiness verifier is inventory-heavy on a cold Duo.
+          # For this display smoke test, boot the exact recorded UUID and
+          # rely on an independent, live hinge/display readback after unfolding.
+          python3 -I - "$DUO_UDID" "$EVIDENCE/bootstatus.log" <<'PY'
+          import subprocess, sys
+          from pathlib import Path
+          with Path(sys.argv[2]).open("w") as log:
+              subprocess.run(["xcrun","simctl","bootstatus",sys.argv[1],"-b"],
+                             check=True,stdout=log,stderr=subprocess.STDOUT,timeout=360)
+          PY
+          xcrun simctl install "$DUO_UDID" "$APP"
+          xcrun simctl launch "$DUO_UDID" icu.nahida.cpaquota --ui-testing --fixture=connected | tee "$EVIDENCE/app-launch.txt"
+          sleep 6
+
+      - name: Unfold, verify inner display state and capture actual app
+        shell: bash
+        env:
+          DUO_UDID: ${{ steps.simulator.outputs.udid }}
+          DUO_TOOL: ${{ steps.tool.outputs.executable }}
+        run: |
+          set -euo pipefail
+          python3 -I "$DUO_TOOL" -d "$DUO_UDID" state | tee "$EVIDENCE/state-before.json"
+          python3 -I "$DUO_TOOL" -d "$DUO_UDID" screenshot "$EVIDENCE/outer-before.png"
+          python3 -I "$DUO_TOOL" -d "$DUO_UDID" open --duration 1.2 | tee "$EVIDENCE/state-open.json"
+          sleep 3
+          python3 -I "$DUO_TOOL" -d "$DUO_UDID" state | tee "$EVIDENCE/state-confirmed.json"
+          python3 -I "$DUO_TOOL" -d "$DUO_UDID" screenshot "$EVIDENCE/inner-open.png"
+          python3 -I - "$EVIDENCE" <<'PY'
+          import json, struct, sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          state = json.loads((root / "state-confirmed.json").read_text())
+          assert state["activeScreen"] == "inner", f"Not on inner display: {state}"
+          assert state["hingeAngle"] is not None and 170 <= state["hingeAngle"] <= 180, state
+          p = (root / "inner-open.png").read_bytes()
+          assert p[:8] == bytes((137,80,78,71,13,10,26,10)) and p[12:16] == b"IHDR"
+          width,height = struct.unpack(">II", p[16:24])
+          assert (width,height) in ((2007,2853),(2853,2007)), f"Not an inner display: {width}x{height}"
+          print(f"CONFIRMED_INNER hinge={state['hingeAngle']} active=inner image={width}x{height}")
+          PY
+          python3 -I "$DUO_TOOL" -d "$DUO_UDID" rotate portrait > "$EVIDENCE/rotate-portrait.txt" 2>&1
+          sleep 2
+          python3 -I "$DUO_TOOL" -d "$DUO_UDID" state | tee "$EVIDENCE/state-portrait.json"
+          python3 -I "$DUO_TOOL" -d "$DUO_UDID" screenshot "$EVIDENCE/inner-portrait.png"
+          python3 -I "$DUO_TOOL" -d "$DUO_UDID" close --duration 1.0 | tee "$EVIDENCE/state-closed.json"
+          sleep 2
+          python3 -I "$DUO_TOOL" -d "$DUO_UDID" screenshot "$EVIDENCE/outer-after.png"
+          python3 -I -B ci/validate_duo_evidence.py --evidence "$EVIDENCE"
+          sips -g pixelWidth -g pixelHeight "$EVIDENCE"/*.png
+
+      - name: Preserve screenshots and diagnostics, even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: duo-inner-screen-evidence-${{ github.run_attempt }}
+          path: /tmp/DuoInnerEvidence
+          retention-days: 7
+          if-no-files-found: warn
