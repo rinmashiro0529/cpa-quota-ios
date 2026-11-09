@@ -5,11 +5,30 @@ CPA Quota 是连接个人 CPA 服务、只读查看账号额度的原生 iOS 客
 ## 功能
 
 - 查看 CPA 已有账号及额度窗口、重置时间和最近查询结果；读取失败时保留并标注上次成功结果。
-- 查看 CAP 用量和账号诊断，管理连接与本机偏好。
+- 查看 CAP 用量和账号诊断（CAP 用量依赖外部插件，详见下文），管理连接与本机偏好。
 - 使用系统小组件和实时活动；小组件共享默认关闭，系统活动显示首个账号和其他账号数量，不承诺后台自动轮播。
 - 可选地连接独立监控服务；服务需要另行配置、运行与授权。
 
 当前界面为中文。应用只读查询，不登录上游 OAuth，也不修改账号、配置或重置额度。
+
+## CAP 用量功能依赖
+
+CPA Quota **不会自行采集 CAP Token 用量**。CAP 用量数据由 [CAP Token Usage Tracker](https://github.com/AITNR/cap-token-usage-tracker) 插件记录并提供；CPA Quota 通过该插件暴露的只读统计接口读取数据。
+
+因此，**要完整使用 CPA Quota 的 CAP 用量功能，必须在 CPA 当前连接的 CLIProxyAPI 实例中安装并启用 `cap-token-usage-tracker` 插件**。只安装 CPA Quota iOS App 不足以提供 CAP 用量数据；插件应部署在 CLIProxyAPI 所在主机，并选择与 CLIProxyAPI 进程操作系统和 CPU 架构匹配的构建产物。
+
+在 CLIProxyAPI 配置中启用插件（安装路径、平台选择和完整配置项请参见[插件安装与配置说明](https://github.com/AITNR/cap-token-usage-tracker#安装与配置)）：
+
+```yaml
+plugins:
+  enabled: true
+  dir: plugins
+  configs:
+    cap-token-usage-tracker:
+      enabled: true
+```
+
+如果插件未安装、未启用或统计路由不可用，CAP 用量页面将无法读取相关数据并报告不可用/读取错误，而不会把插件缺失伪装成零用量。这不会影响 CPA 账号额度等不依赖 CAP 插件的功能。接口行为与数据完整性边界见 [CAP 用量后端接入合同](docs/CAP_USAGE_BACKEND.md)。
 
 ## 界面截图
 
