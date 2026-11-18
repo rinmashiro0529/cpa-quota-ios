@@ -213,13 +213,15 @@ struct CAPFrontendPresentationTests {
         let end = try #require(parser.date(from: "2027-03-31T12:00:00Z"))
         // One month back from Mar 31 lands on Feb 28.
         let window = CAPUsageWindow(now: end, range: .months(try #require(CAPUsageMonthCount(exactly: 1))))
-        #expect(window.start == try #require(parser.date(from: "2027-02-28T12:00:00Z")))
+        let expectedStart = try #require(parser.date(from: "2027-02-28T12:00:00Z"))
+        let partialStart = try #require(parser.date(from: "2027-03-01T00:00:00Z"))
+        #expect(window.start == expectedStart)
         for missing in [nil, "", "not-a-date"] as [String?] {
             #expect(CAPUsagePresentation.retentionCoverage(retainedSince: missing, window: window) == .unknown)
         }
         #expect(CAPUsagePresentation.retentionCoverage(retainedSince: "2027-03-31T12:00:00Z", window: window) == .noOverlap)
         #expect(CAPUsagePresentation.retentionCoverage(retainedSince: "2027-03-01T00:00:00Z", window: window)
-                == .partial(availableStart: try #require(parser.date(from: "2027-03-01T00:00:00Z"))))
+                == .partial(availableStart: partialStart))
         #expect(CAPUsagePresentation.retentionCoverage(retainedSince: "2027-02-28T12:00:00Z", window: window) == .covered)
         #expect(CAPUsagePresentation.retentionCoverage(retainedSince: "2026-01-01T00:00:00Z", window: window) == .covered)
     }
@@ -230,10 +232,11 @@ struct CAPFrontendPresentationTests {
         let window = CAPUsageWindow(now: end, range: .months(try #require(CAPUsageMonthCount(exactly: 1))))
         #expect(CAPUsagePresentation.monthlyRetentionBanner(coverage: .unknown, window: window).contains("尚未确认"))
         #expect(CAPUsagePresentation.monthlyRetentionBanner(coverage: .noOverlap, window: window).contains("没有可用历史"))
+        let availableStart = try #require(parser.date(from: "2027-03-01T00:00:00Z"))
         let partial = CAPUsagePresentation.monthlyRetentionBanner(
-            coverage: .partial(availableStart: try #require(parser.date(from: "2027-03-01T00:00:00Z"))), window: window)
+            coverage: .partial(availableStart: availableStart), window: window)
         #expect(partial.contains("更早时段不可用"))
-        #expect(partial.contains("2027-03-01 00:00:00"))
+        #expect(partial.contains(QuotaFormatter.exactTimestampString(availableStart)))
         #expect(CAPUsagePresentation.monthlyRetentionBanner(coverage: .covered, window: window).contains("仍可能影响完整性"))
     }
 
@@ -282,15 +285,16 @@ struct CAPFrontendPresentationTests {
         let first = try #require(coordinator.overviewPresentation)
         let requestCount = await transport.capturedRequests().count
 
-        let threeHours = CAPUsageRange(hours: 3)
-        coordinator.selectRange(try #require(threeHours))
+        let threeHours = try #require(CAPUsageRange(hours: 3))
+        coordinator.selectRange(threeHours)
         #expect(await transport.capturedRequests().count == requestCount)
         #expect(coordinator.overviewPresentation?.snapshot.window == first.snapshot.window)
         #expect(coordinator.activeWindow == CAPUsageWindow(now: now, range: threeHours))
 
         await coordinator.loadRequestPage()
         let request = try #require(await transport.capturedRequests().last)
-        let query = try #require(URLComponents(url: try #require(request.url), resolvingAgainstBaseURL: false)?.queryItems)
+        let requestURL = try #require(request.url)
+        let query = try #require(URLComponents(url: requestURL, resolvingAgainstBaseURL: false)?.queryItems)
         let formatter = ISO8601DateFormatter()
         #expect(query.first { $0.name == "start" }?.value == formatter.string(from: coordinator.activeWindow.start))
         #expect(query.first { $0.name == "end" }?.value == formatter.string(from: coordinator.activeWindow.end))
@@ -308,7 +312,8 @@ struct CAPFrontendPresentationTests {
         let coordinator = CAPUsageWorkspaceCoordinator(clock: { current })
         coordinator.bind(client: CAPUsageClient(server: try CPAServer(baseURL: "https://cap.example.test"),
             managementKey: try ManagementKey("fixture-only"), transport: transport))
-        coordinator.selectRange(.months(try #require(CAPUsageMonthCount(exactly: 3))))
+        let threeMonths = try #require(CAPUsageRange(months: 3))
+        coordinator.selectRange(threeMonths)
 
         await coordinator.refreshModelOverview()
         let counts = await transport.counts
@@ -318,7 +323,7 @@ struct CAPFrontendPresentationTests {
         #expect(counts["/stats/groups"] == nil)
         #expect(counts["/costs"] == nil)
         let presentation = try #require(coordinator.initialPresentation)
-        #expect(presentation.snapshot.window == CAPUsageWindow(now: now, range: .months(try #require(CAPUsageMonthCount(exactly: 3)))))
+        #expect(presentation.snapshot.window == CAPUsageWindow(now: now, range: threeMonths))
         #expect(presentation.snapshot.value.summary.requests == 5)
         #expect(presentation.initialModels.map { $0.value.model } == ["month-model"])
         // The sample-based overview and request pages never run for this source.
@@ -346,7 +351,8 @@ struct CAPFrontendPresentationTests {
         let monthSnapshot = try #require(coordinator.initialPresentation).snapshot
         #expect(monthSnapshot.window == CAPUsageWindow(now: now, range: oneMonth))
         // 2027-01-15 minus one calendar month in UTC.
-        #expect(monthSnapshot.window.start == try #require(ISO8601DateFormatter().date(from: "2026-12-15T08:00:00Z")))
+        let expectedStart = try #require(ISO8601DateFormatter().date(from: "2026-12-15T08:00:00Z"))
+        #expect(monthSnapshot.window.start == expectedStart)
 
         coordinator.selectRange(.hours(try #require(CAPUsageHourCount(exactly: 2))))
         #expect(!coordinator.selectedRange.isCalendarMonthRange)

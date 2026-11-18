@@ -5,7 +5,7 @@ import FoundationNetworking
 import Observation
 import Testing
 @testable import CPAQuotaKit
-import CPAQuotaUI
+@testable import CPAQuotaUI
 
 private actor WorkspaceCAPTransport: HTTPTransport {
     private let gatedSuffix: String?
