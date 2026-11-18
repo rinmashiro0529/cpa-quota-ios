@@ -140,6 +140,60 @@ public struct QuotaFreshnessLabel: View {
     }
 }
 
+/// Severity tint shared by the detail window view and the compact home rows.
+/// Severity also stays readable through text and symbols when color is not.
+enum QuotaWindowProgressTint {
+    static func tint(for window: WindowPresentation, palette: BrandPalette) -> Color {
+        if window.isOverQuota { return palette.statusError }
+        if window.isLowRemainingWarning { return palette.statusWarn }
+        return palette.accent
+    }
+}
+
+/// A compact home-card window row. The progress bar renders only when the
+/// percentage is known; an unknown ratio never becomes a zero-filled bar.
+public struct QuotaCompactWindowRow: View {
+    public let window: WindowPresentation
+    public let displayMode: QuotaDisplayMode
+    public let maskEmail: Bool
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    public init(window: WindowPresentation, displayMode: QuotaDisplayMode, maskEmail: Bool = true) {
+        self.window = window
+        self.displayMode = displayMode
+        self.maskEmail = maskEmail
+    }
+
+    public var body: some View {
+        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(QuotaFormatter.maskEmails(in: window.title, enabled: maskEmail))
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(palette.textPrimary)
+                Spacer(minLength: 8)
+                Text(window.primaryPercentageText(for: displayMode))
+                    .font(QuotaTypography.dataDetail)
+                    .foregroundStyle(palette.textPrimary)
+                    .monospacedDigit()
+            }
+            if let fraction = window.progressBarFraction(for: displayMode) {
+                ProgressView(value: fraction, total: 1)
+                    .tint(QuotaWindowProgressTint.tint(for: window, palette: palette))
+                    .accessibilityHidden(true)
+            }
+            if let status = window.statusText {
+                Label(status, systemImage: window.isOverQuota ? "exclamationmark.circle" : "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(palette.textPrimary)
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 /// Uses a native determinate progress view only when a percentage is known.
 /// Zero stays zero, and over-quota values remain visible in the text.
 public struct QuotaWindowView: View {
@@ -197,9 +251,7 @@ public struct QuotaWindowView: View {
     }
 
     private func progressTint(_ palette: BrandPalette) -> Color {
-        if window.isOverQuota { return palette.statusError }
-        if window.isLowRemainingWarning { return palette.statusWarn }
-        return palette.accent
+        QuotaWindowProgressTint.tint(for: window, palette: palette)
     }
 }
 #endif

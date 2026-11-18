@@ -5,7 +5,7 @@ import FoundationNetworking
 import Observation
 import Testing
 @testable import CPAQuotaKit
-import CPAQuotaUI
+@testable import CPAQuotaUI
 
 private actor WorkspaceCAPTransport: HTTPTransport {
     private let gatedSuffix: String?
@@ -73,11 +73,11 @@ private actor WorkspaceCAPTransport: HTTPTransport {
 }
 
 enum WorkspaceOperation: CaseIterable, Equatable, Sendable {
-    case overview, details, management, page
+    case overview, details, management, page, modelOverview
     var suffix: String {
         switch self {
         case .overview, .page: "/requests"
-        case .details: "/stats/initial"
+        case .details, .modelOverview: "/stats/initial"
         case .management: "/stats"
         }
     }
@@ -103,6 +103,7 @@ struct CAPWorkspaceReliabilityTests {
         case .details: await coordinator.refreshDetails()
         case .management: await coordinator.refreshManagementStats()
         case .page: await coordinator.loadRequestPage()
+        case .modelOverview: await coordinator.refreshModelOverview(now: now)
         }
     }
 
@@ -112,6 +113,45 @@ struct CAPWorkspaceReliabilityTests {
         case .details: coordinator.store?.details != nil
         case .management: coordinator.managementStats != nil
         case .page: coordinator.requestPage != nil
+        case .modelOverview: coordinator.initialPresentation != nil
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func monthOverviewWaitsForDetailsAndDoesNotResumeAfterCancellation(_ cancel: Bool) async throws {
+        let trendsGate = TestGate()
+        let transport = WorkspaceCAPTransport(gatedSuffix: "/stats/trends", gates: [trendsGate])
+        let coordinator = try coordinator(transport)
+        coordinator.selectRange(try #require(CAPUsageRange(months: 1)))
+        let detailsWindow = coordinator.activeWindow
+        let overviewWindow = CAPUsageWindow(now: now.addingTimeInterval(60), range: coordinator.selectedRange)
+        let store = try #require(coordinator.store)
+        let details = Task { await coordinator.refreshDetails(window: detailsWindow) }
+        await trendsGate.waitForArrivals()
+
+        let started = AsyncStream<Void>.makeStream()
+        let overview = Task { @MainActor in
+            started.continuation.yield(())
+            started.continuation.finish()
+            await store.refreshInitialStats(window: overviewWindow)
+        }
+        for await _ in started.stream { break }
+        #expect(store.trendsState.isLoading)
+        if cancel { coordinator.cancelAll() }
+        await trendsGate.open()
+        await details.value
+        await overview.value
+
+        let paths = await transport.requests().compactMap { $0.url?.lastPathComponent }
+        if cancel {
+            #expect(paths == ["initial", "trends"])
+            #expect(store.initialState.snapshot?.window == detailsWindow)
+        } else {
+            #expect(paths == ["initial", "trends", "groups", "costs", "initial"])
+            #expect(store.trendsState.snapshot?.window == detailsWindow)
+            #expect(store.groupsState.snapshot?.window == detailsWindow)
+            #expect(store.costsState.snapshot?.window == detailsWindow)
+            #expect(store.initialState.snapshot?.window == overviewWindow)
         }
     }
 

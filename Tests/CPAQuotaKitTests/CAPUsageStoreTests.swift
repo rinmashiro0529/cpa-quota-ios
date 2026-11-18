@@ -43,8 +43,50 @@ private actor CAPUsageSupersededTransport: HTTPTransport {
     }
 }
 
+private actor CAPUsageInitialOnlyTransport: HTTPTransport {
+    private(set) var suffixes: [String] = []
+    private var failing = false
+    func failNext() { failing = true }
+    func send(_ request: URLRequest) async throws -> HTTPResponse {
+        let path = request.url?.path ?? ""
+        for suffix in ["/requests", "/stats/initial", "/stats/trends", "/stats/groups", "/costs"] where path.hasSuffix(suffix) {
+            suffixes.append(suffix)
+        }
+        if failing, path.hasSuffix("/stats/initial") {
+            return HTTPResponse(statusCode: 503, headers: [:], body: Data())
+        }
+        if path.hasSuffix("/stats/initial") {
+            let json = #"{"schema_version":1,"generated_at":"fixture","range":"custom","retained_since":"2026-06-30T12:00:00Z","last_used":"fixture","bucket_seconds":300,"summary":{"requests":4},"models":[],"series":[],"sources":[]}"#
+            return HTTPResponse(statusCode: 200, headers: [:], body: Data(json.utf8))
+        }
+        return HTTPResponse(statusCode: 404, headers: [:], body: Data())
+    }
+}
+
 @Suite("CAP observable store")
 struct CAPUsageStoreTests {
+    @Test @MainActor func refreshInitialStatsReadsOnlyTheInitialEndpointAndRetainsSnapshots() async throws {
+        let transport = CAPUsageInitialOnlyTransport()
+        let client = CAPUsageClient(server: try CPAServer(baseURL: "https://example.com"),
+                                    managementKey: try ManagementKey("fixture"), transport: transport)
+        let store = CAPUsageStore(client: client, access: .anonymous)
+        let first = CAPUsageWindow(now: Date(timeIntervalSince1970: 1_800_000_000))
+        await store.refreshInitialStats(window: first)
+        #expect(await transport.suffixes == ["/stats/initial"])
+        #expect(store.initialState.snapshot?.window == first)
+        #expect(store.initialState.error == nil)
+        #expect(store.trendsState.snapshot == nil)
+        #expect(store.groupsState.snapshot == nil)
+        #expect(store.costsState.snapshot == nil)
+
+        let second = CAPUsageWindow(now: Date(timeIntervalSince1970: 1_800_000_600))
+        await transport.failNext()
+        await store.refreshInitialStats(window: second)
+        #expect(await transport.suffixes == ["/stats/initial", "/stats/initial"])
+        #expect(store.initialState.snapshot?.window == first)
+        #expect(store.initialState.error != nil)
+    }
+
     @Test @MainActor func supersedingRefreshCancelsOldPaginationAndKeepsNewWindow() async throws {
         let transport = CAPUsageSupersededTransport()
         let client = CAPUsageClient(server: try CPAServer(baseURL: "https://example.com"),

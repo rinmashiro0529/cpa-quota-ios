@@ -56,7 +56,7 @@ public struct CAPUsageInitialStats: Decodable, Sendable {
     public let schemaVersion: UInt32
     public let generatedAt: String
     public let range: String
-    public let retainedSince: String
+    public let retainedSince: String?
     public let lastUsed: String
     public let bucketSeconds: UInt64
     public let summary: CAPUsageCounters

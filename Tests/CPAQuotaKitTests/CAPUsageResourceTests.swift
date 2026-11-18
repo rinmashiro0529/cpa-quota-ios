@@ -57,6 +57,15 @@ private actor CAPUsageBoundedPageTransport: HTTPTransport {
 
 @Suite("CAP resource requests")
 struct CAPUsageResourceTests {
+    @Test func initialStatsAcceptsOmittedRetentionMetadata() throws {
+        let json = #"{"schema_version":2,"generated_at":"2026-10-28T00:00:00Z","range":"custom","last_used":"2026-10-27T23:45:00Z","bucket_seconds":3600,"summary":{"requests":42},"models":[],"series":[],"sources":[]}"#
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let result = try decoder.decode(CAPUsageInitialStats.self, from: Data(json.utf8))
+        #expect(result.retainedSince == nil)
+        #expect(result.summary.requests == 42)
+    }
+
     @Test func automaticCollectionStopsAtTenPagesAndFiveThousandRows() async throws {
         let transport = CAPUsageBoundedPageTransport(.rowLimit)
         let client = CAPUsageClient(server: try CPAServer(baseURL: "https://example.com"), managementKey: try ManagementKey("fixture"), transport: transport)

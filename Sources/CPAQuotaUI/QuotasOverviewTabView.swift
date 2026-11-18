@@ -44,7 +44,7 @@ public struct QuotasOverviewTabView: View {
             } header: {
                 Text("额度摘要").font(QuotaTypography.brandHeadline)
             } footer: {
-                Text("各窗口独立计算；列表显示最低已知剩余窗口。")
+                Text("各窗口独立计算；Codex 账号按 5 小时 → 7 天分别显示普通额度窗口，其余账号显示最低已知剩余窗口。")
             }
             .listRowBackground(palette.contentSurface)
 
@@ -304,7 +304,16 @@ public struct AccountQuotaCardView: View {
                     .font(.subheadline)
             }
             if let snapshot {
-                if let window = summary.window {
+                if let codexRegular = CodexRegularWindowSelection.select(from: record), !codexRegular.entries.isEmpty {
+                    ForEach(codexRegular.entries, id: \.slot) { entry in
+                        QuotaCompactWindowRow(window: entry.window, displayMode: displayMode, maskEmail: maskEmail)
+                            .accessibilityIdentifier("quota.card.\(account.id).\(entry.slot.rawValue)")
+                    }
+                    if codexRegular.hasHiddenLowQuota {
+                        Label("其他额度窗口有警示，请查看详情", systemImage: "exclamationmark.triangle")
+                            .font(.subheadline)
+                    }
+                } else if let window = summary.window {
                     QuotaLabeledValue(
                         title: QuotaFormatter.maskEmails(in: window.title, enabled: maskEmail),
                         value: window.primaryPercentageText(for: displayMode)

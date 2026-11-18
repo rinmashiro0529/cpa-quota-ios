@@ -160,6 +160,37 @@ public final class CAPUsageWorkspaceCoordinator {
         }
     }
 
+    /// Calendar-month model overview: one explicit read of the existing
+    /// stats/initial endpoint for the selected window. It never scans request
+    /// pages for speed samples, never falls back to another credential, and
+    /// the request-sample overview never mixes into this source.
+    public func refreshModelOverview(now: Date? = nil) async {
+        guard let store, !Task.isCancelled else { return }
+        overviewTask?.cancel()
+        let requestID = UUID()
+        overviewRequestID = requestID
+        let window = CAPUsageWindow(now: now ?? clock(), range: selectedRange)
+        activeWindow = window
+        let currentGen = generation
+        let task = Task { @MainActor in
+            await store.refreshInitialStats(window: window)
+            guard !Task.isCancelled, self.generation == currentGen,
+                  self.overviewRequestID == requestID, self.store === store,
+                  store.initialState.error == nil,
+                  let snapshot = store.initialState.snapshot,
+                  snapshot.window == window else { return }
+            self.initialPresentation = CAPInitialPresentation(snapshot: snapshot)
+        }
+        overviewTask = task
+        await withTaskCancellationHandler {
+            await task.value
+        } onCancel: { task.cancel() }
+        if currentGen == generation, overviewRequestID == requestID {
+            overviewTask = nil
+            overviewRequestID = nil
+        }
+    }
+
     private enum DetailsRead: Sendable {
         case all(CAPUsageResourceQuery)
         case groups(CAPUsageResourceQuery)
@@ -345,29 +376,65 @@ public enum CAPUsagePresentation {
         case .last30Minutes: "30 分钟"
         case .last24Hours: "24 小时"
         case .last7Days: "7 天"
+        case .hours(let hours): "\(hours.value) 小时"
+        case .days(let days): "\(days.value) 天"
+        case .months(let months): "\(months.value) 个月"
         }
+    }
+
+    /// What the plugin's retained-since timestamp proves about one query
+    /// window. Missing or malformed metadata stays unknown, and no state
+    /// claims complete history.
+    public enum CAPRetentionCoverage: Equatable, Sendable {
+        case unknown
+        /// The window ends at or before the retained start: no overlap.
+        case noOverlap
+        /// The retained start falls inside the window; earlier history is
+        /// unavailable from `availableStart` onward.
+        case partial(availableStart: Date)
+        case covered
+    }
+
+    public static func retentionCoverage(retainedSince: String?, window: CAPUsageWindow) -> CAPRetentionCoverage {
+        guard let retainedSince, !retainedSince.isEmpty else { return .unknown }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let standard = ISO8601DateFormatter()
+        guard let retainedStart = fractional.date(from: retainedSince) ?? standard.date(from: retainedSince),
+              retainedStart.timeIntervalSince1970.isFinite else { return .unknown }
+        if retainedStart >= window.end { return .noOverlap }
+        if retainedStart > window.start { return .partial(availableStart: retainedStart) }
+        return .covered
     }
 
     /// A retention timestamp describes available history, not completeness or a
     /// frozen multi-endpoint snapshot. Missing/malformed metadata stays unknown.
     public static func retentionDescription(retainedSince: String?, window: CAPUsageWindow) -> String {
-        guard let retainedSince, !retainedSince.isEmpty else {
+        switch retentionCoverage(retainedSince: retainedSince, window: window) {
+        case .unknown:
             return "服务端保留范围尚未确认；当前结果不能证明所选范围都有数据。"
-        }
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let standard = ISO8601DateFormatter()
-        guard let retainedStart = fractional.date(from: retainedSince) ?? standard.date(from: retainedSince),
-              retainedStart.timeIntervalSince1970.isFinite else {
-            return "服务端保留范围尚未确认；当前结果不能证明所选范围都有数据。"
-        }
-        if retainedStart >= window.end {
+        case .noOverlap:
             return "查询窗口早于服务端保留起点，不能据此认定该时段没有用量。"
-        }
-        if retainedStart > window.start {
+        case .partial:
             return "查询窗口起点早于服务端保留起点，较早时段的数据不可用；不能视为全窗口统计。"
+        case .covered:
+            return "服务端保留起点覆盖此窗口；迟到写入、分页和响应预算仍可能影响完整性。"
         }
-        return "服务端保留起点覆盖此窗口；迟到写入、分页和响应预算仍可能影响完整性。"
+    }
+
+    /// Retention wording for the calendar-month server summary. It names the
+    /// available start for partial coverage and never fills gaps with zeros.
+    public static func monthlyRetentionBanner(coverage: CAPRetentionCoverage, window: CAPUsageWindow) -> String {
+        switch coverage {
+        case .unknown:
+            return "服务端保留范围尚未确认；本汇总不能证明所选月份都有数据。"
+        case .noOverlap:
+            return "所选月份整体早于服务端保留起点，没有可用历史；不能据此认定该时段没有用量。"
+        case .partial(let availableStart):
+            return "服务端保留起点为 \(QuotaFormatter.exactTimestampString(availableStart))，更早时段不可用；本汇总只覆盖保留起点之后的部分。"
+        case .covered:
+            return "服务端保留起点覆盖此窗口；迟到写入与响应预算仍可能影响完整性。"
+        }
     }
 
     public static func windowBadgeText(_ window: CAPUsageWindow, timeZone: TimeZone = .current) -> String {

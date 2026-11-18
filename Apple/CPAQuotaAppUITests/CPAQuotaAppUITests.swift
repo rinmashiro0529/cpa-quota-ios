@@ -168,6 +168,155 @@ final class CPAQuotaAppUITests: XCTestCase {
     }
 
     @MainActor
+    func testQuotaCardShowsRegularCodexWindowsInOrderWithUnknownAndSevenDayOnly() {
+        let app = launch(connected: true)
+        defer { app.terminate() }
+        selectTab("quotas", title: "额度总览", in: app)
+
+        let fiveHour = element("quota.card.ui-main.5h", in: app)
+        let sevenDay = element("quota.card.ui-main.7d", in: app)
+        reveal(fiveHour, in: app, requiresHitTarget: false)
+        reveal(sevenDay, in: app, requiresHitTarget: false)
+        verify(fiveHour.exists && sevenDay.exists, in: app,
+               "The Codex card must show both the 5-hour and 7-day regular windows.")
+        verify(fiveHour.frame.minY < sevenDay.frame.minY, in: app,
+               "The 5-hour row must render above the 7-day row.")
+        verify(fiveHour.label.contains("42% 剩余") && sevenDay.label.contains("91% 剩余"), in: app,
+               "Each row must show its own parsed remaining percentage.")
+        attach(app, name: "quota-card-both-windows")
+
+        let emptyRow = element("quota.card.ui-empty.5h", in: app)
+        reveal(emptyRow, in: app, requiresHitTarget: false)
+        verify(emptyRow.label.contains("0% 剩余"), in: app,
+               "A real exhausted reading must stay a real zero, not unknown.")
+        attach(app, name: "quota-card-exhausted")
+
+        let weekly = element("quota.card.ui-weekly.7d", in: app)
+        reveal(weekly, in: app, requiresHitTarget: false)
+        expectExists(weekly, in: app, timeout: 5)
+        verify(!element("quota.card.ui-weekly.5h", in: app).exists, in: app,
+               "A 7-day-only account must show only its existing window.")
+
+        let unknown = element("quota.card.ui-unknown.5h", in: app)
+        reveal(unknown, in: app, requiresHitTarget: false)
+        expectExists(unknown, in: app, timeout: 5)
+        verify(unknown.label.contains("剩余比例未知"), in: app,
+               "A missing ratio must read as unknown, never as zero.")
+        attach(app, name: "quota-card-unknown-ratio")
+    }
+
+    @MainActor
+    func testCAPRangePanelCancelsWithoutRequestsAndSelectsBoundedHours() {
+        let app = launch(connected: true)
+        defer { app.terminate() }
+        selectTab("usage", title: "CAP 用量", in: app)
+
+        // Cancel first: the selection and the pending window must not change,
+        // and no endpoint read may start.
+        let picker = app.buttons["cap.rangePicker"]
+        reveal(picker, in: app, upward: false)
+        picker.tap()
+        let cancel = app.buttons["cap.range.cancel"]
+        expectExists(cancel, in: app, timeout: 5)
+        cancel.tap()
+        let quickState = textContaining("查看近 30 分钟用量", in: app)
+        reveal(quickState, in: app, requiresHitTarget: false)
+        verify(quickState.label.contains("查看近 30 分钟用量"), in: app,
+               "Canceling the panel must keep the default 30-minute selection.")
+        verify(!app.staticTexts["cap.overview.loaded"].exists, in: app,
+               "Canceling the panel must not trigger any CAP read.")
+        attach(app, name: "cap-range-cancelled")
+
+        // Level one groups by unit; level two lists bounded counts including
+        // the legacy 24-hour boundary entry.
+        reveal(picker, in: app, upward: false)
+        picker.tap()
+        let hoursGroup = app.buttons["cap.range.group.hours"]
+        expectExists(hoursGroup, in: app, timeout: 5)
+        hoursGroup.tap()
+        let hoursList = app.collectionViews.containing(.button, identifier: "cap.range.option").firstMatch
+        expectExists(hoursList, in: app, timeout: 5)
+        let firstHour = hoursList.buttons["1 小时"]
+        expectExists(firstHour, in: app, timeout: 5)
+        let lastHour = hoursList.buttons["24 小时"]
+        // The sheet's lazy list only exposes nearby options in the accessibility tree.
+        for _ in 0..<12 {
+            if lastHour.exists && lastHour.isHittable { break }
+            hoursList.swipeUp()
+        }
+        verify(lastHour.exists && lastHour.isHittable, in: app,
+               "The legacy 24-hour entry must be reachable by scrolling the hour list.")
+        verify(app.buttons["cap.range.cancel"].exists, in: app,
+               "The second level must keep its own cancel action.")
+        let option = hoursList.buttons["3 小时"]
+        for _ in 0..<12 {
+            if option.exists && option.isHittable { break }
+            hoursList.swipeDown()
+        }
+        verify(option.exists && option.isHittable, in: app,
+               "Scrolling back must make the 3-hour option selectable again.")
+        option.tap()
+        let hourState = textContaining("查看近 3 小时用量", in: app)
+        reveal(hourState, in: app, requiresHitTarget: false)
+        verify(hourState.label.contains("查看近 3 小时用量"), in: app,
+               "Confirming a bounded count must update the pending range without reading data.")
+        verify(!app.staticTexts["cap.overview.loaded"].exists, in: app,
+               "Selecting a range alone must not issue a request.")
+        attach(app, name: "cap-range-hours-selected")
+
+        // The manual refresh uses the newly selected window.
+        let load = app.buttons["cap.loadOverview"]
+        reveal(load, in: app)
+        load.tap()
+        let loaded = app.staticTexts["cap.overview.loaded"]
+        reveal(loaded, in: app, requiresHitTarget: false)
+        verify(loaded.exists, in: app,
+               "The explicit overview read must complete against the selected hour window.")
+        attach(app, name: "cap-range-hours-loaded")
+    }
+
+    @MainActor
+    func testCAPMonthOverviewUsesServerSummaryFromInitialOnly() {
+        let app = launch(connected: true)
+        defer { app.terminate() }
+        selectTab("usage", title: "CAP 用量", in: app)
+
+        let picker = app.buttons["cap.rangePicker"]
+        reveal(picker, in: app, upward: false)
+        picker.tap()
+        let monthsGroup = app.buttons["cap.range.group.months"]
+        expectExists(monthsGroup, in: app, timeout: 5)
+        monthsGroup.tap()
+        let monthOption = app.buttons["1 个月"]
+        reveal(monthOption, in: app)
+        monthOption.tap()
+        let monthState = textContaining("查看按月模型汇总", in: app)
+        reveal(monthState, in: app, requiresHitTarget: false)
+        verify(monthState.label.contains("查看按月模型汇总"), in: app,
+               "Selecting a month range must switch the model overview to the server summary source.")
+        verify(!app.staticTexts["cap.overview.loaded"].exists, in: app,
+               "Selecting a month must not run the request-sample overview.")
+        attach(app, name: "cap-range-month-selected")
+
+        let load = app.buttons["cap.loadMonthlyOverview"]
+        reveal(load, in: app)
+        load.tap()
+        let loaded = element("cap.monthly.loaded", in: app)
+        reveal(loaded, in: app, requiresHitTarget: false)
+        verify(loaded.exists, in: app,
+               "The explicit month read must publish the stats/initial server summary.")
+        let summary = textContaining("服务端汇总", in: app)
+        reveal(summary, in: app, requiresHitTarget: false)
+        verify(summary.label.contains("服务端汇总"), in: app,
+               "The month overview must label its server-aggregated source.")
+        let model = textContaining("fixture-model", in: app)
+        reveal(model, in: app, requiresHitTarget: false)
+        verify(model.label.contains("fixture-model"), in: app,
+               "The merged-by-model rows must come from the initial fixture payload.")
+        attach(app, name: "cap-month-overview-loaded")
+    }
+
+    @MainActor
     func testCAPAllFourSectionsReadParsedFixtures() {
         let app = launch(connected: true)
         defer { app.terminate() }

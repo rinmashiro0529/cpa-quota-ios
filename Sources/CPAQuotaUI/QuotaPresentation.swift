@@ -298,6 +298,61 @@ public struct AccountQuotaSummary: Equatable, Sendable {
     }
 }
 
+/// The regular Codex subscription windows the home card can identify. A window
+/// qualifies only through its unprefixed id plus the exact rolling duration;
+/// same-length code-review and additional windows never satisfy this contract.
+public enum CodexRegularWindowSlot: String, CaseIterable, Sendable {
+    case fiveHour = "5h"
+    case sevenDay = "7d"
+
+    public var durationSeconds: TimeInterval {
+        switch self {
+        case .fiveHour: 18_000
+        case .sevenDay: 604_800
+        }
+    }
+}
+
+/// One regular window per slot, ordered 5 小时 → 7 天. Empty entries mean no
+/// target window was recognized and the caller keeps its existing fallback.
+public struct CodexRegularWindowSelection: Equatable, Sendable {
+    public struct Entry: Equatable, Sendable {
+        public let slot: CodexRegularWindowSlot
+        public let window: WindowPresentation
+    }
+
+    public let entries: [Entry]
+    public let hasHiddenLowQuota: Bool
+
+    /// Returns nil only for non-Codex providers, so those accounts keep the
+    /// provider-agnostic card. Duplicate durations prefer a window with a
+    /// usable ratio, then the `primary` id, then the upstream order.
+    public static func select(from record: QuotaRecord?) -> CodexRegularWindowSelection? {
+        let provider = record?.account.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        guard provider == "codex" else { return nil }
+        let windows = record?.snapshot?.windows ?? []
+        var selected: [Entry] = []
+        var selectedOffsets: Set<Int> = []
+        for slot in CodexRegularWindowSlot.allCases {
+            let candidates = windows.enumerated().filter { item in
+                guard item.element.id == "primary" || item.element.id == "secondary" else { return false }
+                return item.element.durationSeconds == slot.durationSeconds
+            }
+            guard let best = candidates.min(by: { lhs, rhs in
+                (lhs.element.usedFraction != nil ? 0 : 1, lhs.element.id == "primary" ? 0 : 1, lhs.offset)
+                    < (rhs.element.usedFraction != nil ? 0 : 1, rhs.element.id == "primary" ? 0 : 1, rhs.offset)
+            }) else { continue }
+            selected.append(Entry(slot: slot, window: WindowPresentation(window: best.element)))
+            selectedOffsets.insert(best.offset)
+        }
+        let hasHiddenLowQuota = !selected.isEmpty && windows.enumerated().contains { item in
+            guard !selectedOffsets.contains(item.offset) else { return false }
+            return WindowPresentation(window: item.element).statusText != nil
+        }
+        return CodexRegularWindowSelection(entries: selected, hasHiddenLowQuota: hasHiddenLowQuota)
+    }
+}
+
 public struct QuotaOverviewSummary: Equatable, Sendable {
     public let accountCount: Int
     public let snapshotCount: Int

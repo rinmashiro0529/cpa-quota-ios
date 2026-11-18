@@ -116,6 +116,23 @@ public final class CAPUsageStore {
         await loadDetails([(.groups, query)], onResourceUpdate: onResourceUpdate)
     }
 
+    /// Reads only the initial server aggregate for one window. The
+    /// calendar-month model overview uses this single read; it never scans
+    /// request pages and never touches trends, groups or costs. Wait for the
+    /// current details batch rather than replacing it with a single read.
+    public func refreshInitialStats(window: CAPUsageWindow,
+                                    onResourceUpdate: (@MainActor @Sendable (CAPUsageDetailResource) -> Void)? = nil) async {
+        guard !Task.isCancelled else { return }
+        if let detailsTask {
+            let token = detailsGeneration
+            await detailsTask.value
+            // Cancellation or a replacement details read supersedes this wait.
+            guard detailsGeneration == token, !Task.isCancelled else { return }
+        }
+        let query = CAPUsageResourceQuery(window: window)
+        await loadDetails([(.initial, query)], onResourceUpdate: onResourceUpdate)
+    }
+
     /// Reuses the failed region's attempted query, including its page offset.
     /// This cannot switch credentials, clear a cooldown or reopen a circuit.
     public func retryDetailResource(_ resource: CAPUsageDetailResource,

@@ -203,3 +203,150 @@ struct TimePresentationBoundaryTests {
         #expect(presentation.connectionPageText == "限流后待验证")
     }
 }
+
+@Suite("Codex home card regular window selection")
+struct CodexHomeWindowSelectionTests {
+    private func codexRecord(_ windows: [QuotaWindow], source: QuotaSource = .live) -> QuotaRecord {
+        let account = CPAAccount(id: "codex-1", authIndex: "index-1", provider: "codex", displayName: "Fixture")
+        return QuotaRecord(account: account, snapshot: QuotaSnapshot(
+            accountID: account.id, provider: account.provider, source: source,
+            fetchedAt: Date(timeIntervalSince1970: 1_800_000_000), windows: windows))
+    }
+
+    @Test func bothRegularWindowsAppearInFiveHourThenSevenDayOrder() {
+        let record = codexRecord([
+            QuotaWindow(id: "primary", title: "5-hour limit", durationSeconds: 18_000, usedFraction: 0.58),
+            QuotaWindow(id: "secondary", title: "7-day limit", durationSeconds: 604_800, usedFraction: 0.09)
+        ])
+        let selection = CodexRegularWindowSelection.select(from: record)
+        #expect(selection != nil)
+        let entries = selection?.entries ?? []
+        #expect(entries.map(\.slot) == [.fiveHour, .sevenDay])
+        #expect(entries[0].window.primaryPercentageText(for: .remaining) == "42% 剩余")
+        #expect(entries[1].window.primaryPercentageText(for: .remaining) == "91% 剩余")
+    }
+
+    @Test func sevenDayWindowKeepsItsOrderEvenWhenItIsThePrimaryId() {
+        let record = codexRecord([
+            QuotaWindow(id: "primary", title: "7-day limit", durationSeconds: 604_800, usedFraction: 0.09),
+            QuotaWindow(id: "secondary", title: "5-hour limit", durationSeconds: 18_000, usedFraction: 0.58)
+        ])
+        let entries = CodexRegularWindowSelection.select(from: record)?.entries ?? []
+        #expect(entries.map(\.slot) == [.fiveHour, .sevenDay])
+        #expect(entries[0].window.id == "secondary")
+    }
+
+    @Test(arguments: [CodexRegularWindowSlot.sevenDay, .fiveHour])
+    func singleRegularWindowShowsOnlyItsOwnRow(_ slot: CodexRegularWindowSlot) {
+        let window = QuotaWindow(id: slot == .sevenDay ? "secondary" : "primary",
+                                 title: slot == .sevenDay ? "7-day limit" : "5-hour limit",
+                                 durationSeconds: slot.durationSeconds, usedFraction: 0.3)
+        let entries = CodexRegularWindowSelection.select(from: codexRecord([window]))?.entries ?? []
+        #expect(entries.map(\.slot) == [slot])
+    }
+
+    @Test func auxiliaryAndMonthlyWindowsNeverSatisfyTheRegularContract() {
+        let record = codexRecord([
+            QuotaWindow(id: "code-review-primary", title: "Code review · 5-hour limit", durationSeconds: 18_000, usedFraction: 0.9),
+            QuotaWindow(id: "code-review-secondary", title: "Code review · 7-day limit", durationSeconds: 604_800, usedFraction: 0.9),
+            QuotaWindow(id: "gpt-5-codex-1-primary", title: "5-hour limit", durationSeconds: 18_000, usedFraction: 0.9),
+            QuotaWindow(id: "primary", title: "Monthly limit", durationSeconds: 2_592_000, usedFraction: 0.5),
+            QuotaWindow(id: "primary", title: "5-hour limit", durationSeconds: 17_999, usedFraction: 0.5)
+        ])
+        let selection = CodexRegularWindowSelection.select(from: record)
+        #expect(selection?.entries.isEmpty == true)
+        // The provider-agnostic fallback keeps describing the same snapshot.
+        let summary = AccountQuotaSummary(record: record)
+        #expect(summary.window?.id == "code-review-primary")
+        #expect(summary.hasLowQuota)
+    }
+
+    @Test func hiddenWindowWarningsStayVisibleOnTheRegularCard() {
+        let healthy = QuotaWindow(id: "primary", title: "5-hour limit", durationSeconds: 18_000, usedFraction: 0.58)
+        let depleted = QuotaWindow(id: "code-review-primary", title: "Code review · 5-hour limit", durationSeconds: 18_000, usedFraction: 1)
+        let limited = QuotaWindow(id: "model-primary", title: "Model limit", durationSeconds: 18_000, allowed: false)
+        let shownLow = QuotaWindow(id: "secondary", title: "7-day limit", durationSeconds: 604_800, usedFraction: 0.95)
+        for auxiliary in [depleted, limited] {
+            let record = codexRecord([healthy, auxiliary])
+            #expect(AccountQuotaSummary(record: record).hasLowQuota)
+            let selection = CodexRegularWindowSelection.select(from: record)
+            #expect(selection?.entries.map(\.slot) == [.fiveHour])
+            #expect(selection?.hasHiddenLowQuota == true)
+        }
+        let shownOnly = CodexRegularWindowSelection.select(from: codexRecord([healthy, shownLow]))
+        #expect(shownOnly?.hasHiddenLowQuota == false)
+    }
+
+    @Test func duplicateDurationsPreferKnownRatioThenPrimaryId() {
+        let unknownPrimary = QuotaWindow(id: "primary", title: "5-hour limit", durationSeconds: 18_000)
+        let knownSecondary = QuotaWindow(id: "secondary", title: "5-hour limit", durationSeconds: 18_000, usedFraction: 0.3)
+        let entries = CodexRegularWindowSelection.select(from: codexRecord([unknownPrimary, knownSecondary]))?.entries ?? []
+        #expect(entries.map(\.window.id) == ["secondary"])
+
+        let knownPrimary = QuotaWindow(id: "primary", title: "5-hour limit", durationSeconds: 18_000, usedFraction: 0.2)
+        let unknownSecondary = QuotaWindow(id: "secondary", title: "5-hour limit", durationSeconds: 18_000)
+        let reordered = CodexRegularWindowSelection.select(from: codexRecord([knownPrimary, unknownSecondary]))?.entries ?? []
+        #expect(reordered.map(\.window.id) == ["primary"])
+
+        // With ratios on both sides, the primary id wins independent of order.
+        let bothKnown = CodexRegularWindowSelection.select(from: codexRecord([unknownSecondary, knownPrimary]))?.entries ?? []
+        #expect(bothKnown.map(\.window.id) == ["primary"])
+    }
+
+    @Test func unknownRatiosStayUnknownWithoutAZeroBar() {
+        let record = codexRecord([
+            QuotaWindow(id: "primary", title: "5-hour limit", durationSeconds: 18_000),
+            QuotaWindow(id: "secondary", title: "7-day limit", durationSeconds: 604_800)
+        ])
+        let entries = CodexRegularWindowSelection.select(from: record)?.entries ?? []
+        #expect(entries.count == 2)
+        for entry in entries {
+            #expect(entry.window.primaryPercentageText(for: .remaining) == "剩余比例未知")
+            #expect(entry.window.progressBarFraction(for: .remaining) == nil)
+            #expect(entry.window.progressBarFraction(for: .used) == nil)
+            #expect(!entry.window.isOverQuota)
+        }
+    }
+
+    @Test func realZeroUsageAndOverQuotaWarningsSurvivePerWindow() {
+        let record = codexRecord([
+            QuotaWindow(id: "primary", title: "5-hour limit", durationSeconds: 18_000, usedFraction: 0,
+                        allowed: false, limitReached: true),
+            QuotaWindow(id: "secondary", title: "7-day limit", durationSeconds: 604_800, usedFraction: 1.0)
+        ])
+        let entries = CodexRegularWindowSelection.select(from: record)?.entries ?? []
+        #expect(entries[0].window.primaryPercentageText(for: .remaining) == "100% 剩余")
+        #expect(entries[0].window.progressBarFraction(for: .remaining) == 1.0)
+        #expect(entries[0].window.statusText == "上游已限制使用")
+        #expect(entries[1].window.primaryPercentageText(for: .used) == "100% 已用")
+        #expect(entries[1].window.statusText == "读数已用完")
+    }
+
+    @Test(arguments: ["codex", "Codex", " codex "])
+    func codexProviderIsMatchedCaseInsensitivelyAfterTrimming(_ provider: String) {
+        let account = CPAAccount(id: "c", authIndex: "i", provider: provider, displayName: "Fixture")
+        let record = QuotaRecord(account: account, snapshot: QuotaSnapshot(
+            accountID: account.id, provider: account.provider, source: .live, fetchedAt: Date(),
+            windows: [QuotaWindow(id: "primary", title: "5-hour limit", durationSeconds: 18_000, usedFraction: 0.5)]))
+        #expect(CodexRegularWindowSelection.select(from: record)?.entries.count == 1)
+    }
+
+    @Test func nonCodexProvidersKeepTheProviderAgnosticCard() {
+        let account = CPAAccount(id: "p", authIndex: "i", provider: "freetier", displayName: "Fixture")
+        let record = QuotaRecord(account: account, snapshot: QuotaSnapshot(
+            accountID: account.id, provider: account.provider, source: .live, fetchedAt: Date(),
+            windows: [QuotaWindow(id: "primary", title: "5-hour limit", durationSeconds: 18_000, usedFraction: 0.5)]))
+        #expect(CodexRegularWindowSelection.select(from: record) == nil)
+        #expect(AccountQuotaSummary(record: record).window?.id == "primary")
+    }
+
+    @Test func passiveRegularWindowsAreSelectedToo() {
+        let record = codexRecord([
+            QuotaWindow(id: "primary", title: "5-hour limit", durationSeconds: 18_000, usedFraction: 0.47),
+            QuotaWindow(id: "secondary", title: "7-day limit", durationSeconds: 604_800, usedFraction: 0.07)
+        ], source: .passive)
+        let entries = CodexRegularWindowSelection.select(from: record)?.entries ?? []
+        #expect(entries.map(\.slot) == [.fiveHour, .sevenDay])
+        #expect(entries[1].window.primaryPercentageText(for: .remaining) == "93% 剩余")
+    }
+}

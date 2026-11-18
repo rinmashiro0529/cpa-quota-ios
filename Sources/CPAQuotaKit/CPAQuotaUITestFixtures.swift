@@ -82,7 +82,7 @@ private struct UITestHTTPTransport: HTTPTransport {
                     }.value
                 }
             }
-            let result = response(json: #"{"files":[{"id":"ui-main","auth_index":"ui-index-main","provider":"codex","label":"主要账号","email":"native@example.com","status":"active","disabled":false,"id_token":{"chatgpt_account_id":"ui-owner","plan_type":"team"}},{"id":"ui-empty","auth_index":"ui-index-empty","provider":"codex","label":"额度已用完","email":"zero@example.com","status":"active","disabled":false},{"id":"ui-plugin","auth_index":"ui-index-plugin","provider":"fixture-plugin","label":"摘要指标账号","email":"summary@example.com","status":"active","disabled":false,"supports_quota":true}]}"#)
+            let result = response(json: #"{"files":[{"id":"ui-main","auth_index":"ui-index-main","provider":"codex","label":"主要账号","email":"native@example.com","status":"active","disabled":false,"id_token":{"chatgpt_account_id":"ui-owner","plan_type":"team"}},{"id":"ui-empty","auth_index":"ui-index-empty","provider":"codex","label":"额度已用完","email":"zero@example.com","status":"active","disabled":false},{"id":"ui-weekly","auth_index":"ui-index-weekly","provider":"codex","label":"仅周窗口","email":"weekly@example.com","status":"active","disabled":false},{"id":"ui-unknown","auth_index":"ui-index-unknown","provider":"codex","label":"比例未知","email":"unknown@example.com","status":"active","disabled":false},{"id":"ui-plugin","auth_index":"ui-index-plugin","provider":"fixture-plugin","label":"摘要指标账号","email":"summary@example.com","status":"active","disabled":false,"supports_quota":true}]}"#)
             if url.host == "slow-ui-test.invalid", let slowResponse {
                 await slowResponse.didReturn()
             }
@@ -96,16 +96,27 @@ private struct UITestHTTPTransport: HTTPTransport {
         }
         if path.hasSuffix("/api-call") {
             let body = try JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]
-            let empty = body?["auth_index"] as? String == "ui-index-empty"
+            let authIndex = body?["auth_index"] as? String
+            let empty = authIndex == "ui-index-empty"
+            let weeklyOnly = authIndex == "ui-index-weekly"
+            let unknownPercent = authIndex == "ui-index-unknown"
             let now = Date().timeIntervalSince1970
+            var rateLimit: [String: Any] = [
+                "allowed": !empty,
+                "limit_reached": empty
+            ]
+            if !weeklyOnly {
+                // An omitted used_percent keeps the ratio unknown instead of zero.
+                var primary: [String: Any] = ["limit_window_seconds": 18_000, "reset_at": now + 3_600]
+                if !unknownPercent {
+                    primary["used_percent"] = empty ? 100 : 58
+                }
+                rateLimit["primary_window"] = primary
+            }
+            rateLimit["secondary_window"] = ["used_percent": 9, "limit_window_seconds": 604_800, "reset_at": now + 86_400]
             let quota: [String: Any] = [
                 "plan_type": "team",
-                "rate_limit": [
-                    "allowed": !empty,
-                    "limit_reached": empty,
-                    "primary_window": ["used_percent": empty ? 100 : 58, "limit_window_seconds": 18_000, "reset_at": now + 3_600],
-                    "secondary_window": ["used_percent": 9, "limit_window_seconds": 604_800, "reset_at": now + 86_400]
-                ],
+                "rate_limit": rateLimit,
                 "credits": ["has_credits": true, "unlimited": false, "balance": 12.5]
             ]
             let encodedQuota = try JSONSerialization.data(withJSONObject: quota)
@@ -147,7 +158,9 @@ private struct UITestHTTPTransport: HTTPTransport {
             return try response(object: common)
         }
         if path.hasSuffix("/stats/initial") {
-            common["retained_since"] = stamp
+            // Keep retention clearly older than any selectable window so the
+            // covered-history path (including calendar months) is exercisable.
+            common["retained_since"] = formatter.string(from: end.addingTimeInterval(-400 * 86_400))
             common["last_used"] = requestTime
             common["bucket_seconds"] = 300
             common["summary"] = summary
