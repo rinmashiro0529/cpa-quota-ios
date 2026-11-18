@@ -158,7 +158,9 @@ private struct UITestHTTPTransport: HTTPTransport {
             return try response(object: common)
         }
         if path.hasSuffix("/stats/initial") {
-            common["retained_since"] = stamp
+            // Keep retention clearly older than any selectable window so the
+            // covered-history path (including calendar months) is exercisable.
+            common["retained_since"] = formatter.string(from: end.addingTimeInterval(-400 * 86_400))
             common["last_used"] = requestTime
             common["bucket_seconds"] = 300
             common["summary"] = summary

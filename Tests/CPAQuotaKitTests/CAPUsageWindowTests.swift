@@ -92,4 +92,53 @@ struct CAPUsageWindowTests {
             }
         }
     }
+
+    @Test func calendarMonthsSubtractWholeUTCMonthsFromTheMinuteEnd() throws {
+        let parser = ISO8601DateFormatter()
+        func monthWindow(_ end: String, months: Int) throws -> CAPUsageWindow {
+            CAPUsageWindow(now: try #require(parser.date(from: end)),
+                           range: .months(try #require(CAPUsageMonthCount(exactly: months))))
+        }
+        func instant(_ text: String) throws -> Date { try #require(parser.date(from: text)) }
+
+        // Mar 31 minus one month pins to February's last day; leap years keep 29.
+        #expect(try monthWindow("2027-03-31T10:20:30Z", months: 1).start == instant("2027-02-28T10:20:00Z"))
+        #expect(try monthWindow("2028-03-31T10:20:00Z", months: 1).start == instant("2028-02-29T10:20:00Z"))
+        // A target month that has the day keeps it; twelve months cross years.
+        #expect(try monthWindow("2027-03-31T10:20:00Z", months: 2).start == instant("2027-01-31T10:20:00Z"))
+        #expect(try monthWindow("2027-11-18T00:00:59Z", months: 12).start == instant("2026-11-18T00:00:00Z"))
+        // Feb 29 across a non-leap boundary pins down.
+        #expect(try monthWindow("2028-02-29T12:00:00Z", months: 12).start == instant("2027-02-28T12:00:00Z"))
+        // The end itself stays on the previous complete minute.
+        let leap = try monthWindow("2028-03-31T10:20:30Z", months: 1)
+        #expect(leap.end == instant("2028-03-31T10:20:00Z"))
+        #expect(leap.start == instant("2028-02-29T10:20:00Z"))
+    }
+
+    @Test func monthRangesHaveNoFixedDurationAndKeepValidatedBounds() throws {
+        let threeMonths = CAPUsageRange.months(try #require(CAPUsageMonthCount(exactly: 3)))
+        #expect(threeMonths.durationSeconds == nil)
+        #expect(threeMonths.isCalendarMonthRange)
+        #expect(!CAPUsageRange.hours(try #require(CAPUsageHourCount(exactly: 3))).isCalendarMonthRange)
+        #expect(!CAPUsageRange.last30Minutes.isCalendarMonthRange)
+        for value in [0, -1, 13, Int.max] {
+            #expect(CAPUsageMonthCount(exactly: value) == nil)
+            #expect(CAPUsageRange(months: value) == nil)
+        }
+        for value in 1...12 { #expect(CAPUsageMonthCount(exactly: value) != nil) }
+        let expected: [CAPUsageRange] = (1...12).compactMap { CAPUsageRange(months: $0) }
+        #expect(CAPUsageRange.monthOptions == expected)
+        #expect(CAPUsageRange.monthOptions.count == 12)
+
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+        let encoded = try encoder.encode(threeMonths)
+        #expect(String(decoding: encoded, as: UTF8.self) == "\"months:3\"")
+        #expect(try decoder.decode(CAPUsageRange.self, from: encoded) == threeMonths)
+        for payload in ["\"months:0\"", "\"months:13\"", "\"months:x\""] {
+            #expect(throws: DecodingError.self) {
+                try decoder.decode(CAPUsageRange.self, from: Data(payload.utf8))
+            }
+        }
+    }
 }

@@ -37,7 +37,10 @@ public struct CAPUsageTabView: View {
     }
     private var displayedWindow: CAPUsageWindow {
         switch selectedSection {
-        case .models: coordinator.overviewPresentation?.snapshot.window ?? coordinator.activeWindow
+        case .models:
+            coordinator.selectedRange.isCalendarMonthRange
+                ? (coordinator.initialPresentation?.snapshot.window ?? coordinator.activeWindow)
+                : (coordinator.overviewPresentation?.snapshot.window ?? coordinator.activeWindow)
         case .details: coordinator.activeWindow
         case .requests: coordinator.requestPagePresentation?.window ?? coordinator.activeWindow
         case .management: coordinator.managementPresentation?.window ?? coordinator.activeWindow
@@ -159,6 +162,16 @@ public struct CAPUsageTabView: View {
     }
 
     @ViewBuilder private var modelsSection: some View {
+        // Month ranges show the server-side aggregate; sample-based speed
+        // metrics never mix into that source and vice versa.
+        if coordinator.selectedRange.isCalendarMonthRange {
+            monthlyModelsSection
+        } else {
+            sampleModelsSection
+        }
+    }
+
+    @ViewBuilder private var sampleModelsSection: some View {
         if let error = coordinator.store?.error {
             CAPSection { CAPErrorNotice(error: error, preservesData: coordinator.overviewPresentation != nil) }
         }
@@ -210,6 +223,71 @@ public struct CAPUsageTabView: View {
                 }
                 .disabled(coordinator.store?.isRefreshing == true)
                 .accessibilityIdentifier("cap.loadOverview")
+            }
+        }
+    }
+
+    /// Server-aggregated month overview. It displays only what stats/initial
+    /// returned for its own window: request counters and per-model totals
+    /// merged by model name. No provider is guessed, no TPS is derived from
+    /// the aggregate, and no request pages are scanned to fill it.
+    @ViewBuilder private var monthlyModelsSection: some View {
+        if let store = coordinator.store {
+            if let presentation = coordinator.initialPresentation {
+                let snapshot = presentation.snapshot
+                let coverage = CAPUsagePresentation.retentionCoverage(
+                    retainedSince: snapshot.value.retainedSince, window: snapshot.window)
+                CAPSection("窗口概览 · 服务端汇总") {
+                    if store.initialState.isShowingPreviousResult || snapshot.window != coordinator.activeWindow {
+                        previousResultLabel
+                    }
+                    CAPValueRow(title: "统计窗口", value: CAPUsagePresentation.windowBadgeText(snapshot.window))
+                        .accessibilityIdentifier("cap.monthly.loaded")
+                    CAPValueRow(title: "生成时间", value: snapshot.value.generatedAt)
+                    CAPValueRow(title: "请求数", value: CAPDisplay.counter(snapshot.value.summary.requests))
+                    CAPValueRow(title: "失败率", value: CAPUsagePresentation.failureRateText(snapshot.value.summary))
+                    CAPValueRow(title: "总 Token", value: CAPDisplay.counter(snapshot.value.summary.totalTokens))
+                    Text(CAPUsagePresentation.monthlyRetentionBanner(coverage: coverage, window: snapshot.window))
+                        .font(.footnote).foregroundStyle(palette.textSecondary)
+                    Text("来源：stats/initial 服务端汇总，按模型名合并；不区分供应商维度，也不由此推导生成速度。")
+                        .font(.footnote).foregroundStyle(palette.textSecondary)
+                    NavigationLink("汇总与保留范围") {
+                        CAPInitialStatsView(presentation: presentation)
+                    }
+                }
+                CAPSection("模型 · 按模型名") {
+                    if coverage == .noOverlap {
+                        CAPEmptyState(title: "没有可用历史", systemImage: "clock.badge.exclamationmark",
+                            detail: "所选月份整体早于服务端保留起点；缺少历史不等于该时段没有用量。")
+                    } else if presentation.initialModels.isEmpty {
+                        CAPEmptyState(title: "服务端汇总未返回模型", systemImage: "tray",
+                            detail: "此结果为 stats/initial 的服务端汇总；未返回模型行不代表该时段没有用量。")
+                    } else {
+                        ForEach(presentation.initialModels) { item in
+                            CAPMonthlyModelRow(row: item.value)
+                        }
+                    }
+                }
+            } else {
+                CAPSection {
+                    CAPEmptyState(title: "查看按月模型汇总", systemImage: "chart.bar.xaxis",
+                        detail: "显式读取 stats/initial 服务端汇总；不扫描请求明细，也不把汇总均值推导为生成速度。")
+                    Button("读取服务端汇总", systemImage: "arrow.clockwise") {
+                        Task { await coordinator.refreshModelOverview() }
+                    }
+                    .disabled(store.initialState.isLoading)
+                    .accessibilityIdentifier("cap.loadMonthlyOverview")
+                }
+            }
+            if store.initialState.isLoading || store.initialState.error != nil {
+                CAPSection {
+                    CAPResourceStatus(state: store.initialState,
+                        generatedAt: store.initialState.snapshot?.value.generatedAt,
+                        showsPreviousLabel: false, selectedWindow: coordinator.activeWindow,
+                        retryDisabled: store.initialState.isLoading) {
+                        Task { await coordinator.retryDetailResource(.initial) }
+                    }
+                }
             }
         }
     }
@@ -433,7 +511,12 @@ public struct CAPUsageTabView: View {
 
     private func refreshCurrentSection() async {
         switch selectedSection {
-        case .models: await coordinator.refreshOverview()
+        case .models:
+            if coordinator.selectedRange.isCalendarMonthRange {
+                await coordinator.refreshModelOverview()
+            } else {
+                await coordinator.refreshOverview()
+            }
         case .details: await coordinator.refreshDetails(groupOffset: 0, groupLimit: groupPageSize)
         case .requests: await coordinator.loadRequestPage(offset: 0, limit: requestPageSize)
         case .management: await coordinator.refreshManagementStats()
@@ -463,7 +546,8 @@ private struct CAPRangeSelectionSheet: View {
     private var groups: [UnitGroup] {
         [
             UnitGroup(id: "hours", title: "按小时", systemImage: "clock", options: CAPUsageRange.hourOptions),
-            UnitGroup(id: "days", title: "按天", systemImage: "calendar.day.timeline.left", options: CAPUsageRange.dayOptions)
+            UnitGroup(id: "days", title: "按天", systemImage: "calendar.day.timeline.left", options: CAPUsageRange.dayOptions),
+            UnitGroup(id: "months", title: "按月", systemImage: "calendar", options: CAPUsageRange.monthOptions)
         ]
     }
 

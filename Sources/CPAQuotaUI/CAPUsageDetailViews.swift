@@ -253,6 +253,24 @@ struct CAPModelRow: View {
     }
 }
 
+/// One server-aggregated model row for the calendar-month overview. Rows are
+/// merged by model name upstream, so no provider is guessed and missing
+/// counters stay unknown rather than zero.
+struct CAPMonthlyModelRow: View {
+    let row: CAPUsageStatRow
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            CAPMetadataText(row.model ?? "未知模型").font(.headline).fontDesign(.monospaced)
+            Text("请求 \(CAPDisplay.counter(row.counters.requests)) · 失败 \(CAPDisplay.counter(row.counters.failedRequests)) · 总 Token \(CAPDisplay.counter(row.counters.totalTokens))")
+                .font(.subheadline).monospacedDigit()
+            Text("服务端汇总 · 按模型名")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 struct CAPModelDetailView: View {
     let item: CAPUsageModelSummary
     let window: CAPUsageWindow

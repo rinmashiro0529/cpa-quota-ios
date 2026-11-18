@@ -38,6 +38,41 @@ private actor CAPPresentationTransport: HTTPTransport {
     }
 }
 
+/// Path-aware synthetic transport for the month overview: only the requested
+/// endpoints ever answer, and each suffix is counted.
+private actor CAPMonthOverviewTransport: HTTPTransport {
+    private(set) var counts: [String: Int] = [:]
+    private var failingInitial = false
+    private(set) var captured: [URLRequest] = []
+
+    func failInitial() { failingInitial = true }
+
+    func send(_ request: URLRequest) async throws -> HTTPResponse {
+        captured.append(request)
+        let path = request.url?.path ?? ""
+        for suffix in ["/requests", "/stats/initial", "/stats/trends", "/stats/groups", "/costs", "/stats"] where path.hasSuffix(suffix) {
+            counts[suffix, default: 0] += 1
+        }
+        if failingInitial, path.hasSuffix("/stats/initial") {
+            return HTTPResponse(statusCode: 503, headers: [:], body: Data())
+        }
+        if path.hasSuffix("/requests") {
+            return HTTPResponse(statusCode: 200, headers: [:],
+                body: Data(#"{"total":0,"offset":0,"limit":50,"items":[]}"#.utf8))
+        }
+        if path.hasSuffix("/stats/initial") {
+            return HTTPResponse(statusCode: 200, headers: [:], body: Data(#"""
+            {"schema_version":1,"generated_at":"month-generated","range":"custom",
+             "retained_since":"2026-06-30T12:00:00Z","last_used":"fixture","bucket_seconds":300,
+             "summary":{"requests":5,"failed_requests":1,"total_tokens":260},
+             "models":[{"model":"month-model","requests":5,"failed_requests":1,"total_tokens":260}],
+             "series":[],"sources":["codex"]}
+            """#.utf8))
+        }
+        return HTTPResponse(statusCode: 404, headers: [:], body: Data())
+    }
+}
+
 @Suite("CAP native presentation preserves query and data meaning")
 struct CAPFrontendPresentationTests {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -155,8 +190,10 @@ struct CAPFrontendPresentationTests {
         #expect(CAPUsagePresentation.rangeTitle(.last7Days) == "7 天")
         #expect(CAPUsagePresentation.rangeTitle(.hours(try #require(CAPUsageHourCount(exactly: 3)))) == "3 小时")
         #expect(CAPUsagePresentation.rangeTitle(.days(try #require(CAPUsageDayCount(exactly: 2)))) == "2 天")
+        #expect(CAPUsagePresentation.rangeTitle(.months(try #require(CAPUsageMonthCount(exactly: 3)))) == "3 个月")
         #expect(CAPUsageRange.hourOptions.map(CAPUsagePresentation.rangeTitle) == (1...24).map { "\($0) 小时" })
         #expect(CAPUsageRange.dayOptions.map(CAPUsagePresentation.rangeTitle) == (1...7).map { "\($0) 天" })
+        #expect(CAPUsageRange.monthOptions.map(CAPUsagePresentation.rangeTitle) == (1...12).map { "\($0) 个月" })
     }
 
     @Test func retentionCannotPromoteUnavailableHistoryToCompleteStatistics() throws {
@@ -169,6 +206,35 @@ struct CAPFrontendPresentationTests {
         #expect(CAPUsagePresentation.retentionDescription(retainedSince: "2026-10-30T12:00:00Z", window: window).contains("不能据此认定"))
         #expect(CAPUsagePresentation.retentionDescription(retainedSince: "2026-10-29T12:00:00.000Z", window: window).contains("不能视为全窗口统计"))
         #expect(CAPUsagePresentation.retentionDescription(retainedSince: "2026-10-23T12:00:00Z", window: window).contains("仍可能影响完整性"))
+    }
+
+    @Test func retentionCoverageSeparatesUnknownNoOverlapPartialAndCovered() throws {
+        let parser = ISO8601DateFormatter()
+        let end = try #require(parser.date(from: "2027-03-31T12:00:00Z"))
+        // One month back from Mar 31 lands on Feb 28.
+        let window = CAPUsageWindow(now: end, range: .months(try #require(CAPUsageMonthCount(exactly: 1))))
+        #expect(window.start == try #require(parser.date(from: "2027-02-28T12:00:00Z")))
+        for missing in [nil, "", "not-a-date"] as [String?] {
+            #expect(CAPUsagePresentation.retentionCoverage(retainedSince: missing, window: window) == .unknown)
+        }
+        #expect(CAPUsagePresentation.retentionCoverage(retainedSince: "2027-03-31T12:00:00Z", window: window) == .noOverlap)
+        #expect(CAPUsagePresentation.retentionCoverage(retainedSince: "2027-03-01T00:00:00Z", window: window)
+                == .partial(availableStart: try #require(parser.date(from: "2027-03-01T00:00:00Z"))))
+        #expect(CAPUsagePresentation.retentionCoverage(retainedSince: "2027-02-28T12:00:00Z", window: window) == .covered)
+        #expect(CAPUsagePresentation.retentionCoverage(retainedSince: "2026-01-01T00:00:00Z", window: window) == .covered)
+    }
+
+    @Test func monthlyRetentionBannerNamesLimitsWithoutFillingZeros() throws {
+        let parser = ISO8601DateFormatter()
+        let end = try #require(parser.date(from: "2027-03-31T12:00:00Z"))
+        let window = CAPUsageWindow(now: end, range: .months(try #require(CAPUsageMonthCount(exactly: 1))))
+        #expect(CAPUsagePresentation.monthlyRetentionBanner(coverage: .unknown, window: window).contains("尚未确认"))
+        #expect(CAPUsagePresentation.monthlyRetentionBanner(coverage: .noOverlap, window: window).contains("没有可用历史"))
+        let partial = CAPUsagePresentation.monthlyRetentionBanner(
+            coverage: .partial(availableStart: try #require(parser.date(from: "2027-03-01T00:00:00Z"))), window: window)
+        #expect(partial.contains("更早时段不可用"))
+        #expect(partial.contains("2027-03-01 00:00:00"))
+        #expect(CAPUsagePresentation.monthlyRetentionBanner(coverage: .covered, window: window).contains("仍可能影响完整性"))
     }
 
     @Test func failureRateKeepsUnknownAndInconsistentCountersUnknown() throws {
@@ -234,6 +300,62 @@ struct CAPFrontendPresentationTests {
         coordinator.selectRange(.last24Hours)
         #expect(coordinator.selectedRange == .last24Hours)
         #expect(coordinator.activeWindow == CAPUsageWindow(now: now, range: .last24Hours))
+    }
+
+    @Test @MainActor func monthOverviewReadsOnlyInitialAndNeverScansRequestPages() async throws {
+        let transport = CAPMonthOverviewTransport()
+        let current = now
+        let coordinator = CAPUsageWorkspaceCoordinator(clock: { current })
+        coordinator.bind(client: CAPUsageClient(server: try CPAServer(baseURL: "https://cap.example.test"),
+            managementKey: try ManagementKey("fixture-only"), transport: transport))
+        coordinator.selectRange(.months(try #require(CAPUsageMonthCount(exactly: 3))))
+
+        await coordinator.refreshModelOverview()
+        let counts = await transport.counts
+        #expect(counts["/stats/initial"] == 1)
+        #expect(counts["/requests"] == nil)
+        #expect(counts["/stats/trends"] == nil)
+        #expect(counts["/stats/groups"] == nil)
+        #expect(counts["/costs"] == nil)
+        let presentation = try #require(coordinator.initialPresentation)
+        #expect(presentation.snapshot.window == CAPUsageWindow(now: now, range: .months(try #require(CAPUsageMonthCount(exactly: 3)))))
+        #expect(presentation.snapshot.value.summary.requests == 5)
+        #expect(presentation.initialModels.map { $0.value.model } == ["month-model"])
+        // The sample-based overview and request pages never run for this source.
+        #expect(coordinator.overviewPresentation == nil)
+        #expect(coordinator.requestPage == nil)
+
+        // A failed month read keeps the previous presentation with its window.
+        let monthWindow = presentation.snapshot.window
+        await transport.failInitial()
+        await coordinator.refreshModelOverview(now: now.addingTimeInterval(600))
+        #expect(coordinator.initialPresentation?.snapshot.window == monthWindow)
+        #expect(coordinator.store?.initialState.error != nil)
+        #expect((await transport.counts)["/stats/initial"] == 2)
+    }
+
+    @Test @MainActor func returningToHourRangesNeverDisplaysMonthDataAsSamples() async throws {
+        let transport = CAPMonthOverviewTransport()
+        let current = now
+        let coordinator = CAPUsageWorkspaceCoordinator(clock: { current })
+        coordinator.bind(client: CAPUsageClient(server: try CPAServer(baseURL: "https://cap.example.test"),
+            managementKey: try ManagementKey("fixture-only"), transport: transport))
+        let oneMonth = CAPUsageRange.months(try #require(CAPUsageMonthCount(exactly: 1)))
+        coordinator.selectRange(oneMonth)
+        await coordinator.refreshModelOverview()
+        let monthSnapshot = try #require(coordinator.initialPresentation).snapshot
+        #expect(monthSnapshot.window == CAPUsageWindow(now: now, range: oneMonth))
+        // 2027-01-15 minus one calendar month in UTC.
+        #expect(monthSnapshot.window.start == try #require(ISO8601DateFormatter().date(from: "2026-12-15T08:00:00Z")))
+
+        coordinator.selectRange(.hours(try #require(CAPUsageHourCount(exactly: 2))))
+        #expect(!coordinator.selectedRange.isCalendarMonthRange)
+        await coordinator.refreshOverview()
+        // The sample overview is its own source; the month summary keeps its window.
+        let sample = try #require(coordinator.overviewPresentation)
+        #expect(sample.snapshot.window == coordinator.activeWindow)
+        #expect(sample.snapshot.window != monthSnapshot.window)
+        #expect(coordinator.initialPresentation?.snapshot.window == monthSnapshot.window)
     }
 
     @Test func paginationStopsAtEmptyLastOrOverflowingPages() {

@@ -73,11 +73,11 @@ private actor WorkspaceCAPTransport: HTTPTransport {
 }
 
 enum WorkspaceOperation: CaseIterable, Equatable, Sendable {
-    case overview, details, management, page
+    case overview, details, management, page, modelOverview
     var suffix: String {
         switch self {
         case .overview, .page: "/requests"
-        case .details: "/stats/initial"
+        case .details, .modelOverview: "/stats/initial"
         case .management: "/stats"
         }
     }
@@ -103,6 +103,7 @@ struct CAPWorkspaceReliabilityTests {
         case .details: await coordinator.refreshDetails()
         case .management: await coordinator.refreshManagementStats()
         case .page: await coordinator.loadRequestPage()
+        case .modelOverview: await coordinator.refreshModelOverview(now: now)
         }
     }
 
@@ -112,6 +113,7 @@ struct CAPWorkspaceReliabilityTests {
         case .details: coordinator.store?.details != nil
         case .management: coordinator.managementStats != nil
         case .page: coordinator.requestPage != nil
+        case .modelOverview: coordinator.initialPresentation != nil
         }
     }
 

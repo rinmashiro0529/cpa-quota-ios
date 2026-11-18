@@ -272,6 +272,47 @@ final class CPAQuotaAppUITests: XCTestCase {
     }
 
     @MainActor
+    func testCAPMonthOverviewUsesServerSummaryFromInitialOnly() {
+        let app = launch(connected: true)
+        defer { app.terminate() }
+        selectTab("usage", title: "CAP 用量", in: app)
+
+        let picker = app.buttons["cap.rangePicker"]
+        reveal(picker, in: app, upward: false)
+        picker.tap()
+        let monthsGroup = app.buttons["cap.range.group.months"]
+        expectExists(monthsGroup, in: app, timeout: 5)
+        monthsGroup.tap()
+        let monthOption = app.buttons["1 个月"]
+        reveal(monthOption, in: app)
+        monthOption.tap()
+        let monthState = textContaining("查看按月模型汇总", in: app)
+        reveal(monthState, in: app, requiresHitTarget: false)
+        verify(monthState.label.contains("查看按月模型汇总"), in: app,
+               "Selecting a month range must switch the model overview to the server summary source.")
+        verify(!app.staticTexts["cap.overview.loaded"].exists, in: app,
+               "Selecting a month must not run the request-sample overview.")
+        attach(app, name: "cap-range-month-selected")
+
+        let load = app.buttons["cap.loadMonthlyOverview"]
+        reveal(load, in: app)
+        load.tap()
+        let loaded = element("cap.monthly.loaded", in: app)
+        reveal(loaded, in: app, requiresHitTarget: false)
+        verify(loaded.exists, in: app,
+               "The explicit month read must publish the stats/initial server summary.")
+        let summary = textContaining("服务端汇总", in: app)
+        reveal(summary, in: app, requiresHitTarget: false)
+        verify(summary.label.contains("服务端汇总"), in: app,
+               "The month overview must label its server-aggregated source.")
+        let model = textContaining("fixture-model", in: app)
+        reveal(model, in: app, requiresHitTarget: false)
+        verify(model.label.contains("fixture-model"), in: app,
+               "The merged-by-model rows must come from the initial fixture payload.")
+        attach(app, name: "cap-month-overview-loaded")
+    }
+
+    @MainActor
     func testCAPAllFourSectionsReadParsedFixtures() {
         let app = launch(connected: true)
         defer { app.terminate() }
