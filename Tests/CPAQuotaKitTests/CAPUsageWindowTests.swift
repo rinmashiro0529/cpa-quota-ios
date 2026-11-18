@@ -101,18 +101,26 @@ struct CAPUsageWindowTests {
         }
         func instant(_ text: String) throws -> Date { try #require(parser.date(from: text)) }
 
-        // Mar 31 minus one month pins to February's last day; leap years keep 29.
-        #expect(try monthWindow("2027-03-31T10:20:30Z", months: 1).start == instant("2027-02-28T10:20:00Z"))
-        #expect(try monthWindow("2028-03-31T10:20:00Z", months: 1).start == instant("2028-02-29T10:20:00Z"))
-        // A target month that has the day keeps it; twelve months cross years.
-        #expect(try monthWindow("2027-03-31T10:20:00Z", months: 2).start == instant("2027-01-31T10:20:00Z"))
-        #expect(try monthWindow("2027-11-18T00:00:59Z", months: 12).start == instant("2026-11-18T00:00:00Z"))
-        // Feb 29 across a non-leap boundary pins down.
-        #expect(try monthWindow("2028-02-29T12:00:00Z", months: 12).start == instant("2027-02-28T12:00:00Z"))
+        let cases: [(end: String, months: Int, start: String)] = [
+            // March 31 clamps to February's last day, including leap years.
+            ("2027-03-31T10:20:30Z", 1, "2027-02-28T10:20:00Z"),
+            ("2028-03-31T10:20:00Z", 1, "2028-02-29T10:20:00Z"),
+            // A target month with the same day keeps it; twelve months cross years.
+            ("2027-03-31T10:20:00Z", 2, "2027-01-31T10:20:00Z"),
+            ("2027-11-18T00:00:59Z", 12, "2026-11-18T00:00:00Z"),
+            ("2028-02-29T12:00:00Z", 12, "2027-02-28T12:00:00Z")
+        ]
+        for sample in cases {
+            let window = try monthWindow(sample.end, months: sample.months)
+            let expectedStart = try instant(sample.start)
+            #expect(window.start == expectedStart)
+        }
         // The end itself stays on the previous complete minute.
         let leap = try monthWindow("2028-03-31T10:20:30Z", months: 1)
-        #expect(leap.end == instant("2028-03-31T10:20:00Z"))
-        #expect(leap.start == instant("2028-02-29T10:20:00Z"))
+        let leapEnd = try instant("2028-03-31T10:20:00Z")
+        let leapStart = try instant("2028-02-29T10:20:00Z")
+        #expect(leap.end == leapEnd)
+        #expect(leap.start == leapStart)
     }
 
     @Test func monthRangesHaveNoFixedDurationAndKeepValidatedBounds() throws {

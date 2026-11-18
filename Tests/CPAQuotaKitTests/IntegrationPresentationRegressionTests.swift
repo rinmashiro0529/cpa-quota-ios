@@ -306,7 +306,7 @@ struct CodexHomeWindowSelectionTests {
         #expect(entries[1].window.statusText == "读数已用完")
     }
 
-    @Test(arguments: [["codex"], ["Codex"], [" codex "]])
+    @Test(arguments: ["codex", "Codex", " codex "])
     func codexProviderIsMatchedCaseInsensitivelyAfterTrimming(_ provider: String) {
         let account = CPAAccount(id: "c", authIndex: "i", provider: provider, displayName: "Fixture")
         let record = QuotaRecord(account: account, snapshot: QuotaSnapshot(
