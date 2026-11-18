@@ -605,11 +605,12 @@ private struct CAPRangeSelectionSheet: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        // Keep dismissal separate from the native Back button in compact toolbars.
         .toolbar { cancelButton }
     }
 
     private var cancelButton: some ToolbarContent {
-        ToolbarItem(placement: .cancellationAction) {
+        ToolbarItem(placement: .primaryAction) {
             Button("取消") { dismiss() }
                 .accessibilityIdentifier("cap.range.cancel")
         }
