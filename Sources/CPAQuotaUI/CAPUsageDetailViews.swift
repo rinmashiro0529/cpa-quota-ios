@@ -368,7 +368,7 @@ struct CAPInitialStatsView: View {
             CAPSection("来源与保留范围") {
                 CAPValueRow(title: "查询窗口", value: CAPUsagePresentation.windowBadgeText(window))
                 CAPValueRow(title: "生成时间", value: initial.generatedAt)
-                CAPValueRow(title: "保留起点", value: initial.retainedSince)
+                CAPValueRow(title: "保留起点", value: initial.retainedSince ?? "未知")
                 Text(CAPUsagePresentation.retentionDescription(retainedSince: initial.retainedSince, window: window))
                     .font(.footnote).foregroundStyle(.secondary)
                 CAPValueRow(title: "最后使用", value: initial.lastUsed)

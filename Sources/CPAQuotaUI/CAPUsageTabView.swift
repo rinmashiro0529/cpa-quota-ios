@@ -244,15 +244,19 @@ public struct CAPUsageTabView: View {
                     CAPValueRow(title: "统计窗口", value: CAPUsagePresentation.windowBadgeText(snapshot.window))
                         .accessibilityIdentifier("cap.monthly.loaded")
                     CAPValueRow(title: "生成时间", value: snapshot.value.generatedAt)
-                    CAPValueRow(title: "请求数", value: CAPDisplay.counter(snapshot.value.summary.requests))
-                    CAPValueRow(title: "失败率", value: CAPUsagePresentation.failureRateText(snapshot.value.summary))
-                    CAPValueRow(title: "总 Token", value: CAPDisplay.counter(snapshot.value.summary.totalTokens))
+                    if coverage != .noOverlap {
+                        CAPValueRow(title: "请求数", value: CAPDisplay.counter(snapshot.value.summary.requests))
+                        CAPValueRow(title: "失败率", value: CAPUsagePresentation.failureRateText(snapshot.value.summary))
+                        CAPValueRow(title: "总 Token", value: CAPDisplay.counter(snapshot.value.summary.totalTokens))
+                    }
                     Text(CAPUsagePresentation.monthlyRetentionBanner(coverage: coverage, window: snapshot.window))
                         .font(.footnote).foregroundStyle(palette.textSecondary)
                     Text("来源：stats/initial 服务端汇总，按模型名合并；不区分供应商维度，也不由此推导生成速度。")
                         .font(.footnote).foregroundStyle(palette.textSecondary)
-                    NavigationLink("汇总与保留范围") {
-                        CAPInitialStatsView(presentation: presentation)
+                    if coverage != .noOverlap {
+                        NavigationLink("汇总与保留范围") {
+                            CAPInitialStatsView(presentation: presentation)
+                        }
                     }
                 }
                 CAPSection("模型 · 按模型名") {

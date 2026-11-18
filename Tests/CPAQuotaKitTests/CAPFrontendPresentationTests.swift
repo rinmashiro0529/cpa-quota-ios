@@ -180,8 +180,8 @@ struct CAPFrontendPresentationTests {
             let window = CAPUsageWindow(now: current, range: range)
             #expect(window.end == now)
             #expect(window.end.timeIntervalSince(window.start) == range.durationSeconds)
-            #expect([1800, 86400, 604800].contains(CAPUsageRange.last30Minutes.durationSeconds))
         }
+        #expect(CAPUsageRange.last30Minutes.durationSeconds == 1800)
     }
 
     @Test func rangeTitlesCoverBoundedOptionsWithoutLegacyDrift() throws {
