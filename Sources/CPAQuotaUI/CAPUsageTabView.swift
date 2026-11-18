@@ -585,7 +585,19 @@ private struct CAPRangeSelectionSheet: View {
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
-            .toolbar { cancelButton }
+        }
+        // Duo can reserve the pushed navigation toolbar for the system Back
+        // button. Keep the sheet's dismiss action independent of that toolbar.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                Divider()
+                Button(action: { dismiss() }) {
+                    Text("取消")
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .accessibilityIdentifier("cap.range.cancel")
+            }
+            .background(.bar)
         }
         .presentationDetents([.medium, .large])
     }
@@ -605,15 +617,6 @@ private struct CAPRangeSelectionSheet: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
-        // Keep dismissal separate from the native Back button in compact toolbars.
-        .toolbar { cancelButton }
-    }
-
-    private var cancelButton: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
-            Button("取消") { dismiss() }
-                .accessibilityIdentifier("cap.range.cancel")
-        }
     }
 
     private func optionRow(_ range: CAPUsageRange) -> some View {
