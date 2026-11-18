@@ -345,6 +345,8 @@ public enum CAPUsagePresentation {
         case .last30Minutes: "30 分钟"
         case .last24Hours: "24 小时"
         case .last7Days: "7 天"
+        case .hours(let hours): "\(hours.value) 小时"
+        case .days(let days): "\(days.value) 天"
         }
     }
 

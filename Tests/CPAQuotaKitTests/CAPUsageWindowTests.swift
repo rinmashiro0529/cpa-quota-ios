@@ -4,9 +4,92 @@ import Testing
 
 @Suite("CAP usage window")
 struct CAPUsageWindowTests {
+    private let end = Date(timeIntervalSince1970: 1_800_000_000)
+
     @Test func thirtyMinutesEndsAtPreviousUTCMInute() {
         let window = CAPUsageWindow(now: Date(timeIntervalSince1970: 1_800_000_059))
         #expect(window.end == Date(timeIntervalSince1970: 1_800_000_000))
         #expect(window.start == Date(timeIntervalSince1970: 1_799_998_200))
+    }
+
+    @Test func boundedRangesUseCompleteMinuteAndRollingDuration() throws {
+        let cases: [(range: CAPUsageRange, duration: TimeInterval)] = [
+            (.last30Minutes, 1_800),
+            (.last24Hours, 86_400),
+            (.last7Days, 604_800),
+            (.hours(try #require(CAPUsageHourCount(exactly: 1))), 3_600),
+            (.hours(try #require(CAPUsageHourCount(exactly: 23))), 82_800),
+            (.days(try #require(CAPUsageDayCount(exactly: 1))), 86_400),
+            (.days(try #require(CAPUsageDayCount(exactly: 6))), 518_400)
+        ]
+        let now = end.addingTimeInterval(59)
+        for sample in cases {
+            let window = CAPUsageWindow(now: now, range: sample.range)
+            #expect(window.end == end)
+            #expect(window.end.timeIntervalSince(window.start) == sample.duration)
+            #expect(sample.range.durationSeconds == sample.duration)
+        }
+    }
+
+    @Test func outOfBoundsCountsAreRejectedAtConstruction() {
+        for value in [0, -1, 25, Int.max] {
+            #expect(CAPUsageHourCount(exactly: value) == nil)
+            #expect(CAPUsageRange(hours: value) == nil)
+        }
+        for value in [0, -1, 8, Int.min] {
+            #expect(CAPUsageDayCount(exactly: value) == nil)
+            #expect(CAPUsageRange(days: value) == nil)
+        }
+        for value in 1...24 { #expect(CAPUsageHourCount(exactly: value) != nil) }
+        for value in 1...7 { #expect(CAPUsageDayCount(exactly: value) != nil) }
+    }
+
+    @Test func selectionOptionsKeepLegacyBoundaryValuesCanonical() throws {
+        #expect(CAPUsageRange.hourOptions.count == 24)
+        #expect(CAPUsageRange.hourOptions.first == .hours(try #require(CAPUsageHourCount(exactly: 1))))
+        #expect(CAPUsageRange.hourOptions.last == .last24Hours)
+        #expect(CAPUsageRange.dayOptions.count == 7)
+        #expect(CAPUsageRange.dayOptions.first == .days(try #require(CAPUsageDayCount(exactly: 1))))
+        #expect(CAPUsageRange.dayOptions.last == .last7Days)
+        let legacy: Set<CAPUsageRange> = [.last30Minutes]
+        #expect(CAPUsageRange.hourOptions.allSatisfy { !legacy.contains($0) })
+        #expect(CAPUsageRange.dayOptions.allSatisfy { !legacy.contains($0) })
+    }
+
+    @Test func codableKeepsLegacySecondsReadableAndRoundTripsNewRanges() throws {
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+        for (range, seconds) in [(CAPUsageRange.last30Minutes, 1_800),
+                                 (CAPUsageRange.last24Hours, 86_400),
+                                 (CAPUsageRange.last7Days, 604_800)] {
+            let data = try encoder.encode(range)
+            #expect(String(decoding: data, as: UTF8.self) == "\(seconds)")
+            #expect(try decoder.decode(CAPUsageRange.self, from: data) == range)
+        }
+        let bounded: [(CAPUsageRange, String)] = [
+            (.hours(try #require(CAPUsageHourCount(exactly: 1))), "hours:1"),
+            (.hours(try #require(CAPUsageHourCount(exactly: 23))), "hours:23"),
+            (.days(try #require(CAPUsageDayCount(exactly: 1))), "days:1"),
+            (.days(try #require(CAPUsageDayCount(exactly: 6))), "days:6")
+        ]
+        for (range, text) in bounded {
+            let data = try encoder.encode(range)
+            #expect(String(decoding: data, as: UTF8.self) == "\"\(text)\"")
+            #expect(try decoder.decode(CAPUsageRange.self, from: data) == range)
+        }
+    }
+
+    @Test func codableRejectsUnknownSecondsMalformedAndOutOfBoundsValues() {
+        let decoder = JSONDecoder()
+        for payload in ["3600", "0", "-1800", "2592000", "7200"] {
+            #expect(throws: DecodingError.self) {
+                try decoder.decode(CAPUsageRange.self, from: Data(payload.utf8))
+            }
+        }
+        for payload in ["\"hours:0\"", "\"hours:25\"", "\"days:8\"", "\"weeks:2\"", "\"hours\"", "\"garbage\"", "\"hours:x\""] {
+            #expect(throws: DecodingError.self) {
+                try decoder.decode(CAPUsageRange.self, from: Data(payload.utf8))
+            }
+        }
     }
 }

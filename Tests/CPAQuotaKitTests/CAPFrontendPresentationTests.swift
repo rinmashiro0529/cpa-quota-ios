@@ -137,13 +137,26 @@ struct CAPFrontendPresentationTests {
         }
     }
 
-    @Test(arguments: CAPUsageRange.allCases)
-    func boundedRangeUsesCompleteMinuteAndElapsedDuration(_ range: CAPUsageRange) {
-        let current = now.addingTimeInterval(37)
-        let window = CAPUsageWindow(now: current, range: range)
-        #expect(window.end == now)
-        #expect(window.end.timeIntervalSince(window.start) == range.duration)
-        #expect([1800, 86400, 604800].contains(range.rawValue))
+    @Test func boundedRangesUseCompleteMinuteAndElapsedDuration() throws {
+        let ranges: [CAPUsageRange] = [.last30Minutes, .last24Hours, .last7Days]
+            + CAPUsageRange.hourOptions + CAPUsageRange.dayOptions
+        for range in ranges {
+            let current = now.addingTimeInterval(37)
+            let window = CAPUsageWindow(now: current, range: range)
+            #expect(window.end == now)
+            #expect(window.end.timeIntervalSince(window.start) == range.durationSeconds)
+            #expect([1800, 86400, 604800].contains(CAPUsageRange.last30Minutes.durationSeconds))
+        }
+    }
+
+    @Test func rangeTitlesCoverBoundedOptionsWithoutLegacyDrift() throws {
+        #expect(CAPUsagePresentation.rangeTitle(.last30Minutes) == "30 分钟")
+        #expect(CAPUsagePresentation.rangeTitle(.last24Hours) == "24 小时")
+        #expect(CAPUsagePresentation.rangeTitle(.last7Days) == "7 天")
+        #expect(CAPUsagePresentation.rangeTitle(.hours(try #require(CAPUsageHourCount(exactly: 3)))) == "3 小时")
+        #expect(CAPUsagePresentation.rangeTitle(.days(try #require(CAPUsageDayCount(exactly: 2)))) == "2 天")
+        #expect(CAPUsageRange.hourOptions.map(CAPUsagePresentation.rangeTitle) == (1...24).map { "\($0) 小时" })
+        #expect(CAPUsageRange.dayOptions.map(CAPUsagePresentation.rangeTitle) == (1...7).map { "\($0) 天" })
     }
 
     @Test func retentionCannotPromoteUnavailableHistoryToCompleteStatistics() throws {
@@ -191,6 +204,36 @@ struct CAPFrontendPresentationTests {
         #expect(query.first { $0.name == "start" }?.value == formatter.string(from: coordinator.activeWindow.start))
         #expect(query.first { $0.name == "end" }?.value == formatter.string(from: coordinator.activeWindow.end))
         #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+    }
+
+    @Test @MainActor func selectingAnHourRangeKeepsOldReadsAndBindsTheNextRead() async throws {
+        let transport = CAPPresentationTransport()
+        let current = now
+        let coordinator = CAPUsageWorkspaceCoordinator(clock: { current })
+        coordinator.bind(client: CAPUsageClient(server: try CPAServer(baseURL: "https://cap.example.test"),
+            managementKey: try ManagementKey("fixture-only"), transport: transport))
+        await coordinator.refreshOverview(now: now)
+        let first = try #require(coordinator.overviewPresentation)
+        let requestCount = await transport.capturedRequests().count
+
+        let threeHours = CAPUsageRange(hours: 3)
+        coordinator.selectRange(try #require(threeHours))
+        #expect(await transport.capturedRequests().count == requestCount)
+        #expect(coordinator.overviewPresentation?.snapshot.window == first.snapshot.window)
+        #expect(coordinator.activeWindow == CAPUsageWindow(now: now, range: threeHours))
+
+        await coordinator.loadRequestPage()
+        let request = try #require(await transport.capturedRequests().last)
+        let query = try #require(URLComponents(url: try #require(request.url), resolvingAgainstBaseURL: false)?.queryItems)
+        let formatter = ISO8601DateFormatter()
+        #expect(query.first { $0.name == "start" }?.value == formatter.string(from: coordinator.activeWindow.start))
+        #expect(query.first { $0.name == "end" }?.value == formatter.string(from: coordinator.activeWindow.end))
+
+        // The hour list's boundary entry keeps the legacy 24-hour value, so a
+        // previously persisted selection stays the canonical representation.
+        coordinator.selectRange(.last24Hours)
+        #expect(coordinator.selectedRange == .last24Hours)
+        #expect(coordinator.activeWindow == CAPUsageWindow(now: now, range: .last24Hours))
     }
 
     @Test func paginationStopsAtEmptyLastOrOverflowingPages() {

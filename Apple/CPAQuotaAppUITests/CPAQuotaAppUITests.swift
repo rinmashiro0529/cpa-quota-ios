@@ -215,6 +215,63 @@ final class CPAQuotaAppUITests: XCTestCase {
     }
 
     @MainActor
+    func testCAPRangePanelCancelsWithoutRequestsAndSelectsBoundedHours() {
+        let app = launch(connected: true)
+        defer { app.terminate() }
+        selectTab("usage", title: "CAP 用量", in: app)
+
+        // Cancel first: the selection and the pending window must not change,
+        // and no endpoint read may start.
+        let picker = app.buttons["cap.rangePicker"]
+        reveal(picker, in: app, upward: false)
+        picker.tap()
+        let cancel = app.buttons["cap.range.cancel"]
+        expectExists(cancel, in: app, timeout: 5)
+        cancel.tap()
+        let quickState = textContaining("查看近 30 分钟用量", in: app)
+        reveal(quickState, in: app, requiresHitTarget: false)
+        verify(quickState.label.contains("查看近 30 分钟用量"), in: app,
+               "Canceling the panel must keep the default 30-minute selection.")
+        verify(!app.staticTexts["cap.overview.loaded"].exists, in: app,
+               "Canceling the panel must not trigger any CAP read.")
+        attach(app, name: "cap-range-cancelled")
+
+        // Level one groups by unit; level two lists bounded counts including
+        // the legacy 24-hour boundary entry.
+        reveal(picker, in: app, upward: false)
+        picker.tap()
+        let hoursGroup = app.buttons["cap.range.group.hours"]
+        expectExists(hoursGroup, in: app, timeout: 5)
+        hoursGroup.tap()
+        let firstHour = app.buttons["1 小时"]
+        expectExists(firstHour, in: app, timeout: 5)
+        verify(app.buttons["24 小时"].exists, in: app,
+               "The legacy 24-hour entry must remain reachable at the end of the hour list.")
+        verify(app.buttons["cap.range.cancel"].exists, in: app,
+               "The second level must keep its own cancel action.")
+        let option = app.buttons["3 小时"]
+        reveal(option, in: app)
+        option.tap()
+        let hourState = textContaining("查看近 3 小时用量", in: app)
+        reveal(hourState, in: app, requiresHitTarget: false)
+        verify(hourState.label.contains("查看近 3 小时用量"), in: app,
+               "Confirming a bounded count must update the pending range without reading data.")
+        verify(!app.staticTexts["cap.overview.loaded"].exists, in: app,
+               "Selecting a range alone must not issue a request.")
+        attach(app, name: "cap-range-hours-selected")
+
+        // The manual refresh uses the newly selected window.
+        let load = app.buttons["cap.loadOverview"]
+        reveal(load, in: app)
+        load.tap()
+        let loaded = app.staticTexts["cap.overview.loaded"]
+        reveal(loaded, in: app, requiresHitTarget: false)
+        verify(loaded.exists, in: app,
+               "The explicit overview read must complete against the selected hour window.")
+        attach(app, name: "cap-range-hours-loaded")
+    }
+
+    @MainActor
     func testCAPAllFourSectionsReadParsedFixtures() {
         let app = launch(connected: true)
         defer { app.terminate() }

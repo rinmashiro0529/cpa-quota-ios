@@ -9,6 +9,7 @@ public struct CAPUsageTabView: View {
     @State private var selectedSection: DetailSection = .models
     @State private var groupPageSize = 50
     @State private var requestPageSize = 50
+    @State private var isPresentingRangePicker = false
 
     public enum DetailSection: String, CaseIterable, Identifiable {
         case models = "近30m模型概览"
@@ -87,16 +88,35 @@ public struct CAPUsageTabView: View {
             }
             .pickerStyle(.menu)
             .accessibilityIdentifier("cap.sectionPicker")
-            Picker("时间范围", selection: Binding(
-                get: { coordinator.selectedRange },
-                set: { coordinator.selectRange($0) }
-            )) {
-                ForEach(CAPUsageRange.allCases, id: \.self) { range in
-                    Text(CAPUsagePresentation.rangeTitle(range)).tag(range)
+            Button {
+                isPresentingRangePicker = true
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text("时间范围")
+                        .font(.subheadline)
+                        .foregroundStyle(palette.textSecondary)
+                    Spacer(minLength: 12)
+                    Text(CAPUsagePresentation.rangeTitle(coordinator.selectedRange))
+                        .font(QuotaTypography.dataDetail)
+                        .foregroundStyle(palette.textPrimary)
+                        .monospacedDigit()
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(palette.textSecondary)
+                        .accessibilityHidden(true)
                 }
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .pickerStyle(.menu)
+            .buttonStyle(.plain)
             .accessibilityIdentifier("cap.rangePicker")
+            .sheet(isPresented: $isPresentingRangePicker) {
+                CAPRangeSelectionSheet(selectedRange: coordinator.selectedRange) { range in
+                    isPresentingRangePicker = false
+                    coordinator.selectRange(range)
+                }
+                .environment(\.capMasksEmail, session.maskEmail)
+            }
             CAPValueRow(title: "所选查询窗口", value: CAPUsagePresentation.windowBadgeText(coordinator.activeWindow))
             if selectedSection == .details {
                 Text("各区域分别标明数据窗口与生成时间。")
@@ -418,6 +438,102 @@ public struct CAPUsageTabView: View {
         case .requests: await coordinator.loadRequestPage(offset: 0, limit: requestPageSize)
         case .management: await coordinator.refreshManagementStats()
         }
+    }
+}
+
+/// iOS 17 two-level range selection. Level one groups by unit plus the
+/// default quick option; level two lists the bounded counts with the current
+/// selection marked. Confirming a specific option closes the panel and only
+/// updates the pending window; cancel or backing out changes nothing and
+/// never issues a request.
+private struct CAPRangeSelectionSheet: View {
+    private struct UnitGroup: Identifiable {
+        let id: String
+        let title: String
+        let systemImage: String
+        let options: [CAPUsageRange]
+
+        func contains(_ range: CAPUsageRange) -> Bool { options.contains(range) }
+    }
+
+    let selectedRange: CAPUsageRange
+    let confirm: (CAPUsageRange) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    private var groups: [UnitGroup] {
+        [
+            UnitGroup(id: "hours", title: "按小时", systemImage: "clock", options: CAPUsageRange.hourOptions),
+            UnitGroup(id: "days", title: "按天", systemImage: "calendar.day.timeline.left", options: CAPUsageRange.dayOptions)
+        ]
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Button {
+                    confirm(.last30Minutes)
+                } label: {
+                    optionRow(.last30Minutes)
+                }
+                .accessibilityIdentifier("cap.range.quick30m")
+                ForEach(groups) { group in
+                    NavigationLink {
+                        optionList(group)
+                    } label: {
+                        HStack {
+                            Label(group.title, systemImage: group.systemImage)
+                            Spacer()
+                            if group.contains(selectedRange) {
+                                Text(CAPUsagePresentation.rangeTitle(selectedRange))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(minHeight: 44)
+                    }
+                    .accessibilityIdentifier("cap.range.group.\(group.id)")
+                }
+            }
+            .navigationTitle("选择时间范围")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { cancelButton }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func optionList(_ group: UnitGroup) -> some View {
+        List {
+            ForEach(group.options, id: \.self) { range in
+                Button {
+                    confirm(range)
+                } label: {
+                    optionRow(range)
+                }
+                .accessibilityIdentifier("cap.range.option")
+            }
+        }
+        .navigationTitle(group.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { cancelButton }
+    }
+
+    private var cancelButton: some ToolbarContent {
+        ToolbarItem(placement: .cancellationAction) {
+            Button("取消") { dismiss() }
+                .accessibilityIdentifier("cap.range.cancel")
+        }
+    }
+
+    private func optionRow(_ range: CAPUsageRange) -> some View {
+        HStack {
+            Text(CAPUsagePresentation.rangeTitle(range))
+            Spacer()
+            if range == selectedRange {
+                Image(systemName: "checkmark")
+                    .accessibilityHidden(true)
+            }
+        }
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
     }
 }
 #endif
