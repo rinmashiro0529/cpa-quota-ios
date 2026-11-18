@@ -582,7 +582,9 @@ private struct CAPRangeSelectionSheet: View {
                 }
             }
             .navigationTitle("选择时间范围")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar { cancelButton }
         }
         .presentationDetents([.medium, .large])
@@ -600,7 +602,9 @@ private struct CAPRangeSelectionSheet: View {
             }
         }
         .navigationTitle(group.title)
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
         .toolbar { cancelButton }
     }
 
