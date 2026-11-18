@@ -57,8 +57,13 @@ private actor CAPMonthOverviewTransport: HTTPTransport {
             return HTTPResponse(statusCode: 503, headers: [:], body: Data())
         }
         if path.hasSuffix("/requests") {
-            return HTTPResponse(statusCode: 200, headers: [:],
-                body: Data(#"{"total":0,"offset":0,"limit":50,"items":[]}"#.utf8))
+            let query = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?.queryItems ?? []
+            guard let offset = query.first(where: { $0.name == "offset" })?.value.flatMap(Int.init),
+                  let limit = query.first(where: { $0.name == "limit" })?.value.flatMap(Int.init) else {
+                throw CAPUsageError.invalidResponse
+            }
+            let body = #"{"total":0,"offset":\#(offset),"limit":\#(limit),"items":[]}"#
+            return HTTPResponse(statusCode: 200, headers: [:], body: Data(body.utf8))
         }
         if path.hasSuffix("/stats/initial") {
             return HTTPResponse(statusCode: 200, headers: [:], body: Data(#"""
@@ -358,6 +363,9 @@ struct CAPFrontendPresentationTests {
         #expect(!coordinator.selectedRange.isCalendarMonthRange)
         await coordinator.refreshOverview()
         // The sample overview is its own source; the month summary keeps its window.
+        let countsAfterSwitch = await transport.counts
+        #expect(countsAfterSwitch["/requests"] == 1)
+        #expect(countsAfterSwitch["/stats/initial"] == 1)
         let sample = try #require(coordinator.overviewPresentation)
         #expect(sample.snapshot.window == coordinator.activeWindow)
         #expect(sample.snapshot.window != monthSnapshot.window)
