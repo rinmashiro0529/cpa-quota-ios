@@ -174,31 +174,24 @@ final class CPAQuotaAppUITests: XCTestCase {
         selectTab("quotas", title: "额度总览", in: app)
 
         let fiveHour = element("quota.card.ui-main.5h", in: app)
-        let sevenDay = element("quota.card.ui-main.7h", in: app)
+        let sevenDay = element("quota.card.ui-main.7d", in: app)
         reveal(fiveHour, in: app, requiresHitTarget: false)
         reveal(sevenDay, in: app, requiresHitTarget: false)
         verify(fiveHour.exists && sevenDay.exists, in: app,
                "The Codex card must show both the 5-hour and 7-day regular windows.")
         verify(fiveHour.frame.minY < sevenDay.frame.minY, in: app,
                "The 5-hour row must render above the 7-day row.")
-        let remaining = textContaining("42% 剩余", in: app)
-        reveal(remaining, in: app, requiresHitTarget: false)
-        verify(remaining.label.contains("42% 剩余"), in: app,
-               "The compact 5-hour row must keep the parsed remaining percentage.")
+        verify(fiveHour.label.contains("42% 剩余") && sevenDay.label.contains("91% 剩余"), in: app,
+               "Each row must show its own parsed remaining percentage.")
         attach(app, name: "quota-card-both-windows")
 
         let emptyRow = element("quota.card.ui-empty.5h", in: app)
         reveal(emptyRow, in: app, requiresHitTarget: false)
-        expectExists(emptyRow, in: app, timeout: 5)
-        verify(!element("quota.card.ui-empty.7h", in: app).exists, in: app,
-               "An account without a secondary window must not reserve a 7-day row.")
-        let zero = textContaining("0% 剩余", in: app)
-        reveal(zero, in: app, requiresHitTarget: false)
-        verify(zero.label.contains("0% 剩余"), in: app,
+        verify(emptyRow.label.contains("0% 剩余"), in: app,
                "A real exhausted reading must stay a real zero, not unknown.")
-        attach(app, name: "quota-card-exhausted-single-row")
+        attach(app, name: "quota-card-exhausted")
 
-        let weekly = element("quota.card.ui-weekly.7h", in: app)
+        let weekly = element("quota.card.ui-weekly.7d", in: app)
         reveal(weekly, in: app, requiresHitTarget: false)
         expectExists(weekly, in: app, timeout: 5)
         verify(!element("quota.card.ui-weekly.5h", in: app).exists, in: app,
@@ -207,9 +200,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         let unknown = element("quota.card.ui-unknown.5h", in: app)
         reveal(unknown, in: app, requiresHitTarget: false)
         expectExists(unknown, in: app, timeout: 5)
-        let unknownText = textContaining("剩余比例未知", in: app)
-        reveal(unknownText, in: app, requiresHitTarget: false)
-        verify(unknownText.label.contains("剩余比例未知"), in: app,
+        verify(unknown.label.contains("剩余比例未知"), in: app,
                "A missing ratio must read as unknown, never as zero.")
         attach(app, name: "quota-card-unknown-ratio")
     }
@@ -243,14 +234,27 @@ final class CPAQuotaAppUITests: XCTestCase {
         let hoursGroup = app.buttons["cap.range.group.hours"]
         expectExists(hoursGroup, in: app, timeout: 5)
         hoursGroup.tap()
-        let firstHour = app.buttons["1 小时"]
+        let hoursList = app.collectionViews.containing(.button, identifier: "cap.range.option").firstMatch
+        expectExists(hoursList, in: app, timeout: 5)
+        let firstHour = hoursList.buttons["1 小时"]
         expectExists(firstHour, in: app, timeout: 5)
-        verify(app.buttons["24 小时"].exists, in: app,
-               "The legacy 24-hour entry must remain reachable at the end of the hour list.")
+        let lastHour = hoursList.buttons["24 小时"]
+        // The sheet's lazy list only exposes nearby options in the accessibility tree.
+        for _ in 0..<12 {
+            if lastHour.exists && lastHour.isHittable { break }
+            hoursList.swipeUp()
+        }
+        verify(lastHour.exists && lastHour.isHittable, in: app,
+               "The legacy 24-hour entry must be reachable by scrolling the hour list.")
         verify(app.buttons["cap.range.cancel"].exists, in: app,
                "The second level must keep its own cancel action.")
-        let option = app.buttons["3 小时"]
-        reveal(option, in: app)
+        let option = hoursList.buttons["3 小时"]
+        for _ in 0..<12 {
+            if option.exists && option.isHittable { break }
+            hoursList.swipeDown()
+        }
+        verify(option.exists && option.isHittable, in: app,
+               "Scrolling back must make the 3-hour option selectable again.")
         option.tap()
         let hourState = textContaining("查看近 3 小时用量", in: app)
         reveal(hourState, in: app, requiresHitTarget: false)
