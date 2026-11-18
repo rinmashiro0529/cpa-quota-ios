@@ -79,6 +79,28 @@ struct CAPUsageWindowTests {
         }
     }
 
+    @Test func boundaryAliasesMatchThePickerAndSerializeAsLegacySeconds() throws {
+        let decoder = JSONDecoder()
+        let encoder = JSONEncoder()
+        let hours = try #require(CAPUsageHourCount(exactly: 24))
+        let days = try #require(CAPUsageDayCount(exactly: 7))
+        let aliases: [(CAPUsageRange?, CAPUsageRange, String, String)] = [
+            (CAPUsageRange(hours: 24), .hours(hours), #""hours:24""#, "86400"),
+            (CAPUsageRange(days: 7), .days(days), #""days:7""#, "604800")
+        ]
+        for (validated, direct, payload, seconds) in aliases {
+            let expected = try decoder.decode(CAPUsageRange.self, from: Data(seconds.utf8))
+            let decoded = try decoder.decode(CAPUsageRange.self, from: Data(payload.utf8))
+            #expect(validated == expected)
+            #expect(decoded == expected)
+            #expect(Set([expected]).contains(direct))
+            let encoded = try encoder.encode(direct)
+            #expect(String(decoding: encoded, as: UTF8.self) == seconds)
+        }
+        // Equal duration alone does not erase the chosen menu unit.
+        #expect(CAPUsageRange(days: 1) != .last24Hours)
+    }
+
     @Test func codableRejectsUnknownSecondsMalformedAndOutOfBoundsValues() {
         let decoder = JSONDecoder()
         for payload in ["3600", "0", "-1800", "2592000", "7200"] {

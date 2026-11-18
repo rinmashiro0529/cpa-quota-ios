@@ -83,12 +83,12 @@ public enum CAPUsageRange: Hashable, Sendable {
     /// Validated entry points for the bounded ranges.
     public init?(hours: Int) {
         guard let count = CAPUsageHourCount(exactly: hours) else { return nil }
-        self = .hours(count)
+        self = hours == 24 ? .last24Hours : .hours(count)
     }
 
     public init?(days: Int) {
         guard let count = CAPUsageDayCount(exactly: days) else { return nil }
-        self = .days(count)
+        self = days == 7 ? .last7Days : .days(count)
     }
 
     public init?(months: Int) {
@@ -98,15 +98,33 @@ public enum CAPUsageRange: Hashable, Sendable {
 
     /// Selection-panel options. The 24-hour and 7-day entries keep the legacy
     /// values so existing selections and serialized seconds stay canonical.
-    public static let hourOptions: [CAPUsageRange] = (1...23).compactMap { count in
-        CAPUsageHourCount(exactly: count).map { CAPUsageRange.hours($0) }
-    } + [.last24Hours]
+    public static let hourOptions: [CAPUsageRange] = (1...24).compactMap { CAPUsageRange(hours: $0) }
 
-    public static let dayOptions: [CAPUsageRange] = (1...6).compactMap { count in
-        CAPUsageDayCount(exactly: count).map { CAPUsageRange.days($0) }
-    } + [.last7Days]
+    public static let dayOptions: [CAPUsageRange] = (1...7).compactMap { CAPUsageRange(days: $0) }
 
     public static let monthOptions: [CAPUsageRange] = CAPUsageMonthCount.allCases.map(CAPUsageRange.months)
+
+    // Public enum cases can construct these aliases directly. Use the same
+    // identity for comparison, hashing and encoding, without erasing units.
+    private enum Representation: Hashable {
+        case legacySeconds(Int)
+        case bounded(unit: String, count: Int)
+    }
+
+    private var representation: Representation {
+        switch self {
+        case .last30Minutes: .legacySeconds(1_800)
+        case .last24Hours: .legacySeconds(86_400)
+        case .last7Days: .legacySeconds(604_800)
+        case .hours(let hours): hours.value == 24 ? .legacySeconds(86_400) : .bounded(unit: "hours", count: hours.value)
+        case .days(let days): days.value == 7 ? .legacySeconds(604_800) : .bounded(unit: "days", count: days.value)
+        case .months(let months): .bounded(unit: "months", count: months.value)
+        }
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool { lhs.representation == rhs.representation }
+
+    public func hash(into hasher: inout Hasher) { hasher.combine(representation) }
 }
 
 extension CAPUsageRange: Codable {
@@ -133,9 +151,9 @@ extension CAPUsageRange: Codable {
         }
         let parsed: CAPUsageRange?
         switch parts[0] {
-        case "hours": parsed = CAPUsageHourCount(exactly: count).map(CAPUsageRange.hours)
-        case "days": parsed = CAPUsageDayCount(exactly: count).map(CAPUsageRange.days)
-        case "months": parsed = CAPUsageMonthCount(exactly: count).map(CAPUsageRange.months)
+        case "hours": parsed = CAPUsageRange(hours: count)
+        case "days": parsed = CAPUsageRange(days: count)
+        case "months": parsed = CAPUsageRange(months: count)
         default: parsed = nil
         }
         guard let parsed else {
@@ -147,13 +165,9 @@ extension CAPUsageRange: Codable {
 
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.singleValueContainer()
-        switch self {
-        case .last30Minutes: try container.encode(1_800)
-        case .last24Hours: try container.encode(86_400)
-        case .last7Days: try container.encode(604_800)
-        case .hours(let hours): try container.encode("hours:\(hours.value)")
-        case .days(let days): try container.encode("days:\(days.value)")
-        case .months(let months): try container.encode("months:\(months.value)")
+        switch representation {
+        case .legacySeconds(let seconds): try container.encode(seconds)
+        case .bounded(let unit, let count): try container.encode("\(unit):\(count)")
         }
     }
 }

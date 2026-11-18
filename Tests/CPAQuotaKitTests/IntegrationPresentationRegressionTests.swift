@@ -261,6 +261,22 @@ struct CodexHomeWindowSelectionTests {
         #expect(summary.hasLowQuota)
     }
 
+    @Test func hiddenWindowWarningsStayVisibleOnTheRegularCard() {
+        let healthy = QuotaWindow(id: "primary", title: "5-hour limit", durationSeconds: 18_000, usedFraction: 0.58)
+        let depleted = QuotaWindow(id: "code-review-primary", title: "Code review · 5-hour limit", durationSeconds: 18_000, usedFraction: 1)
+        let limited = QuotaWindow(id: "model-primary", title: "Model limit", durationSeconds: 18_000, allowed: false)
+        let shownLow = QuotaWindow(id: "secondary", title: "7-day limit", durationSeconds: 604_800, usedFraction: 0.95)
+        for auxiliary in [depleted, limited] {
+            let record = codexRecord([healthy, auxiliary])
+            #expect(AccountQuotaSummary(record: record).hasLowQuota)
+            let selection = CodexRegularWindowSelection.select(from: record)
+            #expect(selection?.entries.map(\.slot) == [.fiveHour])
+            #expect(selection?.hasHiddenLowQuota == true)
+        }
+        let shownOnly = CodexRegularWindowSelection.select(from: codexRecord([healthy, shownLow]))
+        #expect(shownOnly?.hasHiddenLowQuota == false)
+    }
+
     @Test func duplicateDurationsPreferKnownRatioThenPrimaryId() {
         let unknownPrimary = QuotaWindow(id: "primary", title: "5-hour limit", durationSeconds: 18_000)
         let knownSecondary = QuotaWindow(id: "secondary", title: "5-hour limit", durationSeconds: 18_000, usedFraction: 0.3)

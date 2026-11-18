@@ -309,6 +309,10 @@ public struct AccountQuotaCardView: View {
                         QuotaCompactWindowRow(window: entry.window, displayMode: displayMode, maskEmail: maskEmail)
                             .accessibilityIdentifier("quota.card.\(account.id).\(entry.slot.rawValue)")
                     }
+                    if codexRegular.hasHiddenLowQuota {
+                        Label("其他额度窗口有警示，请查看详情", systemImage: "exclamationmark.triangle")
+                            .font(.subheadline)
+                    }
                 } else if let window = summary.window {
                     QuotaLabeledValue(
                         title: QuotaFormatter.maskEmails(in: window.title, enabled: maskEmail),

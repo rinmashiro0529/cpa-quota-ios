@@ -322,6 +322,7 @@ public struct CodexRegularWindowSelection: Equatable, Sendable {
     }
 
     public let entries: [Entry]
+    public let hasHiddenLowQuota: Bool
 
     /// Returns nil only for non-Codex providers, so those accounts keep the
     /// provider-agnostic card. Duplicate durations prefer a window with a
@@ -331,6 +332,7 @@ public struct CodexRegularWindowSelection: Equatable, Sendable {
         guard provider == "codex" else { return nil }
         let windows = record?.snapshot?.windows ?? []
         var selected: [Entry] = []
+        var selectedOffsets: Set<Int> = []
         for slot in CodexRegularWindowSlot.allCases {
             let candidates = windows.enumerated().filter { item in
                 guard item.element.id == "primary" || item.element.id == "secondary" else { return false }
@@ -341,8 +343,13 @@ public struct CodexRegularWindowSelection: Equatable, Sendable {
                     < (rhs.element.usedFraction != nil ? 0 : 1, rhs.element.id == "primary" ? 0 : 1, rhs.offset)
             }) else { continue }
             selected.append(Entry(slot: slot, window: WindowPresentation(window: best.element)))
+            selectedOffsets.insert(best.offset)
         }
-        return CodexRegularWindowSelection(entries: selected)
+        let hasHiddenLowQuota = !selected.isEmpty && windows.enumerated().contains { item in
+            guard !selectedOffsets.contains(item.offset) else { return false }
+            return WindowPresentation(window: item.element).statusText != nil
+        }
+        return CodexRegularWindowSelection(entries: selected, hasHiddenLowQuota: hasHiddenLowQuota)
     }
 }
 
