@@ -105,7 +105,8 @@ struct FrontendCloudIntegrationTests {
             preferences: prefs,
             clientFactory: { server, key in
                 CPAClient(server: server, managementKey: key, transport: transport)
-            }
+            },
+            chatWorkspace: .isolatedForTests()
         )
 
         await session.connect(
@@ -161,7 +162,8 @@ struct FrontendCloudIntegrationTests {
         let transport = FrontendCAPMockTransport()
         let session = CPAQuotaSession(
             credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore(),
-            clientFactory: { server, key in CPAClient(server: server, managementKey: key, transport: transport) }
+            clientFactory: { server, key in CPAClient(server: server, managementKey: key, transport: transport) },
+            chatWorkspace: .isolatedForTests()
         )
         await session.connect(serverAddress: "https://cpa.example.test", managementKeyInput: "synthetic-key", rememberInKeychain: false)
         let before = await transport.recordedCount()

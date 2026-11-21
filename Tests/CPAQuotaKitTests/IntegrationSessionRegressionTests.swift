@@ -106,7 +106,8 @@ struct IntegrationSessionRegressionTests {
             preferences: preferences,
             clientFactory: { server, key in
                 CPAClient(server: server, managementKey: key, transport: transport)
-            }
+            },
+            chatWorkspace: .isolatedForTests()
         )
     }
 
@@ -449,7 +450,8 @@ struct IntegrationSessionRegressionTests {
             preferences: preferences,
             clientFactory: { server, key in
                 CPAClient(server: server, managementKey: key, transport: transport)
-            }
+            },
+            chatWorkspace: .isolatedForTests()
         )
 
         await session.connect(
@@ -651,7 +653,8 @@ struct IntegrationSessionRegressionTests {
             preferences: preferences,
             clientFactory: { server, key in
                 CPAClient(server: server, managementKey: key, transport: transport)
-            }
+            },
+            chatWorkspace: .isolatedForTests()
         )
         await session.restoreSessionIfAvailable()
 

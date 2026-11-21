@@ -20,7 +20,8 @@ struct CPAQuotaUITests {
             preferences: prefs,
             clientFactory: { server, key in
                 CPAClient(server: server, managementKey: key, transport: transport)
-            }
+            },
+            chatWorkspace: .isolatedForTests()
         )
 
         #expect(session.authState == .unconfigured)
@@ -44,7 +45,8 @@ struct CPAQuotaUITests {
             preferences: prefs,
             clientFactory: { server, key in
                 CPAClient(server: server, managementKey: key, transport: transport)
-            }
+            },
+            chatWorkspace: .isolatedForTests()
         )
         await restoredSession.restoreSessionIfAvailable()
         #expect(restoredSession.authState == .connected(server: expectedServer, isRememberedInKeychain: true))
@@ -69,7 +71,8 @@ struct CPAQuotaUITests {
             preferences: prefs,
             clientFactory: { server, key in
                 CPAClient(server: server, managementKey: key, transport: transport)
-            }
+            },
+            chatWorkspace: .isolatedForTests()
         )
 
         await session.connect(
@@ -103,7 +106,8 @@ struct CPAQuotaUITests {
             preferences: prefs,
             clientFactory: { server, key in
                 CPAClient(server: server, managementKey: key, transport: transport)
-            }
+            },
+            chatWorkspace: .isolatedForTests()
         )
 
         await session.connect(

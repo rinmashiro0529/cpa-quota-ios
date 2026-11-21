@@ -3,6 +3,7 @@ import Foundation
 import FoundationNetworking
 #endif
 @testable import CPAQuotaKit
+@testable import CPAQuotaChat
 
 /// Path-keyed stub transport for catalog/discovery endpoints, simpler than
 /// `ScenarioTransport` which is wired for quota flows.
@@ -35,5 +36,12 @@ actor StubHTTPTransport: HTTPTransport {
             return HTTPResponse(statusCode: 404, headers: [:], body: Data())
         }
         return HTTPResponse(statusCode: stub.status, headers: stub.headers, body: stub.body)
+    }
+}
+
+extension ChatWorkspaceModel {
+    /// In-memory chat workspace so session tests never touch the Keychain or app-support files.
+    @MainActor static func isolatedForTests() -> ChatWorkspaceModel {
+        ChatWorkspaceModel(persistence: ChatMemoryPersistence(), secrets: MemorySecretStore())
     }
 }

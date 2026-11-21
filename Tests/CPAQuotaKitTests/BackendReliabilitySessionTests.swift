@@ -10,10 +10,11 @@ struct BackendReliabilitySessionTests {
         let active = try ScenarioTransport(accounts: [FixtureAccount("a")])
         let candidate = try ScenarioTransport(accounts: [FixtureAccount("b")])
         await candidate.setAccountStatus(401)
-        let session = CPAQuotaSession(credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore()) { server, key in
+        let session = CPAQuotaSession(credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore(),
+                                      clientFactory: { server, key in
             CPAClient(server: server, managementKey: key,
                       transport: server.identifier == "https://a.example" ? active : candidate)
-        }
+        }, chatWorkspace: .isolatedForTests())
         #expect(await session.makeCAPUsageClient() == nil)
         await session.connect(serverAddress: "https://a.example", managementKeyInput: "fixture-key", rememberInKeychain: true)
         await session.connect(serverAddress: "https://b.example", managementKeyInput: "fixture-key", rememberInKeychain: true)
@@ -35,9 +36,10 @@ struct BackendReliabilitySessionTests {
         let transport = try ScenarioTransport(accounts: [FixtureAccount("a")])
         let gate = TestGate()
         await transport.setInventoryGate(gate)
-        let session = CPAQuotaSession(credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore()) { server, key in
+        let session = CPAQuotaSession(credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore(),
+                                      clientFactory: { server, key in
             CPAClient(server: server, managementKey: key, transport: transport)
-        }
+        }, chatWorkspace: .isolatedForTests())
         let task = Task { await session.connect(serverAddress: "https://a.example", managementKeyInput: "fixture-key", rememberInKeychain: true) }
         await gate.waitForArrivals()
         #expect(!session.isWorkspaceReady)
@@ -53,10 +55,11 @@ struct BackendReliabilitySessionTests {
         let candidate = try ScenarioTransport(accounts: [FixtureAccount("b")])
         let gate = TestGate()
         await candidate.setInventoryGate(gate)
-        let session = CPAQuotaSession(credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore()) { server, key in
+        let session = CPAQuotaSession(credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore(),
+                                      clientFactory: { server, key in
             CPAClient(server: server, managementKey: key,
                       transport: server.identifier == "https://a.example" ? active : candidate)
-        }
+        }, chatWorkspace: .isolatedForTests())
         await session.connect(serverAddress: "https://a.example", managementKeyInput: "fixture-key", rememberInKeychain: true)
         let snapshot = session.records["a"]?.snapshot
         let task = Task { await session.connect(serverAddress: "https://b.example", managementKeyInput: "fixture-key", rememberInKeychain: true) }
@@ -75,10 +78,11 @@ struct BackendReliabilitySessionTests {
         let active = try ScenarioTransport(accounts: [FixtureAccount("a")])
         let candidate = try ScenarioTransport(accounts: [FixtureAccount("b")])
         await candidate.setAccountStatus(401)
-        let session = CPAQuotaSession(credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore()) { server, key in
+        let session = CPAQuotaSession(credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore(),
+                                      clientFactory: { server, key in
             CPAClient(server: server, managementKey: key,
                       transport: server.identifier == "https://a.example" ? active : candidate)
-        }
+        }, chatWorkspace: .isolatedForTests())
         await session.connect(serverAddress: "https://a.example", managementKeyInput: "fixture-key", rememberInKeychain: true)
         let snapshot = session.records["a"]?.snapshot
         #expect(snapshot != nil)
@@ -99,9 +103,10 @@ struct AuditConnectionAcceptanceTests {
         let transport = try ScenarioTransport(accounts: [FixtureAccount("a")])
         let providerGate = TestGate()
         await transport.setProviderGate(providerGate)
-        let session = CPAQuotaSession(credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore()) { server, key in
+        let session = CPAQuotaSession(credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore(),
+                                      clientFactory: { server, key in
             CPAClient(server: server, managementKey: key, transport: transport)
-        }
+        }, chatWorkspace: .isolatedForTests())
         session.isPresentingConnectionSheet = true
         let task = Task { await session.connect(serverAddress: "https://a.example", managementKeyInput: "fixture-key", rememberInKeychain: true) }
         await providerGate.waitForArrivals()
@@ -124,10 +129,11 @@ struct AuditConnectionAcceptanceTests {
         let replacement = try ScenarioTransport(accounts: [FixtureAccount("b")])
         let quotaGate = TestGate()
         await active.setGate(quotaGate, for: "index-a")
-        let session = CPAQuotaSession(credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore()) { server, key in
+        let session = CPAQuotaSession(credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore(),
+                                      clientFactory: { server, key in
             CPAClient(server: server, managementKey: key,
                       transport: server.identifier == "https://a.example" ? active : replacement)
-        }
+        }, chatWorkspace: .isolatedForTests())
         let task = Task { await session.connect(serverAddress: "https://a.example", managementKeyInput: "fixture-key", rememberInKeychain: false) }
         await quotaGate.waitForArrivals()
         #expect(session.isWorkspaceReady)
@@ -155,10 +161,11 @@ struct AuditConnectionAcceptanceTests {
         await candidate.setInventoryGate(gate)
         let credentials = MemoryCredentialStore()
         let preferences = MemoryPreferencesStore()
-        let session = CPAQuotaSession(credentialStore: credentials, preferences: preferences) { server, key in
+        let session = CPAQuotaSession(credentialStore: credentials, preferences: preferences,
+                                      clientFactory: { server, key in
             CPAClient(server: server, managementKey: key,
                       transport: server.identifier == "https://a.example" ? active : candidate)
-        }
+        }, chatWorkspace: .isolatedForTests())
         await session.connect(serverAddress: "https://a.example", managementKeyInput: "old-fixture-key", rememberInKeychain: true)
         let prior = session.records["a"]?.snapshot
         session.serverAddressDraft = "https://b.example"
@@ -189,9 +196,10 @@ struct AuditConnectionAcceptanceTests {
 
     @Test func dismissImmediatelyAfterSubmitPreventsAnUnstartedTaskFromConnecting() async throws {
         let transport = try ScenarioTransport(accounts: [FixtureAccount("a")])
-        let session = CPAQuotaSession(credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore()) { server, key in
+        let session = CPAQuotaSession(credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore(),
+                                      clientFactory: { server, key in
             CPAClient(server: server, managementKey: key, transport: transport)
-        }
+        }, chatWorkspace: .isolatedForTests())
         session.isPresentingConnectionSheet = true
         session.serverAddressDraft = "https://a.example"
         session.managementKeyDraft = "fixture-key"
@@ -213,9 +221,10 @@ struct AuditConnectionAcceptanceTests {
     @Test func initialQuotaFailureCanRetryJustItsAccountWithoutDiscardingOthers() async throws {
         let transport = try ScenarioTransport(accounts: [FixtureAccount("a"), FixtureAccount("b")])
         await transport.setReply(FixtureReply(failure: CPAError(.network)), for: "index-b")
-        let session = CPAQuotaSession(credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore()) { server, key in
+        let session = CPAQuotaSession(credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore(),
+                                      clientFactory: { server, key in
             CPAClient(server: server, managementKey: key, transport: transport)
-        }
+        }, chatWorkspace: .isolatedForTests())
         await session.connect(serverAddress: "https://a.example", managementKeyInput: "fixture-key", rememberInKeychain: false)
         #expect(session.isWorkspaceReady)
         let preserved = session.records["a"]?.snapshot
@@ -239,9 +248,10 @@ struct CooldownRecoveryProjectionTests {
     @Test func elapsedGlobalCooldownRequiresASuccessfulResponseBeforeConnected() async throws {
         let base = try ScenarioTransport(accounts: [FixtureAccount("a")])
         let transport = FaultInjectingTransport(base: base)
-        let session = CPAQuotaSession(credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore()) { server, key in
+        let session = CPAQuotaSession(credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore(),
+                                      clientFactory: { server, key in
             CPAClient(server: server, managementKey: key, transport: transport)
-        }
+        }, chatWorkspace: .isolatedForTests())
         await session.connect(serverAddress: "https://cooldown.example", managementKeyInput: "fixture-key", rememberInKeychain: false)
         let now = Date()
         let deadline = now.addingTimeInterval(30)
@@ -261,9 +271,10 @@ struct CooldownRecoveryProjectionTests {
     func cancelledRetryCannotEraseThePreviousFailure(_ kind: CPAError.Kind) async throws {
         let base = try ScenarioTransport(accounts: [FixtureAccount("a")])
         let transport = FaultInjectingTransport(base: base)
-        let session = CPAQuotaSession(credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore()) { server, key in
+        let session = CPAQuotaSession(credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore(),
+                                      clientFactory: { server, key in
             CPAClient(server: server, managementKey: key, transport: transport)
-        }
+        }, chatWorkspace: .isolatedForTests())
         await session.connect(serverAddress: "https://retry.example", managementKeyInput: "fixture-key", rememberInKeychain: false)
         let snapshot = try #require(session.records["a"]?.snapshot)
         let failure = CPAError(kind, layer: .management, retryAfter: kind == .rateLimited ? Date(timeIntervalSince1970: 0) : nil)

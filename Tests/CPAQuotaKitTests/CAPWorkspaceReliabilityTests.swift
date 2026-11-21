@@ -218,7 +218,7 @@ struct CAPWorkspaceReliabilityTests {
         let session = CPAQuotaSession(credentialStore: credentials, preferences: preferences,
                                       clientFactory: { server, key in
             CPAClient(server: server, managementKey: key, transport: transport)
-        })
+        }, chatWorkspace: .isolatedForTests())
         await session.connect(serverAddress: "https://a.example.test", managementKeyInput: "synthetic-a", rememberInKeychain: false)
         if restoring {
             let server = try CPAServer(baseURL: "https://b.example.test")
