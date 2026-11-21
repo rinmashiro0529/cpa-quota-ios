@@ -62,13 +62,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-15
-            xcode: '26.2'
-            major: '26'
-            runtime: '26.2'
-            device: 'iPhone 17 Pro'
-            layout: standard-iphone
-            evidence: xcode26-iphone17pro
           - runner: xcode-27
             xcode: '27.1'
             major: '27'

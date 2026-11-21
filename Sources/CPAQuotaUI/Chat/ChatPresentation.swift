@@ -1,0 +1,121 @@
+import Foundation
+import CPAQuotaKit
+import CPAQuotaChat
+#if os(iOS)
+import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
+
+/// User-facing copy for chat failures. The client API key is never part of any text.
+public struct ChatFailurePresentation: Equatable, Sendable {
+    public let title: String
+    public let summary: String
+    public let symbolName: String
+    public let severity: ErrorSeverityLevel
+
+    public init(_ failure: ChatFailure) {
+        switch failure {
+        case .missingAPIKey:
+            title = "尚未选择 API Key"
+            summary = "请在对话设置中选择或填写一把 CPA 客户端 API Key，再重新发送。"
+            symbolName = "key.slash"
+            severity = .warning
+        case .missingModel:
+            title = "尚未选择模型"
+            summary = "请先从 CPA 提供的模型列表中选择一个模型。"
+            symbolName = "cpu"
+            severity = .warning
+        case .unauthorized(let status):
+            title = "API Key 鉴权失败"
+            summary = "CPA 拒绝了当前客户端 API Key（HTTP \(status)）。请在对话设置中重新选择或更换 Key。"
+            symbolName = "lock.trianglebadge.exclamationmark"
+            severity = .critical
+        case .forbidden(let status):
+            title = "无权使用此模型"
+            summary = "当前 API Key 没有调用此模型的权限（HTTP \(status)）。可以换用其他模型或 Key。"
+            symbolName = "hand.raised"
+            severity = .warning
+        case .modelUnavailable(let status):
+            title = "模型不可用"
+            summary = "CPA 未找到或暂时无法提供此模型（HTTP \(status)）。请刷新模型列表后重新选择。"
+            symbolName = "questionmark.square.dashed"
+            severity = .warning
+        case .rateLimited(let retryAfter):
+            title = "请求过于频繁"
+            if let retryAfter {
+                summary = "CPA 或上游触发了限流，可在 \(retryAfter.formatted(date: .omitted, time: .shortened)) 之后重试。"
+            } else {
+                summary = "CPA 或上游触发了限流，请稍后重试。"
+            }
+            symbolName = "hourglass"
+            severity = .warning
+        case .upstream(let status):
+            title = "模型服务响应异常"
+            summary = "CPA 或上游返回了错误（HTTP \(status)）。已生成的内容会保留，可以重新生成。"
+            symbolName = "exclamationmark.icloud"
+            severity = .warning
+        case .network:
+            title = "网络连接失败"
+            summary = "无法安全连接到 CPA 服务。请检查网络后重新生成。"
+            symbolName = "wifi.exclamationmark"
+            severity = .warning
+        case .timeout:
+            title = "等待回复超时"
+            summary = "模型长时间没有返回内容，已结束本次请求。"
+            symbolName = "clock.badge.exclamationmark"
+            severity = .warning
+        case .invalidResponse:
+            title = "回复格式无法识别"
+            summary = "CPA 返回的数据不是可识别的对话格式。可以换用其他模型重试。"
+            symbolName = "doc.questionmark"
+            severity = .warning
+        case .searchFailed:
+            title = "联网搜索未完成"
+            summary = "本次回答没有使用搜索结果。请检查搜索服务的 API Key 或稍后重试。"
+            symbolName = "magnifyingglass"
+            severity = .neutral
+        case .interruptedInBackground:
+            title = "后台生成已中断"
+            summary = "应用在后台的可用时间已用完，已保存中断前生成的内容。可以重新生成。"
+            symbolName = "moon.zzz"
+            severity = .neutral
+        }
+    }
+}
+
+extension ChatReasoningEffort {
+    var title: String {
+        switch self {
+        case .automatic: "自动"
+        case .low: "低"
+        case .medium: "中"
+        case .high: "高"
+        }
+    }
+}
+
+extension ChatConversation {
+    var displayTitle: String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "新对话" : trimmed
+    }
+
+    var previewText: String {
+        guard let last = messages.last(where: { !$0.text.isEmpty }) else { return "暂无消息" }
+        let flattened = last.text.replacingOccurrences(of: "\n", with: " ")
+        return String(flattened.prefix(80))
+    }
+}
+
+enum ChatClipboard {
+    @MainActor
+    static func copy(_ text: String) {
+        #if os(iOS)
+        UIPasteboard.general.string = text
+        #elseif os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        #endif
+    }
+}

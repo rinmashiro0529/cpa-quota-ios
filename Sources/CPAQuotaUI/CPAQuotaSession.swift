@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import CPAQuotaKit
 import CPAQuotaActivity
+import CPAQuotaChat
 #if canImport(Security)
 import Security
 #endif
@@ -416,7 +417,17 @@ public final class CPAQuotaSession {
         case connected(server: CPAServer, isRememberedInKeychain: Bool)
     }
 
-    public private(set) var authState: AuthState = .unconfigured
+    public private(set) var authState: AuthState = .unconfigured {
+        didSet {
+            guard authState != oldValue else { return }
+            let boundServer: CPAServer? = switch authState {
+            case .connected(let server, _): server
+            default: nil
+            }
+            let chatWorkspace = self.chatWorkspace
+            Task { await chatWorkspace.bind(server: boundServer) { [weak self] in await self?.makeAPIKeyDiscovery() } }
+        }
+    }
     public private(set) var store: CPAQuotaStore?
     public private(set) var currentServer: CPAServer?
     public private(set) var savedServer: CPAServer?
@@ -433,6 +444,7 @@ public final class CPAQuotaSession {
 
     public let capUsageCoordinator = CAPUsageWorkspaceCoordinator()
     public let monitoringCoordinator: MonitoringWorkspaceCoordinator
+    public let chatWorkspace: ChatWorkspaceModel
 
     public var serverAddressDraft: String = ""
     public var managementKeyDraft: String = ""
@@ -494,12 +506,14 @@ public final class CPAQuotaSession {
         widgetSnapshotWriter: (any QuotaWidgetSnapshotWriting)? = nil,
         clientFactory: @escaping @Sendable (CPAServer, ManagementKey) -> CPAClient = { server, key in
             CPAClient(server: server, managementKey: key)
-        }
+        },
+        chatWorkspace: ChatWorkspaceModel? = nil
     ) {
         self.credentialStore = credentialStore
         self.credentialCoordinator = CredentialStoreCoordinator(store: credentialStore)
         self.preferences = preferences
         self.monitoringCoordinator = monitoringCoordinator ?? MonitoringWorkspaceCoordinator()
+        self.chatWorkspace = chatWorkspace ?? ChatWorkspaceModel()
         self.widgetPublisher = QuotaWidgetPublisher(store: widgetSnapshotWriter ?? widgetSnapshotStore, preferences: preferences)
         self.clientFactory = clientFactory
         self.themeMode = preferences.loadThemeMode()
@@ -1064,6 +1078,15 @@ public final class CPAQuotaSession {
         return client
     }
 
+    public func makeAPIKeyDiscovery() async -> CPAAPIKeyDiscovery? {
+        guard let activeStore = store, currentServer != nil else { return nil }
+        let generation = operationGeneration
+        let discovery = await activeStore.makeAPIKeyDiscovery()
+        guard generation == operationGeneration, store === activeStore, currentServer != nil,
+              !Task.isCancelled else { return nil }
+        return discovery
+    }
+
     public func refreshAccount(_ accountID: String, force: Bool = true) async {
         defer { synchronizeQuotaWidgetSnapshot() }
         guard let store else { return }
@@ -1160,6 +1183,9 @@ public final class CPAQuotaSession {
         managementKeyDraft = ""
         selectedAccountIDForDetail = nil
         capUsageCoordinator.teardown()
+        if let server {
+            await chatWorkspace.forget(server: server)
+        }
         authState = .unconfigured
     }
 

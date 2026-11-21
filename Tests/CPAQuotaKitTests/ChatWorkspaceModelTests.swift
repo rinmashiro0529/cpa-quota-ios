@@ -1,0 +1,663 @@
+import Foundation
+import Testing
+@testable import CPAQuotaChat
+@testable import CPAQuotaKit
+
+// MARK: - Fakes
+
+final class FakeChatEngine: ChatEngine, @unchecked Sendable {
+    private var _events: [ChatEngineEvent] = []
+    private var _streamError: (any Error)?
+    private var _blockUntilCancelled = false
+    private var _completeResult = "生成的标题"
+    private(set) var streamRequests: [ChatEngineRequest] = []
+    private(set) var completeRequests: [ChatEngineRequest] = []
+
+    func respond(with events: [ChatEngineEvent]) {
+        _events = events; _streamError = nil; _blockUntilCancelled = false
+    }
+    func fail(with error: any Error) {
+        _streamError = error; _blockUntilCancelled = false
+    }
+    func block() {
+        _blockUntilCancelled = true
+    }
+
+    func stream(_ request: ChatEngineRequest) -> AsyncThrowingStream<ChatEngineEvent, any Error> {
+        streamRequests.append(request)
+        let events = _events
+        let error = _streamError
+        let blocks = _blockUntilCancelled
+        return AsyncThrowingStream { continuation in
+            if blocks {
+                continuation.onTermination = { _ in }
+                return // never yields; cancellation ends the consumer's iteration
+            }
+            for event in events { continuation.yield(event) }
+            continuation.finish(throwing: error)
+        }
+    }
+
+    func complete(_ request: ChatEngineRequest) async throws -> String {
+        completeRequests.append(request)
+        return _completeResult
+    }
+}
+
+struct FakeModelCatalog: ChatModelCatalog {
+    var result: Result<[CPAModel], any Error>
+
+    func models() async throws -> [CPAModel] {
+        try result.get()
+    }
+}
+
+final class FakeBackgroundRunner: ChatBackgroundRunner, @unchecked Sendable {
+    private var nextToken = 0
+    private var expirations: [ChatBackgroundToken: @MainActor @Sendable () -> Void] = [:]
+    private(set) var endedTokens: [ChatBackgroundToken] = []
+    private(set) var notifications: [(conversationID: UUID, title: String)] = []
+    var inBackground = false
+    var notificationAuthorization = true
+
+    @MainActor func beginTask(expiration: @escaping @MainActor @Sendable () -> Void) -> ChatBackgroundToken {
+        nextToken += 1
+        let token = ChatBackgroundToken(rawValue: nextToken)
+        expirations[token] = expiration
+        return token
+    }
+
+    @MainActor func endTask(_ token: ChatBackgroundToken) {
+        expirations.removeValue(forKey: token)
+        endedTokens.append(token)
+    }
+
+    @MainActor var isAppInBackground: Bool { inBackground }
+
+    @MainActor func fireExpiration() {
+        for callback in expirations.values { callback() }
+    }
+
+    func notifyCompletion(conversationID: UUID, title: String) async {
+        notifications.append((conversationID, title))
+    }
+
+    func requestNotificationAuthorization() async -> Bool {
+        notificationAuthorization
+    }
+
+    var notificationCount: Int { notifications.count }
+}
+
+/// Search client the test can hold open (`gate`) like a real in-flight
+/// request; `release` lets it return.
+final class FakeSearchClient: ChatSearchClient, @unchecked Sendable {
+    private(set) var queries: [String] = []
+    private var blocked = false
+    private var result: [ChatSearchSource] = []
+
+    func gate() { blocked = true }
+    func release() { blocked = false }
+    func respond(with sources: [ChatSearchSource]) { result = sources }
+
+    func search(_ query: String, apiKey: String) async throws -> [ChatSearchSource] {
+        queries.append(query)
+        while blocked {
+            try Task.checkCancellation()
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        return result
+    }
+}
+
+/// Persistence that records write order so tests can assert writes are
+/// serialized in the order they were enqueued.
+actor RecordingPersistence: ChatPersistence {
+    struct ConversationWrite: Equatable {
+        let messageCount: Int
+        let lastStatus: ChatMessage.Status?
+    }
+
+    enum Operation: Equatable {
+        case saveConversation(UUID, ConversationWrite)
+        case removeConversation(UUID)
+        case removeAllConversations
+        case saveSettings
+        case saveMemories(Int)
+        case saveSkills(Int)
+    }
+
+    private(set) var operations: [Operation] = []
+    private var storedConversations: [ChatConversation]
+
+    init(seeded: [ChatConversation] = []) {
+        storedConversations = seeded
+    }
+
+    func saves(for id: UUID) -> [ConversationWrite] {
+        operations.compactMap { operation in
+            guard case .saveConversation(let savedID, let write) = operation,
+                  savedID == id else { return nil }
+            return write
+        }
+    }
+
+    func loadConversations() async throws -> [ChatConversation] { storedConversations }
+
+    func saveConversation(_ conversation: ChatConversation) async throws {
+        operations.append(.saveConversation(
+            conversation.id,
+            ConversationWrite(messageCount: conversation.messages.count,
+                              lastStatus: conversation.messages.last?.status)))
+        if let index = storedConversations.firstIndex(where: { $0.id == conversation.id }) {
+            storedConversations[index] = conversation
+        } else {
+            storedConversations.append(conversation)
+        }
+    }
+
+    func removeConversation(_ id: UUID) async throws {
+        operations.append(.removeConversation(id))
+        storedConversations.removeAll { $0.id == id }
+    }
+
+    func removeAllConversations() async throws {
+        operations.append(.removeAllConversations)
+        storedConversations.removeAll()
+    }
+
+    func loadSettings() async throws -> ChatSettings? { nil }
+    func saveSettings(_ settings: ChatSettings) async throws {
+        operations.append(.saveSettings)
+    }
+    func loadMemories() async throws -> [ChatMemoryItem]? { nil }
+    func saveMemories(_ items: [ChatMemoryItem]) async throws {
+        operations.append(.saveMemories(items.count))
+    }
+    func loadSkills() async throws -> [ChatSkill]? { nil }
+    func saveSkills(_ skills: [ChatSkill]) async throws {
+        operations.append(.saveSkills(skills.count))
+    }
+}
+
+// MARK: - Tests
+
+@Suite("ChatWorkspaceModel")
+struct ChatWorkspaceModelTests {
+    private let server = try! CPAServer(baseURL: "https://cpa.example.com")
+
+    private struct Fixture {
+        let workspace: ChatWorkspaceModel
+        let engine: FakeChatEngine
+        let secrets: MemorySecretStore
+        let transport: StubHTTPTransport
+        let runner: FakeBackgroundRunner
+    }
+
+    @MainActor
+    private func makeFixture(
+        models: [CPAModel] = [CPAModel(id: "test-model")],
+        persistence: any ChatPersistence = ChatMemoryPersistence(),
+        searchClient: (any ChatSearchClient)? = nil
+    ) -> Fixture {
+        let engine = FakeChatEngine()
+        let secrets = MemorySecretStore()
+        let transport = StubHTTPTransport()
+        let runner = FakeBackgroundRunner()
+        let workspace = ChatWorkspaceModel(
+            persistence: persistence,
+            secrets: secrets,
+            engine: engine,
+            searchClient: { _ in searchClient ?? FakeSearchClient() },
+            modelCatalog: { _, _ in FakeModelCatalog(result: .success(models)) },
+            backgroundRunner: runner)
+        return Fixture(workspace: workspace, engine: engine, secrets: secrets,
+                       transport: transport, runner: runner)
+    }
+
+    private func makeDiscovery(_ transport: StubHTTPTransport) -> CPAAPIKeyDiscovery {
+        CPAAPIKeyDiscovery(server: server, managementKey: try! ManagementKey("test-management-key-0001"),
+                           transport: transport, coordinator: CPAManagementRequestCoordinator(),
+                           clock: { Date() })
+    }
+
+    @MainActor
+    private func bind(_ fixture: Fixture, apiKeys: [String]? = nil) async {
+        if let apiKeys {
+            let keys = apiKeys.map { "\"\($0)\"" }.joined(separator: ",")
+            let body = "{\"api-keys\":[\(keys)]}"
+            await fixture.transport.respond("/v0/management/api-keys", status: 200, body: body)
+        }
+        let discovery = makeDiscovery(fixture.transport)
+        await fixture.workspace.bind(server: server) { discovery }
+    }
+
+    private func waitUntil(
+        timeoutNanoseconds: UInt64 = 5_000_000_000,
+        _ condition: @escaping @Sendable () async -> Bool
+    ) async -> Bool {
+        let deadline = ContinuousClock.now + .nanoseconds(Int64(timeoutNanoseconds))
+        while ContinuousClock.now < deadline {
+            if await condition() { return true }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        return await condition()
+    }
+
+    @Test @MainActor func bindAutoSelectsSingleDiscoveredKey() async throws {
+        let fixture = makeFixture()
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+
+        guard case .ready(let hint, let isManual) = await fixture.workspace.credentialState else {
+            Issue.record("expected .ready")
+            return
+        }
+        #expect(hint == "••••0001")
+        #expect(!isManual)
+        #expect(await fixture.workspace.server == server)
+
+        // The stored secret must contain the key JSON for this server.
+        let account = ChatSecrets.clientAPIKeyAccount(for: server)
+        let stored = try await fixture.secrets.loadSecret(account: account)
+        #expect(stored?.contains("test-client-key-0001") == true)
+
+        _ = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { workspace.modelListState == .loaded }
+        }
+        #expect(await fixture.workspace.models.map(\.id) == ["test-model"])
+    }
+
+    @Test @MainActor func multipleDiscoveredKeysStayMissingKey() async {
+        let fixture = makeFixture()
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001", "test-client-key-0002"])
+
+        #expect(await fixture.workspace.credentialState == .missingKey)
+        #expect(await fixture.workspace.discoveredKeys.count == 2)
+    }
+
+    @Test @MainActor func sendStreamsTextReasoningUsageAndGeneratesTitle() async {
+        let fixture = makeFixture()
+        fixture.engine.respond(with: [
+            .snapshot(text: "你好", reasoning: "在想"),
+            .snapshot(text: "你好，世界", reasoning: "在想中"),
+            .usage(ChatTokenUsage(inputTokens: 10, outputTokens: 4, reasoningTokens: 2)),
+        ])
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let conversationID = await fixture.workspace.createConversation()
+        await fixture.workspace.send("介绍你自己", attachments: [], in: conversationID)
+
+        let done = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { !workspace.isGenerating(conversationID) }
+        }
+        #expect(done)
+
+        let conversation = await fixture.workspace.conversation(conversationID)
+        let assistant = conversation?.messages.last(where: { $0.role == .assistant })
+        #expect(assistant?.status == .complete)
+        #expect(assistant?.text == "你好，世界")
+        #expect(assistant?.reasoning == "在想中")
+        #expect(assistant?.usage == ChatTokenUsage(inputTokens: 10, outputTokens: 4, reasoningTokens: 2))
+
+        let titled = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { workspace.conversation(conversationID)?.title == "生成的标题" }
+        }
+        #expect(titled)
+        let titleRequest = fixture.engine.completeRequests.first
+        #expect(titleRequest?.prompt.contains("用不超过 12 个字概括") == true)
+        #expect(titleRequest?.instructions == "")
+    }
+
+    @Test @MainActor func stopProducesStoppedStatus() async {
+        let fixture = makeFixture()
+        fixture.engine.block()
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let conversationID = await fixture.workspace.createConversation()
+        await fixture.workspace.send("停", attachments: [], in: conversationID)
+
+        _ = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { workspace.isGenerating(conversationID) }
+        }
+        await fixture.workspace.stop(conversationID)
+
+        let done = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { !workspace.isGenerating(conversationID) }
+        }
+        #expect(done)
+        let assistant = await fixture.workspace.conversation(conversationID)?
+            .messages.last(where: { $0.role == .assistant })
+        #expect(assistant?.status == .stopped)
+    }
+
+    @Test @MainActor func engineErrorMapsToFailed() async {
+        let fixture = makeFixture()
+        fixture.engine.fail(with: URLError(.notConnectedToInternet))
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let conversationID = await fixture.workspace.createConversation()
+        await fixture.workspace.send("会失败", attachments: [], in: conversationID)
+
+        _ = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { !workspace.isGenerating(conversationID) }
+        }
+        let assistant = await fixture.workspace.conversation(conversationID)?
+            .messages.last(where: { $0.role == .assistant })
+        #expect(assistant?.status == .failed)
+        #expect(assistant?.failure == .network)
+    }
+
+    @Test @MainActor func missingKeyAppendsFailedPair() async {
+        let fixture = makeFixture()
+        await fixture.workspace.loadIfNeeded()
+        // No keys on the server → stays .missingKey.
+        await fixture.transport.respond("/v0/management/api-keys", status: 200,
+                                        body: #"{"api-keys":[]}"#)
+        await fixture.transport.respond("/v8/management/config/access/api-keys", status: 404)
+        await bind(fixture, apiKeys: [])
+
+        #expect(await fixture.workspace.credentialState == .missingKey)
+        let conversationID = await fixture.workspace.createConversation()
+        await fixture.workspace.send("发不出去", attachments: [], in: conversationID)
+
+        _ = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { !workspace.isGenerating(conversationID) }
+        }
+        let messages = await fixture.workspace.conversation(conversationID)?.messages ?? []
+        #expect(messages.count == 2)
+        #expect(messages[0].role == .user)
+        #expect(messages[1].status == .failed)
+        #expect(messages[1].failure == .missingAPIKey)
+    }
+
+    @Test @MainActor func missingModelAppendsFailedPair() async {
+        let fixture = makeFixture(models: []) // catalog empty → no modelID
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let conversationID = await fixture.workspace.createConversation()
+        #expect(await fixture.workspace.conversation(conversationID)?.modelID == nil)
+        await fixture.workspace.send("没有模型", attachments: [], in: conversationID)
+
+        _ = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { !workspace.isGenerating(conversationID) }
+        }
+        let assistant = await fixture.workspace.conversation(conversationID)?
+            .messages.last(where: { $0.role == .assistant })
+        #expect(assistant?.status == .failed)
+        #expect(assistant?.failure == .missingModel)
+    }
+
+    @Test @MainActor func regenerateTruncatesAndReruns() async {
+        let fixture = makeFixture()
+        fixture.engine.respond(with: [.snapshot(text: "第一版", reasoning: nil)])
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let conversationID = await fixture.workspace.createConversation()
+        await fixture.workspace.send("问", attachments: [], in: conversationID)
+        _ = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { !workspace.isGenerating(conversationID) }
+        }
+
+        let firstAssistant = await fixture.workspace.conversation(conversationID)?
+            .messages.last(where: { $0.role == .assistant })
+        #expect(firstAssistant?.text == "第一版")
+
+        fixture.engine.respond(with: [.snapshot(text: "第二版", reasoning: nil)])
+        await fixture.workspace.regenerate(firstAssistant!.id, in: conversationID)
+        _ = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { !workspace.isGenerating(conversationID) }
+        }
+
+        let messages = await fixture.workspace.conversation(conversationID)?.messages ?? []
+        #expect(messages.count == 2)
+        #expect(messages[0].role == .user)
+        #expect(messages[1].role == .assistant)
+        #expect(messages[1].text == "第二版")
+        #expect(messages[1].id != firstAssistant?.id)
+        #expect(fixture.engine.streamRequests.count == 2)
+    }
+
+    @Test @MainActor func editAndResendTruncatesLaterMessages() async {
+        let fixture = makeFixture()
+        fixture.engine.respond(with: [.snapshot(text: "回一", reasoning: nil)])
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let conversationID = await fixture.workspace.createConversation()
+        await fixture.workspace.send("旧问题", attachments: [], in: conversationID)
+        await fixture.workspace.send("第二个问题", attachments: [], in: conversationID)
+        _ = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { !workspace.isGenerating(conversationID) }
+        }
+
+        let firstUser = await fixture.workspace.conversation(conversationID)?
+            .messages.first(where: { $0.role == .user })
+        fixture.engine.respond(with: [.snapshot(text: "新回答", reasoning: nil)])
+        await fixture.workspace.editAndResend(firstUser!.id, text: "编辑后的问题", in: conversationID)
+        _ = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { !workspace.isGenerating(conversationID) }
+        }
+
+        let messages = await fixture.workspace.conversation(conversationID)?.messages ?? []
+        #expect(messages.count == 2)
+        #expect(messages[0].text == "编辑后的问题")
+        #expect(messages[0].id == firstUser?.id)
+        #expect(messages[1].text == "新回答")
+        // The regenerated history must see the edited text.
+        #expect(fixture.engine.streamRequests.last?.prompt.contains("编辑后的问题") == true)
+    }
+
+    @Test @MainActor func forgetRemovesStoredKeyAndUnbinds() async throws {
+        let fixture = makeFixture()
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        #expect(await fixture.workspace.credentialState != .missingKey)
+
+        await fixture.workspace.forget(server: server)
+        #expect(await fixture.workspace.credentialState == .unbound)
+        #expect(await fixture.workspace.server == nil)
+        let account = ChatSecrets.clientAPIKeyAccount(for: server)
+        #expect(try await fixture.secrets.loadSecret(account: account) == nil)
+    }
+
+    @Test @MainActor func manualKeyMarksIsManual() async {
+        let fixture = makeFixture()
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: [])
+
+        let accepted = await fixture.workspace.useManualKey("test-manual-key-9999")
+        #expect(accepted)
+        guard case .ready(let hint, let isManual) = await fixture.workspace.credentialState else {
+            Issue.record("expected .ready")
+            return
+        }
+        #expect(isManual)
+        #expect(hint == "••••9999")
+
+        #expect(await fixture.workspace.useManualKey("   ") == false)
+    }
+
+    @Test @MainActor func backgroundExpirationInterruptsAndNotifiesOnSuccess() async {
+        let fixture = makeFixture()
+        fixture.engine.block()
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let conversationID = await fixture.workspace.createConversation()
+        await fixture.workspace.send("后台", attachments: [], in: conversationID)
+        _ = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { workspace.isGenerating(conversationID) }
+        }
+
+        await fixture.runner.fireExpiration()
+        _ = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { !workspace.isGenerating(conversationID) }
+        }
+        let assistant = await fixture.workspace.conversation(conversationID)?
+            .messages.last(where: { $0.role == .assistant })
+        #expect(assistant?.status == .interrupted)
+        #expect(assistant?.failure == .interruptedInBackground)
+        #expect(fixture.runner.notificationCount == 0)
+    }
+
+    @Test @MainActor func notificationOnlyWhenInBackgroundAndEnabled() async {
+        let fixture = makeFixture()
+        fixture.engine.respond(with: [.snapshot(text: "完成", reasoning: nil)])
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+
+        // Foreground success → no notification.
+        let foregroundID = await fixture.workspace.createConversation()
+        await fixture.workspace.send("前台", attachments: [], in: foregroundID)
+        _ = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { !workspace.isGenerating(foregroundID) }
+        }
+        #expect(fixture.runner.notificationCount == 0)
+
+        // Background success → one notification with the conversation title.
+        fixture.runner.inBackground = true
+        let backgroundID = await fixture.workspace.createConversation()
+        await fixture.workspace.send("后台完成", attachments: [], in: backgroundID)
+        _ = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { !workspace.isGenerating(backgroundID) }
+        }
+        #expect(fixture.runner.notificationCount == 1)
+    }
+
+    // MARK: - Search step
+
+    /// Configures web search on the workspace + conversation and returns a
+    /// gated search client.
+    @MainActor
+    private func enableSearch(_ fixture: Fixture, search: FakeSearchClient,
+                              in conversationID: UUID) async {
+        fixture.workspace.settings.searchProvider = .tavily
+        _ = await fixture.workspace.saveSearchKey("test-search-key-0001", for: .tavily)
+        fixture.workspace.updateConversation(conversationID) { $0.isWebSearchEnabled = true }
+    }
+
+    @Test @MainActor func userMessageAndPlaceholderVisibleWhileSearchSuspended() async {
+        let search = FakeSearchClient()
+        search.gate()
+        search.respond(with: [
+            ChatSearchSource(title: "结果", url: URL(string: "https://example.test/1")!,
+                             snippet: "摘要"),
+        ])
+        let fixture = makeFixture(searchClient: search)
+        fixture.engine.respond(with: [.snapshot(text: "回答", reasoning: nil)])
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let conversationID = await fixture.workspace.createConversation()
+        await enableSearch(fixture, search: search, in: conversationID)
+
+        fixture.workspace.send("查一下", attachments: [], in: conversationID)
+
+        // While the search request is still in flight, the user message and
+        // the streaming placeholder must already be visible.
+        let visible = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run {
+                guard let conversation = workspace.conversation(conversationID),
+                      conversation.messages.count == 2 else { return false }
+                return conversation.messages[0].role == .user
+                    && conversation.messages[0].text == "查一下"
+                    && conversation.messages[1].role == .assistant
+                    && conversation.messages[1].status == .streaming
+            }
+        }
+        #expect(visible)
+
+        search.release()
+        _ = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { !workspace.isGenerating(conversationID) }
+        }
+        #expect(search.queries == ["查一下"])
+        let assistant = fixture.workspace.conversation(conversationID)?
+            .messages.last(where: { $0.role == .assistant })
+        #expect(assistant?.status == .complete)
+        #expect(assistant?.searchSources.count == 1)
+        #expect(fixture.engine.streamRequests.last?.prompt.contains("[1] 结果") == true)
+    }
+
+    @Test @MainActor func stopDuringSearchEndsStoppedWithoutSearchFailedOrEngineCall() async {
+        let search = FakeSearchClient()
+        search.gate()
+        let fixture = makeFixture(searchClient: search)
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let conversationID = await fixture.workspace.createConversation()
+        await enableSearch(fixture, search: search, in: conversationID)
+
+        fixture.workspace.send("查一下", attachments: [], in: conversationID)
+
+        // Wait until the search request is actually in flight.
+        let inFlight = await waitUntil { search.queries == ["查一下"] }
+        #expect(inFlight)
+        fixture.workspace.stop(conversationID)
+        search.release()
+
+        let done = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { !workspace.isGenerating(conversationID) }
+        }
+        #expect(done)
+        let assistant = fixture.workspace.conversation(conversationID)?
+            .messages.last(where: { $0.role == .assistant })
+        #expect(assistant?.status == .stopped)
+        #expect(assistant?.failure == nil)
+        #expect(fixture.engine.streamRequests.isEmpty)
+    }
+
+    // MARK: - Persistence ordering
+
+    @Test @MainActor func persistenceWritesAreSerializedAndFinalStateLandsLast() async {
+        let persistence = RecordingPersistence()
+        let fixture = makeFixture(persistence: persistence)
+        fixture.engine.respond(with: [.snapshot(text: "回复", reasoning: nil)])
+        fixture.workspace.settings.generatesTitles = false
+        fixture.workspace.settings.notifiesOnBackgroundCompletion = false
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let conversationID = await fixture.workspace.createConversation()
+        fixture.workspace.send("你好", attachments: [], in: conversationID)
+
+        // isGenerating only clears after the final write is awaited, so once
+        // generation is done the last write on disk is the final state.
+        let done = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { !workspace.isGenerating(conversationID) }
+        }
+        #expect(done)
+        let writes = await persistence.saves(for: conversationID)
+        #expect(writes.count >= 2)
+        #expect(writes.first?.lastStatus == .streaming)
+        #expect(writes.last?.lastStatus == .complete)
+    }
+
+    @Test @MainActor func emptyConversationIsNeverPersisted() async {
+        let persistence = RecordingPersistence()
+        let fixture = makeFixture(persistence: persistence)
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let conversationID = await fixture.workspace.createConversation()
+        fixture.workspace.updateConversation(conversationID) { $0.title = "空会话" }
+
+        // Enqueue a guaranteed write after the skipped ones, then wait for it:
+        // proves the queue drained with no conversation write for this id.
+        fixture.workspace.addMemory("标记")
+        let drained = await waitUntil {
+            await persistence.operations.contains(.saveMemories(1))
+        }
+        #expect(drained)
+        let saves = await persistence.saves(for: conversationID)
+        #expect(saves.isEmpty)
+    }
+
+    @Test @MainActor func loadDropsConversationsWithNoMessages() async {
+        let populated = ChatConversation(
+            modelID: "test-model",
+            messages: [ChatMessage(role: .user, text: "留")])
+        let empty = ChatConversation(modelID: "test-model")
+        let persistence = RecordingPersistence(seeded: [empty, populated])
+        let fixture = makeFixture(persistence: persistence)
+        await fixture.workspace.loadIfNeeded()
+        #expect(fixture.workspace.conversations.map(\.id) == [populated.id])
+    }
+}

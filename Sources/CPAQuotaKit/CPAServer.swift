@@ -54,6 +54,12 @@ public struct CPAServer: Equatable, Hashable, Sendable, Codable {
         baseURL.appendingPathComponent("v0").appendingPathComponent("management")
             .appendingPathComponent(path)
     }
+
+    /// Newer CLIProxyAPI releases expose management resources under `/v8`.
+    func v8Endpoint(_ path: String) -> URL {
+        baseURL.appendingPathComponent("v8").appendingPathComponent("management")
+            .appendingPathComponent(path)
+    }
 }
 
 public struct ManagementKey: Sendable, CustomStringConvertible, CustomDebugStringConvertible {

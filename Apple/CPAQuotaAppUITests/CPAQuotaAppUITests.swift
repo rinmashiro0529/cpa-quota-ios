@@ -132,7 +132,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         defer { app.terminate() }
         let tabs = [
             ("quotas", "额度总览"), ("usage", "CAP 用量"),
-            ("monitoring", "监控与活动"), ("accounts", "账号诊断"),
+            ("chat", "AI 对话"), ("accounts", "账号诊断"),
             ("connection", "连接管理")
         ]
         // TabView may become a side rail on iOS 27. Verify all five native
@@ -146,6 +146,10 @@ final class CPAQuotaAppUITests: XCTestCase {
             selectTab(id, title: title, in: app)
             verify(app.navigationBars.firstMatch.exists, in: app,
                    "Each workspace must retain its native navigation stack.")
+            if id == "chat" {
+                verify(element("chat.new", in: app).exists, in: app,
+                       "A connected session must show the chat list with its new-conversation action.")
+            }
             attach(app, name: "tab-\(id)")
         }
 
@@ -355,7 +359,11 @@ final class CPAQuotaAppUITests: XCTestCase {
     func testUnconfiguredMonitoringRequiresSeparateCredentials() {
         let app = launch(connected: true)
         defer { app.terminate() }
-        selectTab("monitoring", title: "监控与活动", in: app)
+        selectTab("connection", title: "连接管理", in: app)
+        let monitoringEntry = element("connection.monitoring", in: app)
+        reveal(monitoringEntry, in: app)
+        monitoringEntry.tap()
+        expectExists(app.navigationBars["监控与活动"], in: app, timeout: 5)
         let unconfigured = element("monitoring.unconfigured", in: app)
         expectExists(unconfigured, in: app, timeout: 5)
         let connectLink = app.buttons["连接监控服务"]

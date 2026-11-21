@@ -7,7 +7,8 @@ CPA Quota 是连接个人 CPA 服务、只读查看账号额度的原生 iOS 客
 - 查看 CPA 已有账号及额度窗口、重置时间和最近查询结果；读取失败时保留并标注上次成功结果。
 - 查看 CAP 用量和账号诊断（CAP 用量依赖外部插件，详见下文），管理连接与本机偏好。
 - 使用系统小组件和实时活动；小组件共享默认关闭，系统活动显示首个账号和其他账号数量，不承诺后台自动轮播。
-- 可选地连接独立监控服务；服务需要另行配置、运行与授权。
+- 与 CPA 提供的模型对话（「AI 对话」）：通过 `GET /v1/models` 读取模型目录，经 `POST /v1/chat/completions`（OpenAI 兼容、SSE 流式）推理。对话使用 CPA 客户端 API Key：可由已保存的管理密钥经 `GET /v0/management/api-keys` 自动读取服务器密钥列表（404 时回退 `GET /v8/management/config/access/api-keys`），也可手动填写；客户端密钥只保存在设备 Keychain。对话、记忆与技能以 JSON 文件存于本机；可选第三方联网搜索使用各自独立密钥；应用退到后台时生成最多继续约 30 秒，完成后可发送本地通知。
+- 可选地连接独立监控服务（入口在连接管理内的「监控与活动」页面）；服务需要另行配置、运行与授权。
 
 当前界面为中文。应用只读查询，不登录上游 OAuth，也不修改账号、配置或重置额度。
 
@@ -37,7 +38,7 @@ plugins:
 | 额度总览 | CAP 用量 |
 | --- | --- |
 | <img src="docs/images/quotas.png" alt="额度总览示例" width="280"> | <img src="docs/images/cap-usage.png" alt="CAP 用量示例" width="280"> |
-| 监控与活动（未配置） | 连接管理 |
+| 监控与活动（连接管理内，未配置） | 连接管理 |
 | <img src="docs/images/monitoring.png" alt="未配置的监控页面" width="280"> | <img src="docs/images/connection.png" alt="连接管理示例" width="280"> |
 
 ## 要求
@@ -56,18 +57,21 @@ plugins:
 
 ## 可选监控服务
 
-[部署指南](docs/MONITOR_DEPLOYMENT.md) 说明独立 Go 服务的离线构建、配置与受控部署；[服务合同](docs/MONITOR_SERVICE.md) 描述授权、容量、取消和持久化。监控访问令牌与 CPA 管理密钥分别配置。`dry_run=true` 禁止 APNs 发送，但有活动时仍可能采集 CPA，不能视为完全离线。结束本机显示不等于服务端监控已停止。
+[部署指南](docs/MONITOR_DEPLOYMENT.md) 说明独立 Go 服务的离线构建、配置与受控部署；[服务合同](docs/MONITOR_SERVICE.md) 描述授权、容量、取消和持久化。「监控与活动」是连接管理内的页面，不再是独立标签页。监控访问令牌与 CPA 管理密钥分别配置。`dry_run=true` 禁止 APNs 发送，但有活动时仍可能采集 CPA，不能视为完全离线。结束本机显示不等于服务端监控已停止。
 
 ## 项目结构
 
 | 路径 | 用途 |
 | --- | --- |
 | `Sources/CPAQuotaKit/` | 只读网络、额度、CAP、凭据与状态 |
+| `Sources/CPAQuotaChat/` | AI 对话引擎、JSON 持久化、联网搜索与工作区状态 |
 | `Sources/CPAQuotaUI/` | 会话与 SwiftUI 界面 |
 | `Sources/CPAQuotaActivity/`、`Apple/CPAQuotaActivityExtension/` | 实时活动与小组件 |
 | `Sources/CPAQuotaApp/`、`Apple/CPAQuota.xcodeproj` | App 入口与原生工程 |
 | `Services/QuotaMonitor/` | 可选的独立 Go 监控服务 |
 | `Tests/`、`Apple/CPAQuotaAppUITests/`、`tools/tests/` | 合同、模型、原生 UI 与工具回归 |
+
+SwiftPM 第三方依赖：huggingface/AnyLanguageModel（Apache-2.0，对话推理抽象）与 microsoft/SwiftStreamingMarkdown（MIT，仅 iOS 目标使用，流式 Markdown 渲染）；许可文本见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ## 测试与已知限制
 

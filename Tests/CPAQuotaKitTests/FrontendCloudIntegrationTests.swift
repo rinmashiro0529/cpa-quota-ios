@@ -171,7 +171,7 @@ struct FrontendCloudIntegrationTests {
         let requests = await transport.recordedURLs()
         #expect(Array(requests.dropFirst(before)).count == 1)
         #expect(requests.last?.contains("/v0/resource/plugins/cap-token-usage-tracker/requests") == true)
-        session.activeTab = .monitoring
+        session.activeTab = .chat
         await session.refreshCurrentWorkspace()
         #expect(await transport.recordedCount() == requests.count)
         #expect(session.monitoringCoordinator.store == nil)

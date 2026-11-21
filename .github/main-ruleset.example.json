@@ -43,10 +43,6 @@
             "integration_id": 15368
           },
           {
-            "context": "Swift and native UI (Xcode 26.2, iPhone 17 Pro)",
-            "integration_id": 15368
-          },
-          {
             "context": "Swift and native UI (Xcode 27.1, iPhone 18 Pro)",
             "integration_id": 15368
           },

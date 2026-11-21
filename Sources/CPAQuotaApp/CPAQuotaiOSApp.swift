@@ -4,6 +4,7 @@ import Foundation
 #else
 import CPAQuotaKit
 #endif
+import CPAQuotaChat
 import CPAQuotaUI
 
 #if canImport(SwiftUI)
@@ -125,7 +126,10 @@ private struct UITestWorkspace: View {
                 clientFactory: { server, key in
                     CPAQuotaUITestFixtures.makeClient(server: server, managementKey: key,
                                                        slowResponse: slowResponse)
-                }
+                },
+                chatWorkspace: ChatWorkspaceModel(
+                    persistence: ChatMemoryPersistence(),
+                    secrets: MemorySecretStore())
             )
         } catch {
             preparationFailed = true

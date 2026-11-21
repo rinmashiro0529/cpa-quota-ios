@@ -27,7 +27,7 @@ public struct CPAQuotaRootView: View {
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("workspace.\(tab.rawValue)")
                         .toolbar {
-                            if tab != .usage {
+                            if tab != .usage, tab != .chat {
                                 ToolbarItem(placement: .primaryAction) {
                                     Button {
                                         Task { await session.performCurrentWorkspaceAction() }
@@ -73,7 +73,8 @@ public struct CPAQuotaRootView: View {
         }
         .onChange(of: session.store.map(ObjectIdentifier.init)) { _, _ in
             // Account/CAP destinations from the previous accepted connection must not survive a switch.
-            for tab in [CPAWorkspaceTab.quotas, .usage, .accounts, .connection] {
+            // Connection keeps its stack: monitoring is independent of the CPA connection.
+            for tab in [CPAWorkspaceTab.quotas, .usage, .chat, .accounts] {
                 paths[tab] = NavigationPath()
             }
             session.selectedAccountIDForDetail = nil
@@ -91,8 +92,11 @@ public struct CPAQuotaRootView: View {
                 session.activeTab = .quotas
                 paths[.quotas] = NavigationPath()
             case .monitoring:
-                session.activeTab = .monitoring
-                paths[.monitoring] = NavigationPath()
+                // The external URL contract is unchanged; monitoring now lives under connection management.
+                session.activeTab = .connection
+                var path = NavigationPath()
+                path.append(ConnectionDestination.monitoring)
+                paths[.connection] = path
             }
             Task {
                 await session.restoreApplicationIfAvailable()
@@ -106,13 +110,13 @@ public struct CPAQuotaRootView: View {
 
     @ViewBuilder
     private func workspace(_ tab: CPAWorkspaceTab) -> some View {
-        if !session.isWorkspaceReady, tab != .connection, tab != .monitoring {
+        if !session.isWorkspaceReady, tab != .connection {
             connectionRequired(for: tab)
         } else {
             switch tab {
             case .quotas: QuotasOverviewTabView(session: session)
             case .usage: CAPUsageTabView(session: session)
-            case .monitoring: MonitoringTabView(session: session)
+            case .chat: ChatWorkspaceView(session: session)
             case .accounts: AccountsDiagnosticsTabView(session: session)
             case .connection: ConnectionManagementTabView(session: session)
             }
@@ -180,7 +184,8 @@ public struct CPAQuotaRootView: View {
         case .quotas: "连接个人 CPA 服务后，查看账号额度、读取状态和重置时间。"
         case .usage: "连接个人 CPA 服务后，查看 CAP 插件记录的请求、Token 用量与费用估算。"
         case .accounts: "连接个人 CPA 服务后，检查授权账号、读取能力与异常原因。"
-        case .monitoring, .connection: "连接个人 CPA 服务，开始读取账号。"
+        case .chat: "连接个人 CPA 服务后，使用 CPA 提供的模型直接对话。"
+        case .connection: "连接个人 CPA 服务，开始读取账号。"
         }
     }
 }

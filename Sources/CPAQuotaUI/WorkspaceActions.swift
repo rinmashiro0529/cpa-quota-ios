@@ -10,27 +10,26 @@ public extension CPAQuotaSession {
                 || capUsageCoordinator.store?.isLoadingDetails == true
                 || capUsageCoordinator.isLoadingManagementStats
                 || capUsageCoordinator.isLoadingRequestPage
-        case .monitoring:
-            return monitoringCoordinator.isBusy
+        case .chat:
+            return false
         case .quotas, .accounts, .connection:
             return isBusy
         }
     }
 
     var currentWorkspaceActionDisabled: Bool {
-        activeTab == .monitoring
-            && (monitoringCoordinator.activeAddress == nil || monitoringCoordinator.isBusy)
+        activeTab == .chat
     }
 
     var currentWorkspaceCanCancelRead: Bool {
-        activeTab != .monitoring && isCurrentWorkspaceBusy
+        isCurrentWorkspaceBusy
     }
 
     var currentWorkspaceActionLabel: String {
         if currentWorkspaceCanCancelRead { return "取消当前读取" }
         switch activeTab {
         case .usage: return "刷新 CAP 用量总览"
-        case .monitoring: return "核对当前监控会话"
+        case .chat: return "AI 对话无需刷新"
         case .quotas, .accounts, .connection: return "刷新全部账号额度"
         }
     }
@@ -40,9 +39,8 @@ public extension CPAQuotaSession {
         switch activeTab {
         case .usage:
             await capUsageCoordinator.refreshOverview()
-        case .monitoring:
-            guard !monitoringCoordinator.isBusy else { return }
-            await monitoringCoordinator.reconcileCurrentSession()
+        case .chat:
+            return
         case .quotas, .accounts, .connection:
             guard case .connected = authState else { return }
             await refreshAll(force: true)
@@ -59,7 +57,7 @@ public extension CPAQuotaSession {
             }
             return
         }
-        if activeTab != .monitoring, case .unconfigured = authState {
+        if case .unconfigured = authState {
             isPresentingConnectionSheet = true
             return
         }
