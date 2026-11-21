@@ -138,7 +138,7 @@ struct ChatSkillTests {
         await workspace.loadIfNeeded()
         let hits = workspace.skillSuggestions(for: "/tra")
         #expect(hits.map(\.command) == ["translate"])
-        #expect(workspace.skillSuggestions(for: "/").isEmpty)
+        #expect(workspace.skillSuggestions(for: "/").count == workspace.skills.count)
         #expect(workspace.skillSuggestions(for: "/tra ").isEmpty)
         #expect(workspace.skillSuggestions(for: "no slash").isEmpty)
     }

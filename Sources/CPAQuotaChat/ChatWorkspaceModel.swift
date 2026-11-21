@@ -976,11 +976,12 @@ public final class ChatWorkspaceModel {
         enqueuePersist { try? await store.saveSkills(value) }
     }
 
-    /// `/partial` (no whitespace yet) → prefix matches on normalized commands.
+    /// `/partial` (no whitespace yet) → prefix matches on normalized commands;
+    /// a lone `/` lists every skill, as the composer hint promises.
     public func skillSuggestions(for draft: String) -> [ChatSkill] {
-        guard draft.hasPrefix("/"), draft.count > 1 else { return [] }
+        guard draft.hasPrefix("/") else { return [] }
         let partial = draft.dropFirst()
-        guard !partial.isEmpty, !partial.contains(where: { $0.isWhitespace }) else { return [] }
+        guard !partial.contains(where: { $0.isWhitespace }) else { return [] }
         let needle = partial.lowercased()
         return skills.filter {
             ChatPromptBuilder.normalizedCommand($0.command).hasPrefix(needle)

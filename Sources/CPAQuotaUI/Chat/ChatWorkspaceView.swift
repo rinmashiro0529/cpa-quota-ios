@@ -36,6 +36,8 @@ public struct ChatWorkspaceView: View {
 
     public var body: some View {
         let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
+        // Filtered once per render; message text is only scanned while searching.
+        let visible = visibleConversations
         List {
             if !isCredentialReady {
                 Section {
@@ -80,12 +82,12 @@ public struct ChatWorkspaceView: View {
                     }
                 }
                 .listRowBackground(palette.contentSurface)
-            } else if visibleConversations.isEmpty {
+            } else if visible.isEmpty {
                 ContentUnavailableView.search(text: searchText)
                     .listRowBackground(palette.contentSurface)
             } else {
                 Section {
-                    ForEach(visibleConversations) { conversation in
+                    ForEach(visible) { conversation in
                         NavigationLink(value: ChatDestination.conversation(conversation.id)) {
                             ChatConversationRow(conversation: conversation,
                                                 isGenerating: chat.isGenerating(conversation.id))

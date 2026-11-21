@@ -7,6 +7,7 @@ import CPAQuotaChat
 struct ChatConversationView: View {
     @Bindable var session: CPAQuotaSession
     let conversationID: UUID
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
     @State private var draft = ""
@@ -37,6 +38,10 @@ struct ChatConversationView: View {
         }
         .background(BrandCanvasBackground())
         .tint(palette.actionTint)
+        .onChange(of: chat.conversation(conversationID) == nil) { _, deleted in
+            // Deleting from the options sheet returns to the list instead of an empty page.
+            if deleted { dismiss() }
+        }
         .sheet(isPresented: $isPresentingOptions) {
             NavigationStack {
                 ChatConversationOptionsView(chat: chat, conversationID: conversationID)
