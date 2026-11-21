@@ -38,7 +38,6 @@ struct ChatMessageView: View {
             }
         }
         .contextMenu { menu }
-        .accessibilityIdentifier("chat.message.\(message.role.rawValue)")
     }
 
     // MARK: User
@@ -62,6 +61,7 @@ struct ChatMessageView: View {
         .padding(.leading, 40)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(userAccessibilityLabel)
+        .accessibilityIdentifier("chat.message.user")
     }
 
     private var userAccessibilityLabel: String {
@@ -102,6 +102,7 @@ struct ChatMessageView: View {
                 .accessibilityElement(children: .combine)
             } else if !message.text.isEmpty {
                 ChatMarkdownText(text: message.text)
+                    .accessibilityIdentifier("chat.message.assistant")
                     .foregroundStyle(palette.textPrimary)
             }
 
