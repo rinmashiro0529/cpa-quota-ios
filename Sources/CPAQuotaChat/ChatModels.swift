@@ -51,6 +51,8 @@ public enum ChatFailure: Equatable, Sendable, Codable {
     case invalidResponse
     case searchFailed
     case interruptedInBackground
+    /// The app ended while a reply was streaming (found on the next launch).
+    case generationInterrupted
 }
 
 public struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
@@ -118,11 +120,15 @@ public struct ChatConversation: Identifiable, Codable, Equatable, Sendable {
     public var messages: [ChatMessage]
     public let createdAt: Date
     public var updatedAt: Date
+    /// `CPAServer.identifier` of the server this history was sent to. `nil`
+    /// for records written before the field existed: their origin is unknown.
+    public var serverIdentifier: String?
 
     public init(
         id: UUID = UUID(), title: String = "", modelID: String? = nil, systemPrompt: String = "",
         reasoningEffort: ChatReasoningEffort = .automatic, isWebSearchEnabled: Bool = false,
-        messages: [ChatMessage] = [], createdAt: Date = Date(), updatedAt: Date? = nil
+        messages: [ChatMessage] = [], createdAt: Date = Date(), updatedAt: Date? = nil,
+        serverIdentifier: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -133,7 +139,18 @@ public struct ChatConversation: Identifiable, Codable, Equatable, Sendable {
         self.messages = messages
         self.createdAt = createdAt
         self.updatedAt = updatedAt ?? createdAt
+        self.serverIdentifier = serverIdentifier
     }
+}
+
+/// Continuing a conversation on a server other than the one its history was
+/// sent to. Sending requires explicit confirmation of what will be transmitted.
+public struct ChatServerChange: Equatable, Sendable {
+    /// `nil` when the conversation predates server binding.
+    public let previousServerIdentifier: String?
+    public let currentServerIdentifier: String
+    public let messageCount: Int
+    public let imageCount: Int
 }
 
 public struct ChatMemoryItem: Identifiable, Codable, Equatable, Sendable {

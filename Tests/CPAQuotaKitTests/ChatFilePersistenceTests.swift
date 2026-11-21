@@ -81,4 +81,36 @@ struct ChatFilePersistenceTests {
         let loaded = try await persistence.loadConversations()
         #expect(loaded.map(\.id) == [good.id])
     }
+
+    @Test func removeAllConversationsReportsEnumerationFailure() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let persistence = ChatFilePersistence(directory: directory)
+        // A regular file where the directory belongs makes enumeration fail.
+        try Data("not a directory".utf8).write(to: directory.appendingPathComponent("Conversations"))
+
+        await #expect(throws: ChatPersistenceError.self) {
+            try await persistence.removeAllConversations()
+        }
+    }
+
+    @Test func conversationWrittenBeforeServerBindingStillLoads() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let persistence = ChatFilePersistence(directory: directory)
+        var conversation = ChatConversation(title: "旧对话", serverIdentifier: "https://cpa.example.com")
+        conversation.messages.append(ChatMessage(role: .user, text: "你好"))
+        var object = try #require(try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(conversation)) as? [String: Any])
+        #expect(object.removeValue(forKey: "serverIdentifier") != nil)
+        let conversationsDir = directory.appendingPathComponent("Conversations")
+        try FileManager.default.createDirectory(at: conversationsDir, withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: object)
+            .write(to: conversationsDir.appendingPathComponent("\(conversation.id.uuidString).json"))
+
+        let loaded = try #require(try await persistence.loadConversations().first)
+        #expect(loaded.id == conversation.id)
+        #expect(loaded.serverIdentifier == nil)
+        #expect(loaded.messages == conversation.messages)
+    }
 }

@@ -117,7 +117,7 @@ final class FakeBackgroundRunner: ChatBackgroundRunner, @unchecked Sendable {
     private var nextToken = 0
     private var expirations: [ChatBackgroundToken: @MainActor @Sendable () -> Void] = [:]
     private(set) var endedTokens: [ChatBackgroundToken] = []
-    private(set) var notifications: [(conversationID: UUID, title: String)] = []
+    private(set) var notifications: [UUID] = []
     var inBackground = false
     var notificationAuthorization = true
     var waitAfterNotification: (@Sendable () async -> Void)?
@@ -140,8 +140,8 @@ final class FakeBackgroundRunner: ChatBackgroundRunner, @unchecked Sendable {
         for callback in expirations.values { callback() }
     }
 
-    func notifyCompletion(conversationID: UUID, title: String) async {
-        notifications.append((conversationID, title))
+    func notifyCompletion(conversationID: UUID) async {
+        notifications.append(conversationID)
         await waitAfterNotification?()
     }
 
@@ -179,6 +179,7 @@ actor RecordingPersistence: ChatPersistence {
     struct ConversationWrite: Equatable {
         let messageCount: Int
         let lastStatus: ChatMessage.Status?
+        var lastText: String = ""
     }
 
     enum Operation: Equatable {
@@ -206,12 +207,14 @@ actor RecordingPersistence: ChatPersistence {
     }
 
     func loadConversations() async throws -> [ChatConversation] { storedConversations }
+    func stored(_ id: UUID) -> ChatConversation? { storedConversations.first { $0.id == id } }
 
     func saveConversation(_ conversation: ChatConversation) async throws {
         operations.append(.saveConversation(
             conversation.id,
             ConversationWrite(messageCount: conversation.messages.count,
-                              lastStatus: conversation.messages.last?.status)))
+                              lastStatus: conversation.messages.last?.status,
+                              lastText: conversation.messages.last?.text ?? "")))
         if let index = storedConversations.firstIndex(where: { $0.id == conversation.id }) {
             storedConversations[index] = conversation
         } else {
@@ -261,6 +264,27 @@ private actor HeldDiscovery {
     }
 }
 
+/// Memory persistence whose bulk removal fails until `allowRemoval()`.
+private actor FailingBulkRemovalPersistence: ChatPersistence {
+    private let base = ChatMemoryPersistence()
+    private var removalFails = true
+
+    func allowRemoval() { removalFails = false }
+    func loadConversations() async throws -> [ChatConversation] { try await base.loadConversations() }
+    func saveConversation(_ conversation: ChatConversation) async throws { try await base.saveConversation(conversation) }
+    func removeConversation(_ id: UUID) async throws { try await base.removeConversation(id) }
+    func removeAllConversations() async throws {
+        if removalFails { throw ChatPersistenceError.storageFailure }
+        try await base.removeAllConversations()
+    }
+    func loadSettings() async throws -> ChatSettings? { nil }
+    func saveSettings(_ settings: ChatSettings) async throws {}
+    func loadMemories() async throws -> [ChatMemoryItem]? { nil }
+    func saveMemories(_ items: [ChatMemoryItem]) async throws {}
+    func loadSkills() async throws -> [ChatSkill]? { nil }
+    func saveSkills(_ skills: [ChatSkill]) async throws {}
+}
+
 private actor FailingRemovalSecretStore: ChatSecretStore {
     private var stored: [String: String] = [:]
     private var removalFails = true
@@ -292,7 +316,8 @@ struct ChatWorkspaceModelTests {
     private func makeFixture(
         models: [CPAModel] = [CPAModel(id: "test-model")],
         persistence: any ChatPersistence = ChatMemoryPersistence(),
-        searchClient: (any ChatSearchClient)? = nil
+        searchClient: (any ChatSearchClient)? = nil,
+        streamingPersistInterval: Duration = .seconds(2)
     ) -> Fixture {
         let engine = FakeChatEngine()
         let secrets = MemorySecretStore()
@@ -304,7 +329,8 @@ struct ChatWorkspaceModelTests {
             engine: engine,
             searchClient: { _ in searchClient ?? FakeSearchClient() },
             modelCatalog: { _, _ in FakeModelCatalog(result: .success(models)) },
-            backgroundRunner: runner)
+            backgroundRunner: runner,
+            streamingPersistInterval: streamingPersistInterval)
         return Fixture(workspace: workspace, engine: engine, secrets: secrets,
                        transport: transport, runner: runner)
     }
@@ -520,10 +546,15 @@ struct ChatWorkspaceModelTests {
         await bind(fixture, apiKeys: ["test-client-key-0001"])
         let conversationID = await fixture.workspace.createConversation()
         await fixture.workspace.send("旧问题", attachments: [], in: conversationID)
+        _ = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { !workspace.isGenerating(conversationID) }
+        }
         await fixture.workspace.send("第二个问题", attachments: [], in: conversationID)
         _ = await waitUntil { [workspace = fixture.workspace] in
             await MainActor.run { !workspace.isGenerating(conversationID) }
         }
+        // Two complete turns exist before the edit, so truncation is observable.
+        #expect(fixture.workspace.conversation(conversationID)?.messages.count == 4)
 
         let firstUser = await fixture.workspace.conversation(conversationID)?
             .messages.first(where: { $0.role == .user })
@@ -828,5 +859,227 @@ struct ChatWorkspaceModelTests {
         let fixture = makeFixture(persistence: persistence)
         await fixture.workspace.loadIfNeeded()
         #expect(fixture.workspace.conversations.map(\.id) == [populated.id])
+    }
+
+    // MARK: - Audit regressions (batch 1)
+
+    @MainActor
+    private func completeTurn(_ fixture: Fixture, _ text: String, in id: UUID) async {
+        fixture.workspace.send(text, attachments: [], in: id)
+        _ = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { !workspace.isGenerating(id) }
+        }
+    }
+
+    @Test @MainActor func deletingLastMessageRemovesConversationFromDisk() async {
+        let persistence = RecordingPersistence()
+        let fixture = makeFixture(persistence: persistence)
+        fixture.engine.respond(with: [.snapshot(text: "回复", reasoning: nil)])
+        fixture.workspace.settings.generatesTitles = false
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let id = fixture.workspace.createConversation()
+        await completeTurn(fixture, "要删的问题", in: id)
+        #expect(await persistence.stored(id) != nil)
+
+        for message in fixture.workspace.conversation(id)?.messages ?? [] {
+            fixture.workspace.deleteMessage(message.id, in: id)
+        }
+        fixture.workspace.addMemory("标记")
+        let drained = await waitUntil { await persistence.operations.contains(.saveMemories(1)) }
+        #expect(drained)
+        #expect(await persistence.stored(id) == nil)
+
+        let relaunched = makeFixture(persistence: persistence)
+        await relaunched.workspace.loadIfNeeded()
+        #expect(relaunched.workspace.conversation(id) == nil)
+    }
+
+    @Test @MainActor func rerunWithoutSendConditionsKeepsLaterMessages() async throws {
+        let fixture = makeFixture()
+        fixture.engine.respond(with: [.snapshot(text: "回答", reasoning: nil)])
+        fixture.workspace.settings.generatesTitles = false
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let id = fixture.workspace.createConversation()
+        await completeTurn(fixture, "第一问", in: id)
+        await completeTurn(fixture, "第二问", in: id)
+        let before = try #require(fixture.workspace.conversation(id)?.messages)
+        #expect(before.count == 4)
+
+        // Missing model: nothing may be truncated.
+        fixture.workspace.updateConversation(id) { $0.modelID = nil }
+        fixture.workspace.regenerate(before[1].id, in: id)
+        fixture.workspace.editAndResend(before[0].id, text: "改过的第一问", in: id)
+        #expect(fixture.workspace.conversation(id)?.messages == before)
+
+        // Missing key: nothing may be truncated either.
+        fixture.workspace.updateConversation(id) { $0.modelID = "test-model" }
+        await fixture.workspace.removeStoredKey()
+        #expect(fixture.workspace.credentialState == .missingKey)
+        fixture.workspace.regenerate(before[1].id, in: id)
+        fixture.workspace.editAndResend(before[0].id, text: "改过的第一问", in: id)
+        _ = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { !workspace.isGenerating(id) }
+        }
+        #expect(fixture.workspace.conversation(id)?.messages == before)
+        #expect(fixture.engine.streamRequests.count == 2)
+    }
+
+    @Test @MainActor func loadMarksOrphanedStreamingRepliesInterrupted() async {
+        let user = ChatMessage(role: .user, text: "问")
+        let partial = ChatMessage(role: .assistant, text: "半截回复", modelID: "test-model", status: .streaming)
+        let seeded = ChatConversation(modelID: "test-model", messages: [user, partial])
+        let persistence = RecordingPersistence(seeded: [seeded])
+        let fixture = makeFixture(persistence: persistence)
+        await fixture.workspace.loadIfNeeded()
+
+        let recovered = fixture.workspace.conversation(seeded.id)?.messages.last
+        #expect(recovered?.status == .interrupted)
+        #expect(recovered?.failure == .generationInterrupted)
+        #expect(recovered?.text == "半截回复")
+        let rewritten = await waitUntil {
+            await persistence.saves(for: seeded.id).last?.lastStatus == .interrupted
+        }
+        #expect(rewritten)
+    }
+
+    @Test @MainActor func conversationFromAnotherServerNeedsConfirmationBeforeSending() async throws {
+        let fixture = makeFixture()
+        fixture.engine.respond(with: [.snapshot(text: "回答", reasoning: nil)])
+        fixture.workspace.settings.generatesTitles = false
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let id = fixture.workspace.createConversation()
+        await completeTurn(fixture, "只给 A 看的问题", in: id)
+        #expect(fixture.workspace.conversation(id)?.serverIdentifier == server.identifier)
+        #expect(fixture.workspace.serverChange(for: id) == nil)
+
+        let other = try CPAServer(baseURL: "https://other.example.com")
+        await fixture.workspace.bind(server: other) { nil }
+        #expect(await fixture.workspace.useManualKey("test-client-key-0002"))
+        let change = try #require(fixture.workspace.serverChange(for: id))
+        #expect(change.previousServerIdentifier == server.identifier)
+        #expect(change.currentServerIdentifier == other.identifier)
+        #expect(change.messageCount == 2)
+
+        let before = try #require(fixture.workspace.conversation(id)?.messages)
+        #expect(!fixture.workspace.send("继续", attachments: [], in: id))
+        #expect(!fixture.workspace.regenerate(before[1].id, in: id))
+        #expect(!fixture.workspace.editAndResend(before[0].id, text: "改", in: id))
+        #expect(fixture.workspace.conversation(id)?.messages == before)
+        #expect(fixture.engine.streamRequests.count == 1)
+
+        #expect(fixture.workspace.send("继续", attachments: [], in: id, confirmingServerChange: true))
+        _ = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { !workspace.isGenerating(id) }
+        }
+        #expect(fixture.engine.streamRequests.count == 2)
+        #expect(fixture.engine.streamRequests.last?.baseURL.host == other.baseURL.host)
+        #expect(fixture.workspace.conversation(id)?.serverIdentifier == other.identifier)
+        #expect(fixture.workspace.serverChange(for: id) == nil)
+    }
+
+    @Test @MainActor func legacyConversationWithoutServerNeedsConfirmation() async throws {
+        let legacy = ChatConversation(
+            modelID: "test-model",
+            messages: [ChatMessage(role: .user, text: "旧问题"),
+                       ChatMessage(role: .assistant, text: "旧回答", modelID: "test-model")])
+        let fixture = makeFixture(persistence: RecordingPersistence(seeded: [legacy]))
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+
+        let change = try #require(fixture.workspace.serverChange(for: legacy.id))
+        #expect(change.previousServerIdentifier == nil)
+        #expect(!fixture.workspace.send("继续", attachments: [], in: legacy.id))
+        #expect(fixture.engine.streamRequests.isEmpty)
+        // A fresh conversation on the bound server needs no confirmation.
+        let fresh = fixture.workspace.createConversation()
+        #expect(fixture.workspace.serverChange(for: fresh) == nil)
+        #expect(fixture.workspace.conversation(fresh)?.serverIdentifier == server.identifier)
+    }
+
+    @Test @MainActor func completionNotificationCarriesNoConversationText() async {
+        let fixture = makeFixture()
+        fixture.engine.respond(with: [.snapshot(text: "私密回复", reasoning: nil)])
+        fixture.runner.inBackground = true
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let id = fixture.workspace.createConversation()
+        await completeTurn(fixture, "锁屏上不该出现的问题", in: id)
+
+        #expect(fixture.runner.notifications == [id])
+        for text in [ChatCompletionNotice.title, ChatCompletionNotice.body] {
+            #expect(!text.contains("锁屏上不该出现"))
+            #expect(!text.contains("私密回复"))
+        }
+        #expect(ChatCompletionNotice.userInfo(for: id) == ["conversationID": id.uuidString])
+        #expect(ChatCompletionNotice.conversationID(from: ["conversationID": id.uuidString]) == id)
+    }
+
+    @Test @MainActor func deleteAllReportsFailureAndKeepsRemainingRecordsVisible() async {
+        let seeded = [
+            ChatConversation(messages: [ChatMessage(role: .user, text: "一")]),
+            ChatConversation(messages: [ChatMessage(role: .user, text: "二")]),
+        ]
+        let persistence = FailingBulkRemovalPersistence()
+        for conversation in seeded { try? await persistence.saveConversation(conversation) }
+        let fixture = makeFixture(persistence: persistence)
+        await fixture.workspace.loadIfNeeded()
+        #expect(fixture.workspace.conversations.count == 2)
+
+        #expect(await fixture.workspace.deleteAllConversations() == false)
+        #expect(Set(fixture.workspace.conversations.map(\.id)) == Set(seeded.map(\.id)))
+
+        await persistence.allowRemoval()
+        #expect(await fixture.workspace.deleteAllConversations())
+        #expect(fixture.workspace.conversations.isEmpty)
+        #expect(await (try? persistence.loadConversations())?.isEmpty == true)
+    }
+
+    @Test @MainActor func streamingRepliesArePersistedBeforeTheyFinish() async {
+        let persistence = RecordingPersistence()
+        let fixture = makeFixture(persistence: persistence, streamingPersistInterval: .zero)
+        fixture.engine.respond(with: [
+            .snapshot(text: "部分", reasoning: nil),
+            .snapshot(text: "部分回复", reasoning: nil),
+        ])
+        fixture.workspace.settings.generatesTitles = false
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let id = fixture.workspace.createConversation()
+        await completeTurn(fixture, "问", in: id)
+
+        let writes = await persistence.saves(for: id)
+        #expect(writes.contains { $0.lastStatus == .streaming && $0.lastText == "部分" })
+        #expect(writes.last?.lastStatus == .complete)
+        #expect(writes.last?.lastText == "部分回复")
+    }
+
+    @Test @MainActor func unrememberedConnectionKeepsClientKeyInMemoryOnly() async throws {
+        let fixture = makeFixture()
+        fixture.engine.respond(with: [.snapshot(text: "回答", reasoning: nil)])
+        fixture.workspace.settings.generatesTitles = false
+        await fixture.workspace.loadIfNeeded()
+        let account = ChatSecrets.clientAPIKeyAccount(for: server)
+        // A key stored by an earlier remembered connection.
+        await fixture.workspace.bind(server: server) { nil }
+        #expect(await fixture.workspace.useManualKey("test-client-key-0009"))
+        #expect(try await fixture.secrets.loadSecret(account: account) != nil)
+
+        await fixture.transport.respond("/v0/management/api-keys", status: 200,
+                                        body: #"{"api-keys":["test-client-key-0001"]}"#)
+        let discovery = makeDiscovery(fixture.transport)
+        await fixture.workspace.bind(server: server, persistsKey: false) { discovery }
+
+        #expect(!fixture.workspace.persistsKey)
+        #expect(fixture.workspace.credentialState == .ready(hint: "••••0001", isManual: false))
+        #expect(try await fixture.secrets.loadSecret(account: account) == nil)
+        #expect(await fixture.workspace.useManualKey("test-client-key-0002"))
+        #expect(try await fixture.secrets.loadSecret(account: account) == nil)
+
+        let id = fixture.workspace.createConversation()
+        await completeTurn(fixture, "临时连接", in: id)
+        #expect(fixture.engine.streamRequests.last?.apiKey.exposedValue == "test-client-key-0002")
     }
 }

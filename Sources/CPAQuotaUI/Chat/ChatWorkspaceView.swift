@@ -17,6 +17,7 @@ public struct ChatWorkspaceView: View {
     @State private var pendingConversation: UUID?
     @State private var renaming: ChatConversation?
     @State private var renameDraft = ""
+    @State private var pendingDeletion: ChatConversation?
 
     public init(session: CPAQuotaSession) {
         self.session = session
@@ -91,11 +92,13 @@ public struct ChatWorkspaceView: View {
                         }
                         .accessibilityIdentifier("chat.conversation.\(conversation.id.uuidString)")
                         .swipeActions(edge: .trailing) {
-                            Button(role: .destructive) {
-                                chat.deleteConversation(conversation.id)
+                            // No destructive role: the row must stay until the deletion is confirmed.
+                            Button {
+                                pendingDeletion = conversation
                             } label: {
                                 Label("删除", systemImage: "trash")
                             }
+                            .tint(palette.statusError)
                         }
                         .contextMenu {
                             Button {
@@ -105,7 +108,7 @@ public struct ChatWorkspaceView: View {
                                 Label("重命名", systemImage: "pencil")
                             }
                             Button(role: .destructive) {
-                                chat.deleteConversation(conversation.id)
+                                pendingDeletion = conversation
                             } label: {
                                 Label("删除对话", systemImage: "trash")
                             }
@@ -163,6 +166,17 @@ public struct ChatWorkspaceView: View {
                 renaming = nil
             }
             Button("取消", role: .cancel) { renaming = nil }
+        }
+        .confirmationDialog(
+            "删除这段对话？",
+            isPresented: Binding(get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingDeletion
+        ) { conversation in
+            Button("删除", role: .destructive) { chat.deleteConversation(conversation.id) }
+            Button("取消", role: .cancel) {}
+        } message: { conversation in
+            Text(ChatDeletionCopy.message(isGenerating: chat.isGenerating(conversation.id)))
         }
         .tint(palette.actionTint)
         .task { await chat.loadIfNeeded() }

@@ -17,6 +17,7 @@ struct ChatComposerView: View {
     @Binding var attachments: [ChatImageAttachment]
     @Binding var editingMessageID: UUID?
     let onOpenSettings: () -> Void
+    let onCancelEdit: () -> Void
     let onSubmit: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
@@ -57,10 +58,7 @@ struct ChatComposerView: View {
                         .font(.footnote)
                         .foregroundStyle(palette.textSecondary)
                     Spacer(minLength: 8)
-                    Button("取消") {
-                        editingMessageID = nil
-                        draft = ""
-                    }
+                    Button("取消", action: onCancelEdit)
                     .font(.footnote)
                     .frame(minHeight: 44)
                 }

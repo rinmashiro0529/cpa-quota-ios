@@ -34,6 +34,7 @@
 		A10000000000000000000019 /* ChatPromptBuilderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001E /* ChatPromptBuilderTests.swift */; };
 		A1000000000000000000001A /* ChatFilePersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001F /* ChatFilePersistenceTests.swift */; };
 		A1000000000000000000001B /* ChatWorkspaceModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000020 /* ChatWorkspaceModelTests.swift */; };
+		E10000000000000000000A01 /* ChatSessionBindingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000A01 /* ChatSessionBindingTests.swift */; };
 		A1000000000000000000001C /* CPAQuotaChat in Frameworks */ = {isa = PBXBuildFile; productRef = A70000000000000000000005 /* CPAQuotaChat */; };
 		A1000000000000000000001D /* CPAQuotaChat in Frameworks */ = {isa = PBXBuildFile; productRef = A70000000000000000000006 /* CPAQuotaChat */; };
 		B10000000000000000000001 /* BackendReliabilityClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* BackendReliabilityClientTests.swift */; };
@@ -125,6 +126,7 @@
 		A2000000000000000000001E /* ChatPromptBuilderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/ChatPromptBuilderTests.swift; sourceTree = "<group>"; };
 		A2000000000000000000001F /* ChatFilePersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/ChatFilePersistenceTests.swift; sourceTree = "<group>"; };
 		A20000000000000000000020 /* ChatWorkspaceModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/ChatWorkspaceModelTests.swift; sourceTree = "<group>"; };
+		E20000000000000000000A01 /* ChatSessionBindingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/ChatSessionBindingTests.swift; sourceTree = "<group>"; };
 		A20000000000000000000018 /* CPAQuotaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CPAQuotaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B20000000000000000000001 /* BackendReliabilityClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/BackendReliabilityClientTests.swift; sourceTree = "<group>"; };
 		B20000000000000000000002 /* BackendReliabilityIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Tests/CPAQuotaKitTests/BackendReliabilityIdentityTests.swift; sourceTree = "<group>"; };
@@ -231,6 +233,7 @@
 				A2000000000000000000001E /* ChatPromptBuilderTests.swift */,
 				A2000000000000000000001F /* ChatFilePersistenceTests.swift */,
 				A20000000000000000000020 /* ChatWorkspaceModelTests.swift */,
+				E20000000000000000000A01 /* ChatSessionBindingTests.swift */,
 				B20000000000000000000001 /* BackendReliabilityClientTests.swift */,
 				B20000000000000000000002 /* BackendReliabilityIdentityTests.swift */,
 				B20000000000000000000003 /* BackendReliabilitySessionTests.swift */,
@@ -420,6 +423,7 @@
 				A10000000000000000000019 /* ChatPromptBuilderTests.swift in Sources */,
 				A1000000000000000000001A /* ChatFilePersistenceTests.swift in Sources */,
 				A1000000000000000000001B /* ChatWorkspaceModelTests.swift in Sources */,
+				E10000000000000000000A01 /* ChatSessionBindingTests.swift in Sources */,
 				B10000000000000000000001 /* BackendReliabilityClientTests.swift in Sources */,
 				B10000000000000000000002 /* BackendReliabilityIdentityTests.swift in Sources */,
 				B10000000000000000000003 /* BackendReliabilitySessionTests.swift in Sources */,

@@ -112,7 +112,7 @@ struct ChatConversationOptionsView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("对话记录只保存在本机，删除后无法恢复。")
+            Text(ChatDeletionCopy.message(isGenerating: chat.isGenerating(conversationID)))
         }
     }
 

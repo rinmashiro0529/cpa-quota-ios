@@ -421,15 +421,19 @@ public final class CPAQuotaSession {
 
     public private(set) var authState: AuthState = .unconfigured {
         didSet {
-            let boundServer: CPAServer? = if case .connected(let server, _) = authState { server } else { nil }
-            let previousServer: CPAServer? = if case .connected(let server, _) = oldValue { server } else { nil }
-            guard boundServer != previousServer else { return }
+            let bound: (server: CPAServer, remembered: Bool)? =
+                if case .connected(let server, let remembered) = authState { (server, remembered) } else { nil }
+            let previous: (server: CPAServer, remembered: Bool)? =
+                if case .connected(let server, let remembered) = oldValue { (server, remembered) } else { nil }
+            guard bound?.server != previous?.server || bound?.remembered != previous?.remembered else { return }
             chatBindingTask?.cancel()
             chatWorkspace.unbind()
-            guard let boundServer else { return }
+            guard let bound else { return }
+            let boundServer = bound.server
             let chatWorkspace = self.chatWorkspace
+            // An unremembered connection keeps its chat client key in memory only.
             chatBindingTask = Task {
-                await chatWorkspace.bind(server: boundServer) { [weak self] in
+                await chatWorkspace.bind(server: boundServer, persistsKey: bound.remembered) { [weak self] in
                     await self?.makeAPIKeyDiscovery(for: boundServer)
                 }
             }

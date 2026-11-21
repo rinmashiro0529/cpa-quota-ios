@@ -12,6 +12,9 @@ struct ChatConversationView: View {
     @State private var draft = ""
     @State private var attachments: [ChatImageAttachment] = []
     @State private var editingMessageID: UUID?
+    /// The draft and images set aside while a sent message is being edited.
+    @State private var stashedDraft: (text: String, attachments: [ChatImageAttachment])?
+    @State private var pendingConfirmation: PendingConfirmation?
     @State private var isPresentingOptions = false
     @State private var isPresentingSettings = false
     @State private var memoryNotice: String?
@@ -47,6 +50,20 @@ struct ChatConversationView: View {
             .tint(palette.actionTint)
             .presentationDragIndicator(.visible)
         }
+        .confirmationDialog(
+            pendingConfirmation?.title ?? "",
+            isPresented: Binding(get: { pendingConfirmation != nil },
+                                 set: { if !$0 { pendingConfirmation = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingConfirmation
+        ) { confirmation in
+            Button(confirmation.confirmTitle, role: confirmation.isDestructive ? .destructive : nil) {
+                perform(confirmation.action, confirmingServerChange: true)
+            }
+            Button("取消", role: .cancel) {}
+        } message: { confirmation in
+            Text(confirmation.message)
+        }
     }
 
     @ViewBuilder
@@ -60,11 +77,13 @@ struct ChatConversationView: View {
                         ChatConversationEmptyState(conversation: conversation)
                             .padding(.top, 40)
                     }
+                    let canRerun = chat.generationBlocker(for: conversation.id) == nil
                     ForEach(conversation.messages) { message in
                         ChatMessageView(
                             message: message,
                             isLatestAssistant: message.id == lastAssistantID,
                             isConversationGenerating: isGenerating,
+                            canRerun: canRerun,
                             actions: actions(for: message, in: conversation)
                         )
                         .id(message.id)
@@ -92,15 +111,23 @@ struct ChatConversationView: View {
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                ChatComposerView(
-                    chat: chat,
-                    conversation: conversation,
-                    draft: $draft,
-                    attachments: $attachments,
-                    editingMessageID: $editingMessageID,
-                    onOpenSettings: { isPresentingSettings = true },
-                    onSubmit: { submit(in: conversation) }
-                )
+                VStack(spacing: 0) {
+                    if let change = chat.serverChange(for: conversation.id) {
+                        ChatServerChangeNotice(change: change)
+                            .padding(.horizontal, 24)
+                            .padding(.bottom, 4)
+                    }
+                    ChatComposerView(
+                        chat: chat,
+                        conversation: conversation,
+                        draft: $draft,
+                        attachments: $attachments,
+                        editingMessageID: $editingMessageID,
+                        onOpenSettings: { isPresentingSettings = true },
+                        onCancelEdit: endEditing,
+                        onSubmit: { submit(in: conversation) }
+                    )
+                }
             }
         }
         .navigationTitle(conversation.displayTitle)
@@ -128,26 +155,94 @@ struct ChatConversationView: View {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         if let editingMessageID {
             guard !text.isEmpty else { return }
-            chat.editAndResend(editingMessageID, text: text, in: conversation.id)
-            self.editingMessageID = nil
+            request(.edit(editingMessageID, text), in: conversation)
         } else {
             guard !text.isEmpty || !attachments.isEmpty else { return }
-            chat.send(text, attachments: attachments, in: conversation.id)
-            attachments = []
+            request(.send(text, attachments), in: conversation)
         }
-        draft = ""
+    }
+
+    /// Asks first when the action would send this history to another server
+    /// or delete messages after the rerun point; otherwise performs it directly.
+    private func request(_ action: PendingAction, in conversation: ChatConversation) {
+        let change = chat.serverChange(for: conversation.id)
+        let removed = laterMessageCount(for: action, in: conversation)
+        guard change != nil || removed > 0 else {
+            perform(action, confirmingServerChange: false)
+            return
+        }
+        var parts: [String] = []
+        if let change {
+            let images = change.imageCount > 0 ? "和 \(change.imageCount) 张图片" : ""
+            let origin = change.previousServerIdentifier.map { "这段对话来自 \(ChatServerLabel.display($0))。" }
+                ?? "这段对话没有记录所属的 CPA 服务。"
+            parts.append("\(origin)继续会把此前的 \(change.messageCount) 条消息\(images)发送到 \(ChatServerLabel.display(change.currentServerIdentifier))，之后这段对话归属该服务。")
+        }
+        if removed > 0 {
+            parts.append("此后的 \(removed) 条消息将被删除，无法恢复。")
+        }
+        pendingConfirmation = PendingConfirmation(
+            action: action,
+            title: change != nil ? "在当前服务继续这段对话？" : "删除后续消息并重新生成？",
+            message: parts.joined(separator: "\n"),
+            confirmTitle: change != nil ? "继续发送" : "删除并重新生成",
+            isDestructive: removed > 0)
+    }
+
+    private func perform(_ action: PendingAction, confirmingServerChange: Bool) {
+        switch action {
+        case .send(let text, let images):
+            guard chat.send(text, attachments: images, in: conversationID,
+                            confirmingServerChange: confirmingServerChange) else { return }
+            draft = ""
+            attachments = []
+        case .edit(let messageID, let text):
+            guard chat.editAndResend(messageID, text: text, in: conversationID,
+                                     confirmingServerChange: confirmingServerChange) else { return }
+            endEditing()
+        case .regenerate(let messageID):
+            chat.regenerate(messageID, in: conversationID, confirmingServerChange: confirmingServerChange)
+        }
+    }
+
+    /// Messages beyond the reply being replaced; the replaced reply itself is not counted.
+    private func laterMessageCount(for action: PendingAction, in conversation: ChatConversation) -> Int {
+        let messages = conversation.messages
+        switch action {
+        case .send:
+            return 0
+        case .regenerate(let id):
+            guard let index = messages.firstIndex(where: { $0.id == id }) else { return 0 }
+            return messages.count - index - 1
+        case .edit(let id, _):
+            guard let index = messages.firstIndex(where: { $0.id == id }) else { return 0 }
+            let replyOffset = index + 1 < messages.count && messages[index + 1].role == .assistant ? 2 : 1
+            return max(0, messages.count - index - replyOffset)
+        }
+    }
+
+    private func beginEditing(_ message: ChatMessage) {
+        if editingMessageID == nil {
+            stashedDraft = (draft, attachments)
+        }
+        editingMessageID = message.id
+        draft = message.text
+        attachments = []
+    }
+
+    private func endEditing() {
+        editingMessageID = nil
+        draft = stashedDraft?.text ?? ""
+        attachments = stashedDraft?.attachments ?? []
+        stashedDraft = nil
     }
 
     private func actions(for message: ChatMessage, in conversation: ChatConversation) -> ChatMessageActions {
         ChatMessageActions(
             copy: { ChatClipboard.copy(message.text) },
             regenerate: message.role == .assistant
-                ? { chat.regenerate(message.id, in: conversation.id) } : nil,
-            edit: message.role == .user ? {
-                editingMessageID = message.id
-                draft = message.text
-                attachments = []
-            } : nil,
+                ? { request(.regenerate(message.id), in: conversation) } : nil,
+            edit: message.role == .user ? { beginEditing(message) } : nil,
             remember: {
                 chat.addMemory(message.text)
                 withAnimation { memoryNotice = "已加入记忆" }
@@ -158,6 +253,44 @@ struct ChatConversationView: View {
             },
             delete: { chat.deleteMessage(message.id, in: conversation.id) }
         )
+    }
+}
+
+private enum PendingAction {
+    case send(String, [ChatImageAttachment])
+    case edit(UUID, String)
+    case regenerate(UUID)
+}
+
+private struct PendingConfirmation {
+    let action: PendingAction
+    let title: String
+    let message: String
+    let confirmTitle: String
+    let isDestructive: Bool
+}
+
+/// States which server this history came from before anything is sent to the current one.
+private struct ChatServerChangeNotice: View {
+    let change: ChatServerChange
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    var body: some View {
+        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
+        Label(text, systemImage: "server.rack")
+            .font(.footnote)
+            .foregroundStyle(palette.textSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("chat.serverChange")
+    }
+
+    private var text: String {
+        let current = ChatServerLabel.display(change.currentServerIdentifier)
+        guard let previous = change.previousServerIdentifier else {
+            return "这段对话没有记录所属服务，继续发送前会先确认。当前连接：\(current)"
+        }
+        return "这段对话来自 \(ChatServerLabel.display(previous))，当前连接：\(current)。继续发送前会先确认。"
     }
 }
 

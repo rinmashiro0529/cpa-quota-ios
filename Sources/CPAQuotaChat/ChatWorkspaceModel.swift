@@ -13,6 +13,7 @@ public final class ChatWorkspaceModel {
     private let searchClient: @Sendable (ChatSearchProvider) -> any ChatSearchClient
     private let modelCatalog: @Sendable (CPAServer, CPAClientAPIKey) -> any ChatModelCatalog
     private let backgroundRunner: any ChatBackgroundRunner
+    private let streamingPersistInterval: Duration
     private var discoveryFactory: (@Sendable () async -> CPAAPIKeyDiscovery?)?
 
     public init(
@@ -21,7 +22,8 @@ public final class ChatWorkspaceModel {
         engine: any ChatEngine = AnyLanguageModelChatEngine(),
         searchClient: @escaping @Sendable (ChatSearchProvider) -> any ChatSearchClient = { ChatSearch.client(for: $0) },
         modelCatalog: @escaping @Sendable (CPAServer, CPAClientAPIKey) -> any ChatModelCatalog = { CPAModelCatalogClient(server: $0, apiKey: $1) },
-        backgroundRunner: any ChatBackgroundRunner = SystemChatBackgroundRunner()
+        backgroundRunner: any ChatBackgroundRunner = SystemChatBackgroundRunner(),
+        streamingPersistInterval: Duration = .seconds(2)
     ) {
         self.persistence = persistence
         self.secrets = secrets
@@ -29,6 +31,7 @@ public final class ChatWorkspaceModel {
         self.searchClient = searchClient
         self.modelCatalog = modelCatalog
         self.backgroundRunner = backgroundRunner
+        self.streamingPersistInterval = streamingPersistInterval
     }
 
     // MARK: - Server binding & credentials
@@ -42,6 +45,9 @@ public final class ChatWorkspaceModel {
     @ObservationIgnored private var credentialRevision: UInt64 = 0
     @ObservationIgnored private var keyWriteTail: Task<Void, any Error>?
     public private(set) var keyRemovalFailed = false
+    /// `false` for a connection the user chose not to remember: the client
+    /// key then lives only in memory and nothing is written to the Keychain.
+    public private(set) var persistsKey = true
 
     private struct StoredKey: Codable {
         var v: Int
@@ -50,21 +56,42 @@ public final class ChatWorkspaceModel {
     }
 
     /// Binds the workspace to the accepted CPA connection. Rebinding the same
-    /// server is a no-op unless the state needs recovery (`.failed`/`.missingKey`).
-    public func bind(server: CPAServer?, discovery: @escaping @Sendable () async -> CPAAPIKeyDiscovery?) async {
+    /// server is a no-op unless the state needs recovery (`.failed`/`.missingKey`)
+    /// or the remembered state changed.
+    ///
+    /// With `persistsKey == false` the Keychain is neither read nor written;
+    /// a client key stored earlier for this server is removed so the
+    /// unremembered connection leaves no credential behind.
+    public func bind(server: CPAServer?, persistsKey: Bool = true,
+                     discovery: @escaping @Sendable () async -> CPAAPIKeyDiscovery?) async {
         guard !Task.isCancelled else { return }
         guard let server else {
             unbind()
             return
         }
-        if self.server == server, !isRecoverable { return }
+        if self.server == server, self.persistsKey == persistsKey, !isRecoverable { return }
         unbind()
         let revision = credentialRevision
         self.server = server
+        self.persistsKey = persistsKey
         discoveryFactory = discovery
         credentialState = .loading
         _ = await keyWriteTail?.result
         guard isCurrent(revision) else { return }
+        guard persistsKey else {
+            let store = secrets
+            let account = ChatSecrets.clientAPIKeyAccount(for: server)
+            do {
+                try await enqueueKeyWrite { try await store.removeSecret(account: account) }.value
+            } catch {
+                guard isCurrent(revision) else { return }
+                keyRemovalFailed = true
+            }
+            guard isCurrent(revision) else { return }
+            credentialState = .missingKey
+            await discoverKeys()
+            return
+        }
         do {
             let stored = try await secrets.loadSecret(account: ChatSecrets.clientAPIKeyAccount(for: server))
             guard isCurrent(revision) else { return }
@@ -89,6 +116,7 @@ public final class ChatWorkspaceModel {
     package func unbind() {
         advanceCredentialRevision()
         server = nil
+        persistsKey = true
         discoveryFactory = nil
         activeKey = nil
         credentialState = .unbound
@@ -158,11 +186,12 @@ public final class ChatWorkspaceModel {
         let revision = credentialRevision
         activeKey = nil
         credentialState = .loading
-        keyRemovalFailed = false
+        // An unremembered connection keeps reporting a stale entry it could not remove.
+        if persistsKey { keyRemovalFailed = false }
         models = []
         modelListState = .idle
         do {
-            try await saveStoredKey(key, manual: manual, for: server)
+            if persistsKey { try await saveStoredKey(key, manual: manual, for: server) }
         } catch {
             guard isCurrent(revision) else { return false }
             credentialState = .failed(storageError(error))
@@ -313,6 +342,7 @@ public final class ChatWorkspaceModel {
         conversations = ((try? await persistence.loadConversations()) ?? [])
             .filter { !$0.messages.isEmpty }
             .sorted { $0.updatedAt > $1.updatedAt }
+        recoverOrphanedReplies()
         if let stored = try? await persistence.loadSettings() {
             settings = stored
         }
@@ -324,6 +354,21 @@ public final class ChatWorkspaceModel {
             let value = skills
             let store = persistence
             enqueuePersist { try? await store.saveSkills(value) }
+        }
+    }
+
+    /// A reply still marked `.streaming` with no running task was cut off when
+    /// the app ended; it is kept as interrupted so it can be regenerated.
+    private func recoverOrphanedReplies() {
+        for index in conversations.indices where generationTasks[conversations[index].id] == nil {
+            var changed = false
+            for messageIndex in conversations[index].messages.indices
+            where conversations[index].messages[messageIndex].status == .streaming {
+                conversations[index].messages[messageIndex].status = .interrupted
+                conversations[index].messages[messageIndex].failure = .generationInterrupted
+                changed = true
+            }
+            if changed { persist(conversations[index]) }
         }
     }
 
@@ -360,7 +405,7 @@ public final class ChatWorkspaceModel {
         } else {
             models.first?.id
         }
-        let conversation = ChatConversation(modelID: modelID)
+        let conversation = ChatConversation(modelID: modelID, serverIdentifier: server?.identifier)
         conversations.insert(conversation, at: 0)
         return conversation.id
     }
@@ -376,15 +421,38 @@ public final class ChatWorkspaceModel {
         enqueuePersist { try? await store.removeConversation(id) }
     }
 
-    public func deleteAllConversations() {
+    /// Returns `false` when some records could not be removed; those are read
+    /// back from disk so the list shows what is still stored and the user can retry.
+    @discardableResult
+    public func deleteAllConversations() async -> Bool {
         for task in generationTasks.values { task.cancel() }
         for task in titleTasks.values { task.cancel() }
         generationTasks.removeAll()
         stopReasons.removeAll()
         titleTasks.removeAll()
+        // Clear first: cancelled generations then find no conversation to write back.
         conversations.removeAll()
         let store = persistence
-        enqueuePersist { try? await store.removeAllConversations() }
+        let previous = persistTail
+        let removal = Task { () -> Bool in
+            await previous?.value
+            do {
+                try await store.removeAllConversations()
+                return true
+            } catch {
+                return false
+            }
+        }
+        persistTail = Task { _ = await removal.value }
+        guard await removal.value else {
+            let remaining = ((try? await persistence.loadConversations()) ?? [])
+                .filter { stored in !stored.messages.isEmpty && !conversations.contains { $0.id == stored.id } }
+            conversations.append(contentsOf: remaining)
+            conversations.sort { $0.updatedAt > $1.updatedAt }
+            recoverOrphanedReplies()
+            return false
+        }
+        return true
     }
 
     public func renameConversation(_ id: UUID, title: String) {
@@ -406,12 +474,38 @@ public final class ChatWorkspaceModel {
 
     // MARK: - Generation
 
-    public func send(_ text: String, attachments: [ChatImageAttachment], in conversationID: UUID) {
+    /// `nil` when the conversation may be continued on the bound server as is.
+    public func serverChange(for conversationID: UUID) -> ChatServerChange? {
+        guard let server, let conversation = conversation(conversationID),
+              !conversation.messages.isEmpty,
+              conversation.serverIdentifier != server.identifier else { return nil }
+        return ChatServerChange(
+            previousServerIdentifier: conversation.serverIdentifier,
+            currentServerIdentifier: server.identifier,
+            messageCount: conversation.messages.count,
+            imageCount: conversation.messages.reduce(0) { $0 + $1.attachments.count })
+    }
+
+    /// Why a rerun (regenerate / edit and resend) cannot start right now.
+    /// Reruns check this before truncating anything.
+    public func generationBlocker(for conversationID: UUID) -> ChatFailure? {
+        guard case .ready = credentialState, server != nil, activeKey != nil else { return .missingAPIKey }
+        guard let modelID = conversation(conversationID)?.modelID, !modelID.isEmpty else { return .missingModel }
+        return nil
+    }
+
+    /// Returns `false` without changing anything when the conversation belongs
+    /// to another server and `confirmingServerChange` is not set.
+    @discardableResult
+    public func send(_ text: String, attachments: [ChatImageAttachment], in conversationID: UUID,
+                     confirmingServerChange: Bool = false) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !attachments.isEmpty,
               generationTasks[conversationID] == nil,
-              let conversation = self.conversation(conversationID) else { return }
+              confirmingServerChange || serverChange(for: conversationID) == nil,
+              let conversation = self.conversation(conversationID) else { return false }
         startGeneration(text: text, attachments: attachments, conversation: conversation)
+        return true
     }
 
     private func startGeneration(text: String?, attachments: [ChatImageAttachment], conversation: ChatConversation) {
@@ -428,31 +522,44 @@ public final class ChatWorkspaceModel {
     }
 
     /// Drops the assistant message and everything after it, then reruns from
-    /// the preceding user message.
-    public func regenerate(_ assistantMessageID: UUID, in conversationID: UUID) {
-        guard generationTasks[conversationID] == nil,
+    /// the preceding user message. Send conditions are checked first, so a
+    /// rerun that cannot start never deletes anything.
+    @discardableResult
+    public func regenerate(_ assistantMessageID: UUID, in conversationID: UUID,
+                           confirmingServerChange: Bool = false) -> Bool {
+        guard canRerun(conversationID, confirmingServerChange: confirmingServerChange),
               var conversation = self.conversation(conversationID),
               let index = conversation.messages.firstIndex(where: { $0.id == assistantMessageID }),
-              conversation.messages[index].role == .assistant else { return }
+              conversation.messages[index].role == .assistant,
+              index > 0, conversation.messages[index - 1].role == .user else { return false }
         conversation.messages.removeSubrange(index...)
-        // The triggering user message is now the last one (if any).
+        // The triggering user message is now the last one.
         updateConversationSilently(conversation)
-        guard conversation.messages.last?.role == .user else { return }
         startGeneration(text: nil, attachments: [], conversation: conversation)
+        return true
     }
 
     /// Replaces the user message text, drops everything after it, then reruns.
-    public func editAndResend(_ userMessageID: UUID, text: String, in conversationID: UUID) {
+    @discardableResult
+    public func editAndResend(_ userMessageID: UUID, text: String, in conversationID: UUID,
+                              confirmingServerChange: Bool = false) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
-              generationTasks[conversationID] == nil,
+              canRerun(conversationID, confirmingServerChange: confirmingServerChange),
               var conversation = self.conversation(conversationID),
               let index = conversation.messages.firstIndex(where: { $0.id == userMessageID }),
-              conversation.messages[index].role == .user else { return }
+              conversation.messages[index].role == .user else { return false }
         conversation.messages[index].text = text
         conversation.messages.removeSubrange((index + 1)...)
         updateConversationSilently(conversation)
         startGeneration(text: nil, attachments: [], conversation: conversation)
+        return true
+    }
+
+    private func canRerun(_ conversationID: UUID, confirmingServerChange: Bool) -> Bool {
+        generationTasks[conversationID] == nil
+            && generationBlocker(for: conversationID) == nil
+            && (confirmingServerChange || serverChange(for: conversationID) == nil)
     }
 
     public func deleteMessage(_ id: UUID, in conversationID: UUID) {
@@ -501,6 +608,8 @@ public final class ChatWorkspaceModel {
             return
         }
 
+        // The history is about to be sent here, so the conversation now belongs to this server.
+        conversation.serverIdentifier = server.identifier
         if conversation.title.isEmpty {
             conversation.title = String(userMessage.text.prefix(24))
         }
@@ -581,6 +690,7 @@ public final class ChatWorkspaceModel {
             reasoningEffort: conversation.reasoningEffort)
 
         var succeeded = false
+        var lastPartialWrite = ContinuousClock.now
         do {
             for try await event in engine.stream(request) {
                 try Task.checkCancellation()
@@ -589,6 +699,13 @@ public final class ChatWorkspaceModel {
                     mutateAssistant(assistantID, in: conversationID) {
                         $0.text = text
                         $0.reasoning = reasoning
+                    }
+                    // Throttled partial writes keep displayed text if the app is terminated mid-stream.
+                    let now = ContinuousClock.now
+                    if now - lastPartialWrite >= streamingPersistInterval,
+                       let current = self.conversation(conversationID) {
+                        lastPartialWrite = now
+                        persist(current)
                     }
                 case .usage(let usage):
                     mutateAssistant(assistantID, in: conversationID) {
@@ -620,10 +737,7 @@ public final class ChatWorkspaceModel {
 
         if succeeded, isCurrent(revision) {
             if backgroundRunner.isAppInBackground, settings.notifiesOnBackgroundCompletion {
-                let title = self.conversation(conversationID)?.title ?? ""
-                await backgroundRunner.notifyCompletion(
-                    conversationID: conversationID,
-                    title: title.isEmpty ? "新对话" : title)
+                await backgroundRunner.notifyCompletion(conversationID: conversationID)
             }
             if isCurrent(revision), settings.generatesTitles,
                let current = self.conversation(conversationID),
@@ -730,13 +844,17 @@ public final class ChatWorkspaceModel {
         return task
     }
 
-    /// Persists a conversation; empty conversations are never written.
+    /// Persists a conversation. Empty conversations are never written; one
+    /// that became empty has its earlier file removed so it cannot come back.
     @discardableResult
     private func persist(_ conversation: ChatConversation) -> Task<Void, Never> {
         let store = persistence
         return enqueuePersist {
-            guard !conversation.messages.isEmpty else { return }
-            try? await store.saveConversation(conversation)
+            if conversation.messages.isEmpty {
+                try? await store.removeConversation(conversation.id)
+            } else {
+                try? await store.saveConversation(conversation)
+            }
         }
     }
 

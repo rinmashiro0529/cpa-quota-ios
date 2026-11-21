@@ -80,6 +80,11 @@ public struct ChatFailurePresentation: Equatable, Sendable {
             summary = "应用在后台的可用时间已用完，已保存中断前生成的内容。可以重新生成。"
             symbolName = "moon.zzz"
             severity = .neutral
+        case .generationInterrupted:
+            title = "生成已中断"
+            summary = "应用在生成过程中被关闭，已保存中断前生成的内容。可以重新生成。"
+            symbolName = "pause.circle"
+            severity = .neutral
         }
     }
 }
@@ -105,6 +110,24 @@ extension ChatConversation {
         guard let last = messages.last(where: { !$0.text.isEmpty }) else { return "暂无消息" }
         let flattened = last.text.replacingOccurrences(of: "\n", with: " ")
         return String(flattened.prefix(80))
+    }
+}
+
+enum ChatDeletionCopy {
+    static func message(isGenerating: Bool) -> String {
+        isGenerating
+            ? "正在生成的回复将停止。对话记录只保存在本机，删除后无法恢复。"
+            : "对话记录只保存在本机，删除后无法恢复。"
+    }
+}
+
+/// Human-readable form of a `CPAServer.identifier` (host, port and path; no scheme).
+enum ChatServerLabel {
+    static func display(_ identifier: String) -> String {
+        guard let url = URL(string: identifier), let host = url.host else { return identifier }
+        let port = url.port.map { ":\($0)" } ?? ""
+        let path = url.path == "/" ? "" : url.path
+        return host + port + path
     }
 }
 

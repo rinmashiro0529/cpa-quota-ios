@@ -108,11 +108,22 @@ public actor ChatFilePersistence: ChatPersistence {
         catch { throw ChatPersistenceError.storageFailure }
     }
 
+    /// Attempts every file, then throws if any record could not be removed so
+    /// the caller never reports a deletion that did not happen.
     public func removeAllConversations() async throws {
         let manager = FileManager.default
-        guard let files = try? manager.contentsOfDirectory(
-            at: conversationsDirectory, includingPropertiesForKeys: nil) else { return }
-        for file in files { try? manager.removeItem(at: file) }
+        var isDirectory: ObjCBool = false
+        guard manager.fileExists(atPath: conversationsDirectory.path, isDirectory: &isDirectory) else { return }
+        guard isDirectory.boolValue else { throw ChatPersistenceError.storageFailure }
+        let files: [URL]
+        do {
+            files = try manager.contentsOfDirectory(at: conversationsDirectory, includingPropertiesForKeys: nil)
+        } catch { throw ChatPersistenceError.storageFailure }
+        var failed = false
+        for file in files {
+            do { try manager.removeItem(at: file) } catch { failed = true }
+        }
+        if failed { throw ChatPersistenceError.storageFailure }
     }
 
     public func loadSettings() async throws -> ChatSettings? {

@@ -16,6 +16,8 @@ struct ChatSettingsView: View {
     @State private var searchKeyRejected = false
     @State private var notificationDenied = false
     @State private var isConfirmingDeleteAll = false
+    @State private var isDeletingAll = false
+    @State private var deleteAllFailed = false
 
     var body: some View {
         let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
@@ -71,18 +73,24 @@ struct ChatSettingsView: View {
             } header: {
                 Text("通知与标题")
             } footer: {
-                Text("离开应用后，系统通常只允许继续生成约 30 秒；超时会保存已生成的内容并标记为中断。通知只显示对话标题，不显示消息内容。自动标题会额外发送一次简短请求。")
+                Text("离开应用后，系统通常只允许继续生成约 30 秒；超时会保存已生成的内容并标记为中断。通知只提示回复已完成，不显示对话标题或消息内容。自动标题会额外发送一次简短请求。")
             }
             .listRowBackground(palette.contentSurface)
 
             Section {
+                if deleteAllFailed {
+                    Label("部分对话未能从本机删除，列表中保留的就是仍然存在的记录。可以重试。", systemImage: "exclamationmark.triangle")
+                        .font(.footnote)
+                        .foregroundStyle(palette.statusWarn)
+                        .accessibilityIdentifier("chat.deleteAll.failed")
+                }
                 Button(role: .destructive) {
                     isConfirmingDeleteAll = true
                 } label: {
-                    Label("删除全部对话", systemImage: "trash")
+                    Label(deleteAllFailed ? "重试删除全部对话" : "删除全部对话", systemImage: "trash")
                         .frame(minHeight: 44)
                 }
-                .disabled(chat.conversations.isEmpty)
+                .disabled(chat.conversations.isEmpty || isDeletingAll)
             } footer: {
                 Text("对话、记忆与技能只保存在本机，不会上传到 CPA 以外的服务。")
             }
@@ -101,12 +109,23 @@ struct ChatSettingsView: View {
             }
         }
         .confirmationDialog("删除全部对话？", isPresented: $isConfirmingDeleteAll, titleVisibility: .visible) {
-            Button("删除全部", role: .destructive) { chat.deleteAllConversations() }
+            Button("删除全部", role: .destructive) {
+                isDeletingAll = true
+                Task {
+                    deleteAllFailed = !(await chat.deleteAllConversations())
+                    isDeletingAll = false
+                }
+            }
             Button("取消", role: .cancel) {}
         } message: {
             Text("将移除本机保存的全部对话记录，记忆与技能保留。")
         }
         .task(id: chat.settings.searchProvider) { await refreshSearchKeyState() }
+        .onChange(of: chat.settings.searchProvider) { _, _ in
+            // A draft typed for one service must never be saved under another.
+            searchKeyDraft = ""
+            searchKeyRejected = false
+        }
         .onChange(of: chat.server) { _, _ in
             manualKeyDraft = ""
             manualKeyRejected = false
@@ -191,14 +210,16 @@ struct ChatSettingsView: View {
                         await chat.removeStoredKey()
                     }
                 } label: {
-                    Label("移除本机保存的 Key", systemImage: "trash")
+                    Label(chat.persistsKey ? "移除本机保存的 Key" : "停止使用此 Key", systemImage: "trash")
                         .frame(minHeight: 44)
                 }
             }
         } header: {
             Text("API Key").font(QuotaTypography.brandHeadline)
         } footer: {
-            Text("读取 Key 列表使用已保存的 CPA 管理密钥；对话请求只使用所选的客户端 API Key。所选 Key 存入仅限本设备的系统钥匙串，界面只显示末尾 4 位。")
+            Text(chat.persistsKey
+                 ? "读取 Key 列表使用已保存的 CPA 管理密钥；对话请求只使用所选的客户端 API Key。所选 Key 存入仅限本设备的系统钥匙串，界面只显示末尾 4 位。"
+                 : "当前连接未记住，所选的客户端 API Key 只保留到断开连接，不写入系统钥匙串；界面只显示末尾 4 位。")
         }
         .listRowBackground(palette.contentSurface)
     }
@@ -280,10 +301,14 @@ struct ChatSettingsView: View {
                         .foregroundStyle(palette.statusWarn)
                 }
                 Button {
+                    // Capture the service and the draft together at tap time.
+                    let draft = searchKeyDraft
                     Task {
-                        let saved = await chat.saveSearchKey(searchKeyDraft, for: provider)
+                        guard chat.settings.searchProvider == provider else { return }
+                        let saved = await chat.saveSearchKey(draft, for: provider)
+                        guard chat.settings.searchProvider == provider else { return }
                         searchKeyRejected = !saved
-                        if saved { searchKeyDraft = "" }
+                        if saved, searchKeyDraft == draft { searchKeyDraft = "" }
                         await refreshSearchKeyState()
                     }
                 } label: {

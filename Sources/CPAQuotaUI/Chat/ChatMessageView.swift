@@ -23,6 +23,8 @@ struct ChatMessageView: View {
     let message: ChatMessage
     let isLatestAssistant: Bool
     let isConversationGenerating: Bool
+    /// Regenerate needs a usable key and model; a disabled entry never truncates.
+    let canRerun: Bool
     let actions: ChatMessageActions
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
@@ -142,6 +144,7 @@ struct ChatMessageView: View {
                 Button(action: regenerate) {
                     Label("重新生成", systemImage: "arrow.clockwise")
                 }
+                .disabled(!canRerun)
                 .accessibilityIdentifier("chat.regenerate")
             }
         }
@@ -170,6 +173,7 @@ struct ChatMessageView: View {
             Button(action: regenerate) {
                 Label("重新生成", systemImage: "arrow.clockwise")
             }
+            .disabled(!canRerun)
         }
         if !message.text.isEmpty {
             Button(action: actions.remember) {
