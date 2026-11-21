@@ -21,9 +21,19 @@ struct CPAQuotaiOSApp: App {
         #if DEBUG
         let testing = ProcessInfo.processInfo.arguments.contains("--ui-testing")
         usesUITesting = testing
-        _productionSession = State(initialValue: testing ? nil : CPAQuotaSession())
+        let session: CPAQuotaSession? = testing ? nil : CPAQuotaSession()
         #else
-        _productionSession = State(initialValue: CPAQuotaSession())
+        let session: CPAQuotaSession? = CPAQuotaSession()
+        #endif
+        _productionSession = State(initialValue: session)
+        #if canImport(UIKit)
+        if let session {
+            // Installed during launch so tapping a completion notice that starts the app still opens it.
+            ChatNotificationRouter.shared.install { conversationID in
+                session.activeTab = .chat
+                session.chatWorkspace.requestedConversationID = conversationID
+            }
+        }
         #endif
     }
 

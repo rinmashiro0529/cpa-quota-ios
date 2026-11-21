@@ -18,6 +18,7 @@ struct ChatConversationView: View {
     @State private var isPresentingOptions = false
     @State private var isPresentingSettings = false
     @State private var memoryNotice: String?
+    @State private var memoryNoticeTask: Task<Void, Never>?
 
     private var chat: ChatWorkspaceModel { session.chatWorkspace }
 
@@ -88,13 +89,6 @@ struct ChatConversationView: View {
                         )
                         .id(message.id)
                     }
-                    if let memoryNotice {
-                        Label(memoryNotice, systemImage: "checkmark.circle")
-                            .font(.footnote)
-                            .foregroundStyle(palette.textSecondary)
-                            .frame(maxWidth: .infinity)
-                            .transition(.opacity)
-                    }
                     Color.clear
                         .frame(height: 1)
                         .id(Self.bottomAnchor)
@@ -112,6 +106,17 @@ struct ChatConversationView: View {
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
+                    // Above the composer, so the notice is visible wherever the remembered message was.
+                    if let memoryNotice {
+                        Label(memoryNotice, systemImage: "checkmark.circle")
+                            .font(.footnote)
+                            .foregroundStyle(palette.textSecondary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(.regularMaterial, in: Capsule())
+                            .padding(.bottom, 4)
+                            .transition(.opacity)
+                    }
                     if let change = chat.serverChange(for: conversation.id) {
                         ChatServerChangeNotice(change: change)
                             .padding(.horizontal, 24)
@@ -130,13 +135,24 @@ struct ChatConversationView: View {
                 }
             }
         }
+        .onChange(of: conversation.messages.last.map { "\($0.id)|\($0.status.rawValue)" }) { old, _ in
+            guard old != nil, let last = conversation.messages.last, last.role == .assistant else { return }
+            switch last.status {
+            case .complete: announce(last.failure.map { "回复已完成，\(ChatFailurePresentation($0).title)" } ?? "回复已完成")
+            case .failed: announce("回复生成失败")
+            case .stopped: announce("已停止生成")
+            case .interrupted: announce("生成已中断")
+            case .streaming: break
+            }
+        }
         .navigationTitle(conversation.displayTitle)
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
             ToolbarItem(placement: .principal) {
-                ChatModelMenu(chat: chat, conversation: conversation)
+                ChatModelMenu(chat: chat, conversation: conversation,
+                              onOpenSettings: { isPresentingSettings = true })
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -221,6 +237,10 @@ struct ChatConversationView: View {
         }
     }
 
+    private func announce(_ text: String) {
+        AccessibilityNotification.Announcement(text).post()
+    }
+
     private func beginEditing(_ message: ChatMessage) {
         if editingMessageID == nil {
             stashedDraft = (draft, attachments)
@@ -246,8 +266,12 @@ struct ChatConversationView: View {
             remember: {
                 chat.addMemory(message.text)
                 withAnimation { memoryNotice = "已加入记忆" }
-                Task {
+                announce("已加入记忆")
+                // A newer notice restarts the timer instead of being cleared by an older one.
+                memoryNoticeTask?.cancel()
+                memoryNoticeTask = Task {
                     try? await Task.sleep(for: .seconds(2))
+                    guard !Task.isCancelled else { return }
                     withAnimation { memoryNotice = nil }
                 }
             },
@@ -325,6 +349,7 @@ private struct ChatConversationEmptyState: View {
 struct ChatModelMenu: View {
     let chat: ChatWorkspaceModel
     let conversation: ChatConversation
+    let onOpenSettings: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
 
@@ -340,11 +365,29 @@ struct ChatModelMenu: View {
                 }
             }
             Divider()
+            switch chat.modelListState {
+            case .loading:
+                Text("正在读取模型列表")
+            case .failed(let failure):
+                Text(ChatFailurePresentation(failure).title)
+                if failure.suggestsDifferentKey {
+                    Button {
+                        onOpenSettings()
+                    } label: {
+                        Label("更换 API Key", systemImage: "key")
+                    }
+                }
+            case .loaded where chat.models.isEmpty:
+                Text("CPA 没有返回可用模型")
+            default:
+                EmptyView()
+            }
             Button {
                 Task { await chat.refreshModels() }
             } label: {
                 Label("刷新模型列表", systemImage: "arrow.clockwise")
             }
+            .disabled(chat.modelListState == .loading)
         } label: {
             VStack(spacing: 0) {
                 Text(conversation.displayTitle)

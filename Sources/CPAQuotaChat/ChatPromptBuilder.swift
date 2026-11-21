@@ -73,6 +73,48 @@ public enum ChatPromptBuilder {
         return text
     }
 
+    /// Earlier messages that fit the request budget, newest complete turns
+    /// first. A turn is a user message plus the replies after it; turns are
+    /// kept or dropped whole. Images stay only on the newest
+    /// `imageMessageLimit` user messages that have them; older ones send text.
+    public static func boundedHistory(
+        _ messages: [ChatMessage],
+        textBudget: Int = historyTextBudget,
+        imageMessageLimit: Int = historyImageMessageLimit
+    ) -> (messages: [ChatMessage], omittedCount: Int) {
+        var turns: [[ChatMessage]] = []
+        for message in messages {
+            if message.role == .user || turns.isEmpty {
+                turns.append([message])
+            } else {
+                turns[turns.count - 1].append(message)
+            }
+        }
+        var kept: [[ChatMessage]] = []
+        var used = 0
+        for turn in turns.reversed() {
+            let size = turn.reduce(0) { $0 + $1.text.count }
+            guard used + size <= textBudget else { break }
+            used += size
+            kept.insert(turn, at: 0)
+        }
+        var selected = kept.flatMap { $0 }
+        var imageMessages = 0
+        for index in selected.indices.reversed() where !selected[index].attachments.isEmpty {
+            if imageMessages < imageMessageLimit {
+                imageMessages += 1
+            } else {
+                selected[index].attachments = []
+            }
+        }
+        return (selected, messages.count - selected.count)
+    }
+
+    /// About 60,000 characters of earlier text per request.
+    public static let historyTextBudget = 60_000
+    /// Images from at most this many earlier user messages are resent.
+    public static let historyImageMessageLimit = 2
+
     /// `/命令 ` and `Command` normalize to `command`: trimmed, no leading `/`,
     /// lowercased, whitespace removed.
     public static func normalizedCommand(_ command: String) -> String {

@@ -14,7 +14,7 @@ struct ChatSettingsView: View {
     @State private var searchKeyDraft = ""
     @State private var searchKeySaved: Bool?
     @State private var searchKeyRejected = false
-    @State private var notificationDenied = false
+    @State private var notificationStatus: ChatNotificationAuthorization?
     @State private var isConfirmingDeleteAll = false
     @State private var isDeletingAll = false
     @State private var deleteAllFailed = false
@@ -56,18 +56,30 @@ struct ChatSettingsView: View {
             searchSection(palette)
 
             Section {
+                // Shown as on only when the system will actually deliver the notification.
                 Toggle("后台完成时通知", isOn: Binding(
-                    get: { chat.settings.notifiesOnBackgroundCompletion },
+                    get: { chat.settings.notifiesOnBackgroundCompletion && notificationStatus == .authorized },
                     set: { enabled in
                         chat.settings.notifiesOnBackgroundCompletion = enabled
-                        guard enabled else { return }
-                        Task { notificationDenied = !(await chat.requestNotificationAuthorization()) }
+                        guard enabled, notificationStatus != .authorized else { return }
+                        Task { await requestNotificationAuthorization() }
                     }
                 ))
-                if notificationDenied {
+                switch notificationStatus {
+                case .notDetermined:
+                    Button {
+                        Task { await requestNotificationAuthorization() }
+                    } label: {
+                        Label("允许系统通知", systemImage: "bell.badge")
+                            .frame(minHeight: 44)
+                    }
+                    .accessibilityIdentifier("chat.notifications.request")
+                case .denied:
                     Label("系统未允许通知，可在“设置”中为 CPA Quota 开启。", systemImage: "bell.slash")
                         .font(.footnote)
                         .foregroundStyle(palette.textSecondary)
+                default:
+                    EmptyView()
                 }
                 Toggle("自动生成对话标题", isOn: $chat.settings.generatesTitles)
             } header: {
@@ -121,6 +133,7 @@ struct ChatSettingsView: View {
             Text("将移除本机保存的全部对话记录，记忆与技能保留。")
         }
         .task(id: chat.settings.searchProvider) { await refreshSearchKeyState() }
+        .task { notificationStatus = await chat.notificationAuthorizationStatus() }
         .onChange(of: chat.settings.searchProvider) { _, _ in
             // A draft typed for one service must never be saved under another.
             searchKeyDraft = ""
@@ -334,6 +347,14 @@ struct ChatSettingsView: View {
             Text("搜索由所选的第三方服务完成，需要该服务自己的 API Key；搜索词会发送给该服务。在对话中点按地球图标开启。")
         }
         .listRowBackground(palette.contentSurface)
+    }
+
+    private func requestNotificationAuthorization() async {
+        _ = await chat.requestNotificationAuthorization()
+        notificationStatus = await chat.notificationAuthorizationStatus()
+        if notificationStatus == .authorized {
+            chat.settings.notifiesOnBackgroundCompletion = true
+        }
     }
 
     private func refreshSearchKeyState() async {

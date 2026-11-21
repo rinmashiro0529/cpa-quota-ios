@@ -37,6 +37,7 @@ public protocol ChatBackgroundRunner: Sendable {
     /// Shows `ChatCompletionNotice`: fixed text plus the conversation UUID only.
     func notifyCompletion(conversationID: UUID) async
     func requestNotificationAuthorization() async -> Bool
+    func notificationAuthorizationStatus() async -> ChatNotificationAuthorization
 }
 
 #if canImport(UIKit)
@@ -77,6 +78,41 @@ public struct SystemChatBackgroundRunner: ChatBackgroundRunner {
         (try? await UNUserNotificationCenter.current()
             .requestAuthorization(options: [.alert, .sound])) ?? false
     }
+
+    public func notificationAuthorizationStatus() async -> ChatNotificationAuthorization {
+        switch await UNUserNotificationCenter.current().notificationSettings().authorizationStatus {
+        case .notDetermined: .notDetermined
+        case .denied: .denied
+        default: .authorized
+        }
+    }
+}
+
+/// Routes an opened completion notification to its conversation. Installed
+/// at launch so a tap that cold-starts the app is not lost.
+@MainActor
+public final class ChatNotificationRouter: NSObject, UNUserNotificationCenterDelegate {
+    public static let shared = ChatNotificationRouter()
+    private var open: ((UUID) -> Void)?
+
+    public func install(open: @escaping (UUID) -> Void) {
+        self.open = open
+        UNUserNotificationCenter.current().delegate = self
+    }
+
+    public nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                                   didReceive response: UNNotificationResponse) async {
+        guard let id = ChatCompletionNotice.conversationID(
+            from: response.notification.request.content.userInfo) else { return }
+        await MainActor.run { self.open?(id) }
+    }
+
+    public nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                                   willPresent notification: UNNotification) async
+        -> UNNotificationPresentationOptions {
+        // Completions are only announced in the background; in the foreground the reply is already visible.
+        []
+    }
 }
 #else
 public struct SystemChatBackgroundRunner: ChatBackgroundRunner {
@@ -96,5 +132,7 @@ public struct SystemChatBackgroundRunner: ChatBackgroundRunner {
     public func notifyCompletion(conversationID: UUID) async {}
 
     public func requestNotificationAuthorization() async -> Bool { false }
+
+    public func notificationAuthorizationStatus() async -> ChatNotificationAuthorization { .denied }
 }
 #endif

@@ -50,6 +50,8 @@ public enum ChatFailure: Equatable, Sendable, Codable {
     case timeout
     case invalidResponse
     case searchFailed
+    /// Web search was on but no search service or key was usable; the reply was generated without it.
+    case searchNotConfigured
     case interruptedInBackground
     /// The app ended while a reply was streaming (found on the next launch).
     case generationInterrupted
@@ -80,12 +82,15 @@ public struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     public var status: Status
     public var failure: ChatFailure?
     public let createdAt: Date
+    /// On a reply: how many earlier messages were left out of its request to
+    /// stay within the history budget. `nil` when nothing was left out.
+    public var omittedHistoryCount: Int?
 
     public init(
         id: UUID = UUID(), role: Role, text: String, reasoning: String? = nil,
         attachments: [ChatImageAttachment] = [], modelID: String? = nil, usage: ChatTokenUsage? = nil,
         searchSources: [ChatSearchSource] = [], status: Status = .complete, failure: ChatFailure? = nil,
-        createdAt: Date = Date()
+        createdAt: Date = Date(), omittedHistoryCount: Int? = nil
     ) {
         self.id = id
         self.role = role
@@ -98,6 +103,7 @@ public struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
         self.status = status
         self.failure = failure
         self.createdAt = createdAt
+        self.omittedHistoryCount = omittedHistoryCount
     }
 }
 
@@ -233,6 +239,12 @@ public enum ChatCredentialState: Equatable, Sendable {
     /// `hint` is a redacted suffix such as `••••0001`, never the key itself.
     case ready(hint: String, isManual: Bool)
     case failed(CPAError)
+}
+
+public enum ChatNotificationAuthorization: Equatable, Sendable {
+    case notDetermined
+    case denied
+    case authorized
 }
 
 public enum ChatModelListState: Equatable, Sendable {

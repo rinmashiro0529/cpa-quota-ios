@@ -142,4 +142,37 @@ struct ChatSkillTests {
         #expect(workspace.skillSuggestions(for: "/tra ").isEmpty)
         #expect(workspace.skillSuggestions(for: "no slash").isEmpty)
     }
+
+    @Test func boundedHistoryKeepsNewestWholeTurnsWithinBudget() {
+        let messages = [
+            ChatMessage(role: .user, text: String(repeating: "a", count: 30)),
+            ChatMessage(role: .assistant, text: String(repeating: "b", count: 20)),
+            ChatMessage(role: .user, text: String(repeating: "c", count: 5)),
+            ChatMessage(role: .assistant, text: String(repeating: "d", count: 10)),
+        ]
+        let (kept, omitted) = ChatPromptBuilder.boundedHistory(messages, textBudget: 60)
+        #expect(kept.map(\.id) == [messages[2].id, messages[3].id])
+        #expect(omitted == 2)
+
+        let (all, none) = ChatPromptBuilder.boundedHistory(messages, textBudget: 65)
+        #expect(all.count == 4)
+        #expect(none == 0)
+
+        // A newest turn larger than the budget sends no history rather than half a turn.
+        let (empty, dropped) = ChatPromptBuilder.boundedHistory(messages, textBudget: 10)
+        #expect(empty.isEmpty)
+        #expect(dropped == 4)
+    }
+
+    @Test func boundedHistoryResendsImagesFromTheNewestTwoMessagesOnly() {
+        let image = ChatImageAttachment(mimeType: "image/jpeg", data: Data([1]))
+        let messages = (0..<3).flatMap { index in [
+            ChatMessage(role: .user, text: "图 \(index)", attachments: [image]),
+            ChatMessage(role: .assistant, text: "答 \(index)"),
+        ] }
+        let (kept, omitted) = ChatPromptBuilder.boundedHistory(messages)
+        #expect(omitted == 0)
+        #expect(kept.map(\.attachments.count) == [0, 0, 1, 0, 1, 0])
+        #expect(kept[0].text == "图 0")
+    }
 }

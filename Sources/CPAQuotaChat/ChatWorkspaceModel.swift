@@ -292,6 +292,7 @@ public final class ChatWorkspaceModel {
             guard isCurrent(revision) else { return }
             models = refreshed
             modelListState = .loaded
+            assignDefaultModelWhereMissing()
         } catch let error as CPAError {
             guard isCurrent(revision) else { return }
             modelListState = .failed(Self.chatFailure(for: error))
@@ -316,6 +317,10 @@ public final class ChatWorkspaceModel {
             return .timeout
         case .network, .redirectRefused:
             return .network
+        case .requestRejected where code == 401:
+            return .unauthorized(statusCode: code)
+        case .requestRejected where code == 403:
+            return .forbidden(statusCode: code)
         case .upstreamFailure, .requestRejected:
             return .upstream(statusCode: code)
         default:
@@ -326,7 +331,9 @@ public final class ChatWorkspaceModel {
     // MARK: - Conversations
 
     public private(set) var conversations: [ChatConversation] = []
+    /// `true` only after history, settings, memories and skills are restored.
     public private(set) var isLoaded = false
+    @ObservationIgnored private var loadTask: Task<Void, Never>?
     private var generationTasks: [UUID: Task<Void, Never>] = [:]
     private var stopReasons: [UUID: StopReason] = [:]
     private var titleTasks: [UUID: Task<Void, Never>] = [:]
@@ -336,12 +343,25 @@ public final class ChatWorkspaceModel {
         case backgroundExpired
     }
 
+    /// Concurrent callers share one load; `isLoaded` turns on when it finishes.
     public func loadIfNeeded() async {
+        if let loadTask {
+            await loadTask.value
+            return
+        }
         guard !isLoaded else { return }
-        isLoaded = true
-        conversations = ((try? await persistence.loadConversations()) ?? [])
+        let task = Task { await self.performLoad() }
+        loadTask = task
+        await task.value
+    }
+
+    private func performLoad() async {
+        defer { isLoaded = true }
+        let stored = ((try? await persistence.loadConversations()) ?? [])
             .filter { !$0.messages.isEmpty }
-            .sorted { $0.updatedAt > $1.updatedAt }
+        // Keep anything created in memory meanwhile instead of overwriting it.
+        let created = conversations.filter { local in !stored.contains { $0.id == local.id } }
+        conversations = (stored + created).sorted { $0.updatedAt > $1.updatedAt }
         recoverOrphanedReplies()
         if let stored = try? await persistence.loadSettings() {
             settings = stored
@@ -397,17 +417,36 @@ public final class ChatWorkspaceModel {
         conversations.first(where: { $0.id == id })
     }
 
+    /// Reuses an existing empty conversation instead of stacking up new ones.
     @discardableResult
     public func createConversation() -> UUID {
-        let modelID: String? = if let preferred = settings.defaultModelID,
-                                  models.contains(where: { $0.id == preferred }) {
-            preferred
-        } else {
-            models.first?.id
+        if let index = conversations.firstIndex(where: { $0.messages.isEmpty && generationTasks[$0.id] == nil }) {
+            var reused = conversations.remove(at: index)
+            reused.serverIdentifier = server?.identifier
+            if reused.modelID == nil { reused.modelID = defaultModelID }
+            reused.updatedAt = Date()
+            conversations.insert(reused, at: 0)
+            return reused.id
         }
-        let conversation = ChatConversation(modelID: modelID, serverIdentifier: server?.identifier)
+        let conversation = ChatConversation(modelID: defaultModelID, serverIdentifier: server?.identifier)
         conversations.insert(conversation, at: 0)
         return conversation.id
+    }
+
+    private var defaultModelID: String? {
+        if let preferred = settings.defaultModelID, models.contains(where: { $0.id == preferred }) {
+            return preferred
+        }
+        return models.first?.id
+    }
+
+    /// Conversations opened before the model list arrived get the default model.
+    private func assignDefaultModelWhereMissing() {
+        guard let modelID = defaultModelID else { return }
+        for index in conversations.indices where conversations[index].modelID == nil {
+            conversations[index].modelID = modelID
+            persist(conversations[index])
+        }
     }
 
     public func deleteConversation(_ id: UUID) {
@@ -610,9 +649,12 @@ public final class ChatWorkspaceModel {
 
         // The history is about to be sent here, so the conversation now belongs to this server.
         conversation.serverIdentifier = server.identifier
+        let placeholderTitle = String(userMessage.text.prefix(24))
         if conversation.title.isEmpty {
-            conversation.title = String(userMessage.text.prefix(24))
+            conversation.title = placeholderTitle
         }
+        // Only a title the app filled in may later be replaced by a generated one.
+        let replaceableTitle: String? = conversation.title == placeholderTitle ? placeholderTitle : nil
 
         // Slash-skill application for the model prompt.
         let (modelPrompt, _, strippedText) = ChatPromptBuilder.applySkill(
@@ -632,8 +674,14 @@ public final class ChatWorkspaceModel {
         // exclude the placeholder and the triggering user message (sent as `prompt`).
         let instructions = ChatPromptBuilder.instructions(
             settings: settings, memories: memories, conversation: conversation)
-        let history = conversation.messages.dropLast(2).filter {
-            !$0.text.isEmpty && ($0.status == .complete || $0.status == .stopped)
+        let candidates = conversation.messages.dropLast(2).filter {
+            // An image-only question stays part of the history.
+            (!$0.text.isEmpty || ($0.role == .user && !$0.attachments.isEmpty))
+                && ($0.status == .complete || $0.status == .stopped)
+        }
+        let (history, omittedCount) = ChatPromptBuilder.boundedHistory(Array(candidates))
+        if omittedCount > 0 {
+            mutateAssistant(assistantID, in: conversationID) { $0.omittedHistoryCount = omittedCount }
         }
 
         let baseURL = server.baseURL.appendingPathComponent("v1")
@@ -647,10 +695,16 @@ public final class ChatWorkspaceModel {
         // Optional web search injection. Cancellation mid-search ends the turn
         // below without marking the message as a search failure.
         var sources: [ChatSearchSource] = []
+        var searchKey: (provider: ChatSearchProvider, key: String)?
         if conversation.isWebSearchEnabled, let provider = settings.searchProvider,
-           let key = try? await secrets.loadSecret(
-               account: ChatSecrets.searchKeyAccount(for: provider)),
+           let key = try? await secrets.loadSecret(account: ChatSecrets.searchKeyAccount(for: provider)),
            !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            searchKey = (provider, key)
+        } else if conversation.isWebSearchEnabled, isCurrent(revision) {
+            // Web search is on but cannot run: say so on the reply instead of answering silently without it.
+            mutateAssistant(assistantID, in: conversationID) { $0.failure = .searchNotConfigured }
+        }
+        if let provider = searchKey?.provider, let key = searchKey?.key {
             do {
                 sources = try await searchClient(provider).search(strippedText, apiKey: key)
                 if !sources.isEmpty {
@@ -742,9 +796,11 @@ public final class ChatWorkspaceModel {
             if isCurrent(revision), settings.generatesTitles,
                let current = self.conversation(conversationID),
                current.messages.filter({ $0.role == .assistant && $0.status == .complete }).count == 1,
+               let replaceableTitle, current.title == replaceableTitle,
                let reply = current.messages.last(where: { $0.id == assistantID })?.text {
                 generateTitle(conversationID: conversationID, userText: userMessage.text,
-                              reply: reply, request: request, revision: revision)
+                              reply: reply, request: request, revision: revision,
+                              replacing: replaceableTitle)
             }
         }
     }
@@ -776,8 +832,10 @@ public final class ChatWorkspaceModel {
         mutate(&conversations[cIndex].messages[mIndex])
     }
 
+    /// Applied only while the title is still `replacing`, so a title the user
+    /// set or changed in the meantime is never overwritten.
     private func generateTitle(conversationID: UUID, userText: String, reply: String,
-                               request: ChatEngineRequest, revision: UInt64) {
+                               request: ChatEngineRequest, revision: UInt64, replacing: String) {
         titleTasks[conversationID] = Task {
             defer { self.titleTasks[conversationID] = nil }
             guard isCurrent(revision), self.conversation(conversationID) != nil else { return }
@@ -790,7 +848,8 @@ public final class ChatWorkspaceModel {
             var title = raw.trimmingCharacters(in: Self.titleTrimming)
             title = String(title.prefix(30))
             guard !title.isEmpty else { return }
-            if let index = self.conversations.firstIndex(where: { $0.id == conversationID }) {
+            if let index = self.conversations.firstIndex(where: { $0.id == conversationID }),
+               self.conversations[index].title == replacing {
                 self.conversations[index].title = title
                 self.persist(self.conversations[index])
             }
@@ -953,4 +1012,12 @@ public final class ChatWorkspaceModel {
     public func requestNotificationAuthorization() async -> Bool {
         await backgroundRunner.requestNotificationAuthorization()
     }
+
+    public func notificationAuthorizationStatus() async -> ChatNotificationAuthorization {
+        await backgroundRunner.notificationAuthorizationStatus()
+    }
+
+    /// Set when a completion notification is opened; the chat UI shows that
+    /// conversation and clears the request.
+    public var requestedConversationID: UUID?
 }

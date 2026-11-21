@@ -27,6 +27,7 @@ struct ChatComposerView: View {
     @State private var pickerItems: [PhotosPickerItem] = []
     #endif
     @State private var isLoadingAttachments = false
+    @State private var isSearchKeyMissing = false
 
     private var isGenerating: Bool { chat.isGenerating(conversation.id) }
 
@@ -47,9 +48,22 @@ struct ChatComposerView: View {
             if !isCredentialReady {
                 blockedNotice(palette)
             } else if conversation.modelID == nil {
-                Label("请先在顶部选择模型", systemImage: "cpu")
+                Label(modelMissingText, systemImage: "cpu")
                     .font(.footnote)
                     .foregroundStyle(palette.textSecondary)
+            }
+
+            if conversation.isWebSearchEnabled, chat.settings.searchProvider == nil || isSearchKeyMissing {
+                HStack(spacing: 8) {
+                    Label("联网搜索未就绪：还没有可用的搜索服务或搜索 API Key，发送后不会检索。", systemImage: "globe")
+                        .font(.footnote)
+                        .foregroundStyle(palette.textSecondary)
+                    Spacer(minLength: 8)
+                    Button("设置", action: onOpenSettings)
+                        .font(.footnote.weight(.semibold))
+                        .frame(minHeight: 44)
+                }
+                .accessibilityIdentifier("chat.searchUnavailable")
             }
 
             if editingMessageID != nil {
@@ -105,6 +119,22 @@ struct ChatComposerView: View {
         .onChange(of: editingMessageID) { _, id in
             if id != nil { isFocused = true }
         }
+        .task(id: "\(chat.settings.searchProvider?.rawValue ?? "-")|\(conversation.isWebSearchEnabled)") {
+            guard conversation.isWebSearchEnabled, let provider = chat.settings.searchProvider else {
+                isSearchKeyMissing = false
+                return
+            }
+            isSearchKeyMissing = !(await chat.hasSearchKey(for: provider))
+        }
+    }
+
+    private var modelMissingText: String {
+        switch chat.modelListState {
+        case .loading: "正在读取模型列表"
+        case .failed(let failure): "模型列表读取失败：\(ChatFailurePresentation(failure).title)"
+        case .loaded where chat.models.isEmpty: "CPA 没有返回可用模型"
+        default: "请先在顶部选择模型"
+        }
     }
 
     private func field(_ palette: BrandPalette) -> some View {
@@ -139,7 +169,8 @@ struct ChatComposerView: View {
                 .frame(width: 44, height: 44)
         }
         .buttonStyle(.plain)
-        .disabled(chat.settings.searchProvider == nil)
+        // Still allow switching it off after the search service was removed.
+        .disabled(chat.settings.searchProvider == nil && !conversation.isWebSearchEnabled)
         .accessibilityLabel(chat.settings.searchProvider == nil ? "联网搜索（未设置搜索服务）" : "联网搜索")
         .accessibilityValue(conversation.isWebSearchEnabled ? "已开启" : "已关闭")
         .accessibilityIdentifier("chat.webSearch")
@@ -306,10 +337,13 @@ private struct ChatRoundButtonStyle: ViewModifier {
                     .buttonBorderShape(.circle)
             }
         } else {
+            // Same fallback as the primary button style: a readable foreground
+            // on a bordered control instead of white on the light accent.
             content
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
                 .buttonBorderShape(.circle)
                 .tint(prominent ? palette.actionTint : palette.textSecondary)
+                .foregroundStyle(palette.textPrimary)
         }
     }
 }

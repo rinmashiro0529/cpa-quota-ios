@@ -1162,6 +1162,7 @@ public final class CPAQuotaSession {
         guard generation == operationGeneration, outcome.version == intent.version else { return }
 
         var forgetFailure = outcome.failure
+        let managementKeyRemoved = forgetFailure == nil
         if forgetFailure == nil, let server {
             do { try await chatWorkspace.forget(server: server) }
             catch { forgetFailure = (error as? CPAError) ?? CPAError(.secureStorageFailure) }
@@ -1170,6 +1171,14 @@ public final class CPAQuotaSession {
         if let failure = forgetFailure {
             // At least one credential is still stored: do not claim the forget completed.
             presentStorageFailure(failure)
+            if managementKeyRemoved, case .connected(let current, true) = authState {
+                // Only the chat client key is left. The management key is gone, so the
+                // connection is no longer remembered; rebinding as unremembered retries
+                // the client key removal, and forgetting again stays available.
+                updateSavedServer(nil)
+                isRememberedInKeychain = false
+                authState = .connected(server: current, isRememberedInKeychain: false)
+            }
             if case .connecting = authState {
                 // The attempt was already invalidated; it cannot reach a connected state.
                 if let existingStore = store {

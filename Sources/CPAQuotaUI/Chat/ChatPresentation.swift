@@ -75,6 +75,11 @@ public struct ChatFailurePresentation: Equatable, Sendable {
             summary = "本次回答没有使用搜索结果。请检查搜索服务的 API Key 或稍后重试。"
             symbolName = "magnifyingglass"
             severity = .neutral
+        case .searchNotConfigured:
+            title = "本次未联网搜索"
+            summary = "联网搜索已开启，但还没有可用的搜索服务或搜索 API Key，本次回答没有使用搜索结果。可在对话设置中补全。"
+            symbolName = "magnifyingglass"
+            severity = .neutral
         case .interruptedInBackground:
             title = "后台生成已中断"
             summary = "应用在后台的可用时间已用完，已保存中断前生成的内容。可以重新生成。"
@@ -85,6 +90,16 @@ public struct ChatFailurePresentation: Equatable, Sendable {
             summary = "应用在生成过程中被关闭，已保存中断前生成的内容。可以重新生成。"
             symbolName = "pause.circle"
             severity = .neutral
+        }
+    }
+}
+
+extension ChatFailure {
+    /// The key was rejected for this request; choosing another key may help.
+    var suggestsDifferentKey: Bool {
+        switch self {
+        case .unauthorized, .forbidden: true
+        default: false
         }
     }
 }

@@ -71,6 +71,7 @@ final class FakeChatEngine: ChatEngine, @unchecked Sendable {
     private var _streamError: (any Error)?
     private var _blockUntilCancelled = false
     private var _completeResult = "生成的标题"
+    var completeGate: (@Sendable () async -> Void)?
     private(set) var streamRequests: [ChatEngineRequest] = []
     private(set) var completeRequests: [ChatEngineRequest] = []
 
@@ -101,6 +102,7 @@ final class FakeChatEngine: ChatEngine, @unchecked Sendable {
 
     func complete(_ request: ChatEngineRequest) async throws -> String {
         completeRequests.append(request)
+        await completeGate?()
         return _completeResult
     }
 }
@@ -147,6 +149,10 @@ final class FakeBackgroundRunner: ChatBackgroundRunner, @unchecked Sendable {
 
     func requestNotificationAuthorization() async -> Bool {
         notificationAuthorization
+    }
+
+    func notificationAuthorizationStatus() async -> ChatNotificationAuthorization {
+        notificationAuthorization ? .authorized : .denied
     }
 
     var notificationCount: Int { notifications.count }
@@ -262,6 +268,29 @@ private actor HeldDiscovery {
         waiting?.resume()
         waiting = nil
     }
+}
+
+/// Memory persistence whose conversation load waits for `gate` and counts loads.
+private actor GatedLoadPersistence: ChatPersistence {
+    private let base = ChatMemoryPersistence()
+    let gate = HeldDiscovery()
+    private(set) var loadCount = 0
+
+    func seed(_ conversation: ChatConversation) async { try? await base.saveConversation(conversation) }
+    func loadConversations() async throws -> [ChatConversation] {
+        loadCount += 1
+        await gate.wait()
+        return try await base.loadConversations()
+    }
+    func saveConversation(_ conversation: ChatConversation) async throws { try await base.saveConversation(conversation) }
+    func removeConversation(_ id: UUID) async throws { try await base.removeConversation(id) }
+    func removeAllConversations() async throws { try await base.removeAllConversations() }
+    func loadSettings() async throws -> ChatSettings? { nil }
+    func saveSettings(_ settings: ChatSettings) async throws {}
+    func loadMemories() async throws -> [ChatMemoryItem]? { nil }
+    func saveMemories(_ items: [ChatMemoryItem]) async throws {}
+    func loadSkills() async throws -> [ChatSkill]? { nil }
+    func saveSkills(_ skills: [ChatSkill]) async throws {}
 }
 
 /// Memory persistence whose bulk removal fails until `allowRemoval()`.
@@ -1081,5 +1110,156 @@ struct ChatWorkspaceModelTests {
         let id = fixture.workspace.createConversation()
         await completeTurn(fixture, "临时连接", in: id)
         #expect(fixture.engine.streamRequests.last?.apiKey.exposedValue == "test-client-key-0002")
+    }
+
+    // MARK: - Audit regressions (batch 2)
+
+    @Test @MainActor func concurrentLoadsShareOneReadAndKeepConversationsCreatedMeanwhile() async {
+        let persistence = GatedLoadPersistence()
+        let stored = ChatConversation(messages: [ChatMessage(role: .user, text: "旧记录")])
+        await persistence.seed(stored)
+        let fixture = makeFixture(persistence: persistence)
+        let first = Task { await fixture.workspace.loadIfNeeded() }
+        let second = Task { await fixture.workspace.loadIfNeeded() }
+        let started = await waitUntil { await persistence.gate.hasStarted }
+        #expect(started)
+        #expect(!fixture.workspace.isLoaded)
+        let created = fixture.workspace.createConversation()
+
+        await persistence.gate.release()
+        await first.value
+        await second.value
+        #expect(fixture.workspace.isLoaded)
+        #expect(await persistence.loadCount == 1)
+        #expect(Set(fixture.workspace.conversations.map(\.id)) == [stored.id, created])
+    }
+
+    @Test @MainActor func imageOnlyQuestionStaysInLaterHistory() async {
+        let fixture = makeFixture()
+        fixture.engine.respond(with: [.snapshot(text: "这是一只猫", reasoning: nil)])
+        fixture.workspace.settings.generatesTitles = false
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let id = fixture.workspace.createConversation()
+        let image = ChatImageAttachment(mimeType: "image/jpeg", data: Data([0xFF, 0xD8, 0xFF]))
+        fixture.workspace.send("", attachments: [image], in: id)
+        _ = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { !workspace.isGenerating(id) }
+        }
+        await completeTurn(fixture, "图里是什么颜色", in: id)
+
+        let history = fixture.engine.streamRequests.last?.history ?? []
+        #expect(history.first?.role == .user)
+        #expect(history.first?.attachments == [image])
+        #expect(history.count == 2)
+    }
+
+    @Test @MainActor func generatedTitleNeverReplacesAUserTitle() async {
+        let fixture = makeFixture()
+        fixture.engine.respond(with: [.snapshot(text: "回答", reasoning: nil)])
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+
+        // Set before the first message.
+        let preset = fixture.workspace.createConversation()
+        fixture.workspace.renameConversation(preset, title: "我的标题")
+        await completeTurn(fixture, "第一个问题", in: preset)
+        _ = await waitUntil(timeoutNanoseconds: 500_000_000) { [workspace = fixture.workspace] in
+            await MainActor.run { workspace.conversation(preset)?.title != "我的标题" }
+        }
+        #expect(fixture.workspace.conversation(preset)?.title == "我的标题")
+
+        // Renamed while the title request is still running.
+        let gate = HeldDiscovery()
+        fixture.engine.completeGate = { await gate.wait() }
+        let renamed = fixture.workspace.createConversation()
+        await completeTurn(fixture, "另一个问题", in: renamed)
+        let requested = await waitUntil { await gate.hasStarted }
+        fixture.workspace.renameConversation(renamed, title: "改过的标题")
+        await gate.release()
+        _ = await waitUntil(timeoutNanoseconds: 1_000_000_000) { [workspace = fixture.workspace] in
+            await MainActor.run { workspace.conversation(renamed)?.title != "改过的标题" }
+        }
+        #expect(requested)
+        #expect(fixture.workspace.conversation(renamed)?.title == "改过的标题")
+    }
+
+    @Test @MainActor func modelCatalogAuthorizationStatusesSuggestAnotherKey() {
+        #expect(ChatWorkspaceModel.chatFailure(for: CPAError(.requestRejected, statusCode: 401))
+                == .unauthorized(statusCode: 401))
+        #expect(ChatWorkspaceModel.chatFailure(for: CPAError(.requestRejected, statusCode: 403))
+                == .forbidden(statusCode: 403))
+        #expect(ChatWorkspaceModel.chatFailure(for: CPAError(.requestRejected, statusCode: 500))
+                == .upstream(statusCode: 500))
+    }
+
+    @Test @MainActor func conversationOpenedBeforeModelsLoadGetsDefaultModel() async {
+        let fixture = makeFixture()
+        await fixture.workspace.loadIfNeeded()
+        let id = fixture.workspace.createConversation()
+        #expect(fixture.workspace.conversation(id)?.modelID == nil)
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let assigned = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { workspace.conversation(id)?.modelID == "test-model" }
+        }
+        #expect(assigned)
+    }
+
+    @Test @MainActor func newConversationReusesAnEmptyOne() async {
+        let fixture = makeFixture()
+        fixture.engine.respond(with: [.snapshot(text: "回答", reasoning: nil)])
+        fixture.workspace.settings.generatesTitles = false
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let first = fixture.workspace.createConversation()
+        #expect(fixture.workspace.createConversation() == first)
+        #expect(fixture.workspace.conversations.count == 1)
+
+        await completeTurn(fixture, "问", in: first)
+        let second = fixture.workspace.createConversation()
+        #expect(second != first)
+        #expect(fixture.workspace.conversations.count == 2)
+    }
+
+    @Test @MainActor func longHistoryIsBoundedAndTheReplySaysHowMuchWasLeftOut() async throws {
+        let long = String(repeating: "长", count: 25_000)
+        var messages: [ChatMessage] = []
+        for _ in 0..<3 {
+            messages.append(ChatMessage(role: .user, text: long))
+            messages.append(ChatMessage(role: .assistant, text: "好", modelID: "test-model"))
+        }
+        let seeded = ChatConversation(modelID: "test-model", messages: messages,
+                                      serverIdentifier: server.identifier)
+        let fixture = makeFixture(persistence: RecordingPersistence(seeded: [seeded]))
+        fixture.engine.respond(with: [.snapshot(text: "回答", reasoning: nil)])
+        fixture.workspace.settings.generatesTitles = false
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        await completeTurn(fixture, "继续", in: seeded.id)
+
+        let history = try #require(fixture.engine.streamRequests.last?.history)
+        #expect(history.count == 4)
+        #expect(history.reduce(0) { $0 + $1.text.count } <= ChatPromptBuilder.historyTextBudget)
+        let reply = fixture.workspace.conversation(seeded.id)?.messages.last
+        #expect(reply?.omittedHistoryCount == 2)
+    }
+
+    @Test @MainActor func webSearchWithoutAKeyIsMarkedOnTheReply() async {
+        let search = FakeSearchClient()
+        let fixture = makeFixture(searchClient: search)
+        fixture.engine.respond(with: [.snapshot(text: "未检索的回答", reasoning: nil)])
+        fixture.workspace.settings.generatesTitles = false
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let id = fixture.workspace.createConversation()
+        fixture.workspace.settings.searchProvider = .tavily
+        fixture.workspace.updateConversation(id) { $0.isWebSearchEnabled = true }
+        await completeTurn(fixture, "查一下", in: id)
+
+        let reply = fixture.workspace.conversation(id)?.messages.last
+        #expect(reply?.status == .complete)
+        #expect(reply?.failure == .searchNotConfigured)
+        #expect(search.queries.isEmpty)
+        #expect(fixture.engine.streamRequests.count == 1)
     }
 }

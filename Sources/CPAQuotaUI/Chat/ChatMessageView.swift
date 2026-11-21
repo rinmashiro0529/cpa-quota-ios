@@ -61,7 +61,16 @@ struct ChatMessageView: View {
         .frame(maxWidth: .infinity, alignment: .trailing)
         .padding(.leading, 40)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("我：\(message.text)")
+        .accessibilityLabel(userAccessibilityLabel)
+    }
+
+    private var userAccessibilityLabel: String {
+        let images = message.attachments.isEmpty ? "" : "\(message.attachments.count) 张图片"
+        switch (message.text.isEmpty, images.isEmpty) {
+        case (false, false): return "我：\(message.text)，\(images)"
+        case (true, false): return "我：\(images)"
+        default: return "我：\(message.text)"
+        }
     }
 
     // MARK: Assistant
@@ -119,6 +128,11 @@ struct ChatMessageView: View {
         if let failure = message.failure {
             ChatFailureNotice(failure: failure)
         }
+        if let omitted = message.omittedHistoryCount, omitted > 0 {
+            Label("较早的 \(omitted) 条消息未随本轮发送", systemImage: "text.badge.minus")
+                .font(.footnote)
+                .foregroundStyle(palette.textSecondary)
+        }
         if let usage = message.usage, message.status != .streaming,
            usage.inputTokens + usage.outputTokens > 0 {
             Text(usageText(usage))
@@ -138,11 +152,15 @@ struct ChatMessageView: View {
             if !message.text.isEmpty {
                 Button(action: actions.copy) {
                     Label("复制", systemImage: "doc.on.doc")
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
                 }
             }
             if let regenerate = actions.regenerate, isLatestAssistant, !isConversationGenerating {
                 Button(action: regenerate) {
                     Label("重新生成", systemImage: "arrow.clockwise")
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
                 }
                 .disabled(!canRerun)
                 .accessibilityIdentifier("chat.regenerate")

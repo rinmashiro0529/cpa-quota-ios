@@ -180,6 +180,13 @@ public struct ChatWorkspaceView: View {
         }
         .tint(palette.actionTint)
         .task { await chat.loadIfNeeded() }
+        .task(id: chat.requestedConversationID) {
+            // A tapped completion notification opens its conversation once history is loaded.
+            guard let id = chat.requestedConversationID else { return }
+            await chat.loadIfNeeded()
+            chat.requestedConversationID = nil
+            if chat.conversation(id) != nil { pendingConversation = id }
+        }
     }
 
     private var isCredentialReady: Bool {
