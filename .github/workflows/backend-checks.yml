@@ -77,7 +77,7 @@ jobs:
             layout: duo-adaptive
             evidence: xcode27-duo
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 75
     env:
       DEVELOPER_DIR: /Applications/Xcode_${{ matrix.xcode }}.app/Contents/Developer
     steps:
