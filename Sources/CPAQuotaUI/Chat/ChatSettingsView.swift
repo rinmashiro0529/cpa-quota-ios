@@ -107,6 +107,10 @@ struct ChatSettingsView: View {
             Text("将移除本机保存的全部对话记录，记忆与技能保留。")
         }
         .task(id: chat.settings.searchProvider) { await refreshSearchKeyState() }
+        .onChange(of: chat.server) { _, _ in
+            manualKeyDraft = ""
+            manualKeyRejected = false
+        }
     }
 
     // MARK: Credential
@@ -114,6 +118,11 @@ struct ChatSettingsView: View {
     private func credentialSection(_ palette: BrandPalette) -> some View {
         Section {
             ChatCredentialStatusRow(chat: chat)
+            if chat.keyRemovalFailed {
+                Label("未能移除保存的 Key。请重试。", systemImage: "exclamationmark.triangle")
+                    .font(.footnote)
+                    .foregroundStyle(palette.statusWarn)
+            }
 
             if !chat.discoveredKeys.isEmpty {
                 ForEach(chat.discoveredKeys, id: \.self) { key in
@@ -158,10 +167,15 @@ struct ChatSettingsView: View {
                     .foregroundStyle(palette.statusWarn)
             }
             Button {
+                let input = manualKeyDraft
+                let server = chat.server
+                manualKeyRejected = CPAClientAPIKey(input) == nil
+                guard !manualKeyRejected else { return }
                 Task {
-                    let accepted = await chat.useManualKey(manualKeyDraft)
-                    manualKeyRejected = !accepted
-                    if accepted { manualKeyDraft = "" }
+                    guard chat.server == server else { return }
+                    if await chat.useManualKey(input), chat.server == server, manualKeyDraft == input {
+                        manualKeyDraft = ""
+                    }
                 }
             } label: {
                 Label("使用手动填写的 Key", systemImage: "checkmark.circle")
@@ -169,9 +183,13 @@ struct ChatSettingsView: View {
             }
             .disabled(chat.server == nil || manualKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
-            if case .ready = chat.credentialState {
+            if isCredentialReady || (chat.keyRemovalFailed && chat.credentialState != .loading) {
                 Button(role: .destructive) {
-                    Task { await chat.removeStoredKey() }
+                    let server = chat.server
+                    Task {
+                        guard chat.server == server else { return }
+                        await chat.removeStoredKey()
+                    }
                 } label: {
                     Label("移除本机保存的 Key", systemImage: "trash")
                         .frame(minHeight: 44)
@@ -200,7 +218,11 @@ struct ChatSettingsView: View {
                     Text(model.id).tag(Optional(model.id))
                 }
             }
+            #if os(iOS)
             .pickerStyle(.navigationLink)
+            #else
+            .pickerStyle(.menu)
+            #endif
             switch chat.modelListState {
             case .idle:
                 EmptyView()

@@ -417,15 +417,22 @@ public final class CPAQuotaSession {
         case connected(server: CPAServer, isRememberedInKeychain: Bool)
     }
 
+    @ObservationIgnored private var chatBindingTask: Task<Void, Never>?
+
     public private(set) var authState: AuthState = .unconfigured {
         didSet {
-            guard authState != oldValue else { return }
-            let boundServer: CPAServer? = switch authState {
-            case .connected(let server, _): server
-            default: nil
-            }
+            let boundServer: CPAServer? = if case .connected(let server, _) = authState { server } else { nil }
+            let previousServer: CPAServer? = if case .connected(let server, _) = oldValue { server } else { nil }
+            guard boundServer != previousServer else { return }
+            chatBindingTask?.cancel()
+            chatWorkspace.unbind()
+            guard let boundServer else { return }
             let chatWorkspace = self.chatWorkspace
-            Task { await chatWorkspace.bind(server: boundServer) { [weak self] in await self?.makeAPIKeyDiscovery() } }
+            chatBindingTask = Task {
+                await chatWorkspace.bind(server: boundServer) { [weak self] in
+                    await self?.makeAPIKeyDiscovery(for: boundServer)
+                }
+            }
         }
     }
     public private(set) var store: CPAQuotaStore?
@@ -1079,10 +1086,15 @@ public final class CPAQuotaSession {
     }
 
     public func makeAPIKeyDiscovery() async -> CPAAPIKeyDiscovery? {
-        guard let activeStore = store, currentServer != nil else { return nil }
+        guard let currentServer else { return nil }
+        return await makeAPIKeyDiscovery(for: currentServer)
+    }
+
+    private func makeAPIKeyDiscovery(for server: CPAServer) async -> CPAAPIKeyDiscovery? {
+        guard let activeStore = store, currentServer == server else { return nil }
         let generation = operationGeneration
         let discovery = await activeStore.makeAPIKeyDiscovery()
-        guard generation == operationGeneration, store === activeStore, currentServer != nil,
+        guard generation == operationGeneration, store === activeStore, currentServer == server,
               !Task.isCancelled else { return nil }
         return discovery
     }
@@ -1145,7 +1157,13 @@ public final class CPAQuotaSession {
 
         guard generation == operationGeneration, outcome.version == intent.version else { return }
 
-        if let failure = outcome.failure {
+        var forgetFailure = outcome.failure
+        if forgetFailure == nil, let server {
+            do { try await chatWorkspace.forget(server: server) }
+            catch { forgetFailure = (error as? CPAError) ?? CPAError(.secureStorageFailure) }
+            guard generation == operationGeneration else { return }
+        }
+        if let failure = forgetFailure {
             // At least one credential is still stored: do not claim the forget completed.
             presentStorageFailure(failure)
             if case .connecting = authState {
@@ -1183,9 +1201,6 @@ public final class CPAQuotaSession {
         managementKeyDraft = ""
         selectedAccountIDForDetail = nil
         capUsageCoordinator.teardown()
-        if let server {
-            await chatWorkspace.forget(server: server)
-        }
         authState = .unconfigured
     }
 

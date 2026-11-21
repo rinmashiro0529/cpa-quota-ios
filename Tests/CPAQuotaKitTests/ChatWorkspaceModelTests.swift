@@ -1,7 +1,68 @@
 import Foundation
 import Testing
+import AnyLanguageModel
+import HTTPTypes
 @testable import CPAQuotaChat
 @testable import CPAQuotaKit
+
+private struct FixtureSSETransport: AnyLanguageModel.HTTPTransport {
+    let fragments: [String]
+    var status: HTTPTypes.HTTPResponse.Status = .ok
+    var headers: HTTPFields = [:]
+
+    func send<Return>(request: HTTPRequest, body: Data?, timeout: Duration?,
+                      responseHandler: (HTTPTypes.HTTPResponse, HTTPResponseBody) async throws -> Return) async throws -> Return {
+        #expect(request.headerFields[.accept] == "text/event-stream")
+        let json = try JSONSerialization.jsonObject(with: body ?? Data()) as? [String: Any]
+        #expect((json?["stream_options"] as? [String: Bool])?["include_usage"] == true)
+        let chunks = AsyncStream<Data> { continuation in
+            for fragment in fragments { continuation.yield(Data(fragment.utf8)) }
+            continuation.finish()
+        }
+        return try await responseHandler(.init(status: status, headerFields: headers), HTTPResponseBody(chunks))
+    }
+}
+
+@Suite("CPA chat SSE adapter")
+struct CPAChatSSETests {
+    private let token = #"{"id":"fixture","object":"chat.completion.chunk","created":1,"model":"fixture-model","choices":[{"index":0,"delta":{"content":"partial"}}]}"#
+
+    private func request() throws -> ChatEngineRequest {
+        try ChatEngineRequest(baseURL: #require(URL(string: "https://example.invalid/v1")),
+                              apiKey: #require(CPAClientAPIKey("test-client-key-0001")),
+                              modelID: "fixture-model", prompt: "Test")
+    }
+
+    @Test(arguments: [true, false])
+    func completionMarkerControlsSuccess(hasMarker: Bool) async throws {
+        var fragments = ["data: \(token)\r\n\r\n"]
+        if hasMarker { fragments += ["data: [DO", "NE]\r\n\r\n"] }
+        let engine = AnyLanguageModelChatEngine(transport: FixtureSSETransport(fragments: fragments))
+        let request = try self.request()
+        var latest = ""
+        do {
+            for try await event in engine.stream(request) {
+                if case .snapshot(let text, _) = event { latest = text }
+            }
+            #expect(hasMarker)
+        } catch {
+            #expect(!hasMarker)
+            #expect(AnyLanguageModelChatEngine.failure(for: error) == .invalidResponse)
+        }
+        #expect(latest == "partial")
+    }
+
+    @Test func nonSuccessfulStatusKeepsHTTPFailureMapping() async throws {
+        let engine = AnyLanguageModelChatEngine(transport: FixtureSSETransport(fragments: [], status: .unauthorized))
+        let request = try self.request()
+        do {
+            for try await _ in engine.stream(request) {}
+            Issue.record("Expected an HTTP 401 failure")
+        } catch {
+            #expect(AnyLanguageModelChatEngine.failure(for: error) == .unauthorized(statusCode: 401))
+        }
+    }
+}
 
 // MARK: - Fakes
 
@@ -59,6 +120,7 @@ final class FakeBackgroundRunner: ChatBackgroundRunner, @unchecked Sendable {
     private(set) var notifications: [(conversationID: UUID, title: String)] = []
     var inBackground = false
     var notificationAuthorization = true
+    var waitAfterNotification: (@Sendable () async -> Void)?
 
     @MainActor func beginTask(expiration: @escaping @MainActor @Sendable () -> Void) -> ChatBackgroundToken {
         nextToken += 1
@@ -80,6 +142,7 @@ final class FakeBackgroundRunner: ChatBackgroundRunner, @unchecked Sendable {
 
     func notifyCompletion(conversationID: UUID, title: String) async {
         notifications.append((conversationID, title))
+        await waitAfterNotification?()
     }
 
     func requestNotificationAuthorization() async -> Bool {
@@ -178,6 +241,37 @@ actor RecordingPersistence: ChatPersistence {
     func saveSkills(_ skills: [ChatSkill]) async throws {
         operations.append(.saveSkills(skills.count))
     }
+}
+
+private actor HeldDiscovery {
+    private var waiting: CheckedContinuation<Void, Never>?
+    private var released = false
+
+    var hasStarted: Bool { waiting != nil }
+
+    func wait() async {
+        guard !released else { return }
+        await withCheckedContinuation { waiting = $0 }
+    }
+
+    func release() {
+        released = true
+        waiting?.resume()
+        waiting = nil
+    }
+}
+
+private actor FailingRemovalSecretStore: ChatSecretStore {
+    private var stored: [String: String] = [:]
+    private var removalFails = true
+
+    func loadSecret(account: String) async throws -> String? { stored[account] }
+    func saveSecret(_ value: String, account: String) async throws { stored[account] = value }
+    func removeSecret(account: String) async throws {
+        if removalFails { throw CPAError(.secureStorageFailure) }
+        stored[account] = nil
+    }
+    func allowRemoval() { removalFails = false }
 }
 
 // MARK: - Tests
@@ -454,11 +548,86 @@ struct ChatWorkspaceModelTests {
         await bind(fixture, apiKeys: ["test-client-key-0001"])
         #expect(await fixture.workspace.credentialState != .missingKey)
 
-        await fixture.workspace.forget(server: server)
+        try await fixture.workspace.forget(server: server)
         #expect(await fixture.workspace.credentialState == .unbound)
         #expect(await fixture.workspace.server == nil)
         let account = ChatSecrets.clientAPIKeyAccount(for: server)
         #expect(try await fixture.secrets.loadSecret(account: account) == nil)
+    }
+
+    @Test @MainActor func lateKeyDiscoveryDoesNotInstallIntoNewConnection() async throws {
+        let fixture = makeFixture()
+        let gate = HeldDiscovery()
+        let other = try CPAServer(baseURL: "https://other.example.com")
+        let discovery = makeDiscovery(fixture.transport)
+        await fixture.transport.respond("/v0/management/api-keys", status: 200,
+                                        body: #"{"api-keys":["test-client-key-0001"]}"#)
+        await fixture.transport.holdResponses { await gate.wait() }
+        let pending = Task {
+            await fixture.workspace.bind(server: server) { discovery }
+        }
+        let requested = await waitUntil { await gate.hasStarted }
+        await fixture.workspace.bind(server: other) { nil }
+        await gate.release()
+        await pending.value
+
+        #expect(requested)
+        #expect(fixture.workspace.server == other)
+        #expect(fixture.workspace.credentialState == .missingKey)
+        #expect(fixture.workspace.discoveredKeys.isEmpty)
+        let account = ChatSecrets.clientAPIKeyAccount(for: other)
+        #expect(try await fixture.secrets.loadSecret(account: account) == nil)
+    }
+
+    @Test @MainActor func changingConnectionSuppressesOldReplyTitleRequest() async throws {
+        let gate = HeldDiscovery()
+        let fixture = makeFixture()
+        fixture.runner.inBackground = true
+        fixture.runner.waitAfterNotification = { await gate.wait() }
+        fixture.engine.respond(with: [.snapshot(text: "Old reply", reasoning: nil)])
+        await fixture.workspace.loadIfNeeded()
+        fixture.workspace.settings.generatesTitles = true
+        fixture.workspace.settings.notifiesOnBackgroundCompletion = true
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let id = fixture.workspace.createConversation()
+        fixture.workspace.send("Original question", attachments: [], in: id)
+        let notified = await waitUntil { await gate.hasStarted }
+        let other = try CPAServer(baseURL: "https://other.example.com")
+        await fixture.workspace.bind(server: other) { nil }
+        await gate.release()
+        let finished = await waitUntil { [workspace = fixture.workspace] in
+            await MainActor.run { !workspace.isGenerating(id) }
+        }
+
+        #expect(notified && finished)
+        #expect(fixture.engine.streamRequests.first?.baseURL.host == server.baseURL.host)
+        #expect(fixture.engine.completeRequests.isEmpty)
+        #expect(fixture.workspace.conversation(id)?.title == "Original question")
+    }
+
+    @Test @MainActor func keyRemovalFailureStaysVisibleAndCanBeRetried() async throws {
+        let secrets = FailingRemovalSecretStore()
+        let workspace = ChatWorkspaceModel(persistence: ChatMemoryPersistence(), secrets: secrets,
+                                           modelCatalog: { _, _ in FakeModelCatalog(result: .success([])) })
+        await workspace.bind(server: server) { nil }
+        #expect(await workspace.useManualKey("test-client-key-0001"))
+
+        await workspace.removeStoredKey()
+        #expect(workspace.keyRemovalFailed)
+        #expect(workspace.credentialState == .ready(hint: "••••0001", isManual: true))
+        do {
+            try await workspace.forget(server: server)
+            Issue.record("Forgetting a connection reported success despite a Keychain error")
+        } catch let error as CPAError {
+            #expect(error.kind == .secureStorageFailure)
+        }
+        #expect(workspace.server == server)
+
+        await secrets.allowRemoval()
+        try await workspace.forget(server: server)
+        #expect(workspace.credentialState == .unbound)
+        #expect(!workspace.keyRemovalFailed)
+        #expect(try await secrets.loadSecret(account: ChatSecrets.clientAPIKeyAccount(for: server)) == nil)
     }
 
     @Test @MainActor func manualKeyMarksIsManual() async {

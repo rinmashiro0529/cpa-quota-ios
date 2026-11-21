@@ -11,12 +11,11 @@
 - 所有变更经 PR；要求至少一名独立审阅者批准，新增提交使旧批准失效，最新推送由非推送者批准。
 - 要求解决审阅对话，并要求最新候选提交的必需检查全部成功。
 - 禁止强制推送和删除，避免为管理员或应用设置不必要的绕过例外。
-- 必需检查名称与实际 check run 一致。当前工作流产生下表六个检查。
+- 必需检查名称与实际 check run 一致。当前工作流产生下表五个检查。
 
 | 必需检查 | 覆盖范围 |
 | --- | --- |
 | `Go tests, race and vet` | Go 单测、竞态检查、静态分析、后端构建与离线工具回归 |
-| `Swift and native UI (Xcode 26.2, iPhone 17 Pro)` | Swift 测试、原生 UI、扩展结构与 Release 构建 |
 | `Swift and native UI (Xcode 27.1, iPhone 18 Pro)` | 对应工具链与设备的同组检查 |
 | `Swift and native UI (Xcode 27.1, iPhone Duo)` | 对应工具链与设备的同组检查 |
 | `Source and history secret scan` | 候选快照与历史扫描，精确散列证据核对 |
@@ -26,7 +25,7 @@
 
 在支持的隔离测试仓库或测试分支验证失败检查不能合并，不对生产 `main` 尝试破坏性推送。配置前重新核对检查名称和 runner 可用性；不能为让检查变绿而跳过失败作业。核对规则 ID、active 状态、main 匹配条件及实际生效规则后，才能将服务端保护记为完成。
 
-配置完成前维持人工门禁：核对准确 SHA 的六项检查和审阅记录，未完成验证的修复 PR 保持 Draft。如果 GitHub 因付款、支出额度或执行环境没有启动作业，记录为“未执行”；如果测试或运行器已启动但非零退出，保留该次失败及其诊断，不用日志中的局部通过覆盖作业失败。更改账户套餐、账单和仓库可见性仍是独立管理决策。
+配置完成前维持人工门禁：核对准确 SHA 的五项检查和审阅记录，未完成验证的修复 PR 保持 Draft。如果 GitHub 因付款、支出额度或执行环境没有启动作业，记录为“未执行”；如果测试或运行器已启动但非零退出，保留该次失败及其诊断，不用日志中的局部通过覆盖作业失败。更改账户套餐、账单和仓库可见性仍是独立管理决策。
 
 参考：[GitHub 分支保护适用范围](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches)、[保护分支配置](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/managing-a-branch-protection-rule)、[规则 API](https://docs.github.com/en/rest/repos/rules)。
 

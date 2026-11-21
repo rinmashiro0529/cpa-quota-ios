@@ -47,7 +47,11 @@ struct ChatConversationOptionsView: View {
                         Text(model.id).tag(Optional(model.id))
                     }
                 }
+                #if os(iOS)
                 .pickerStyle(.navigationLink)
+                #else
+                .pickerStyle(.menu)
+                #endif
                 Picker("推理强度", selection: binding(\.reasoningEffort, in: conversation)) {
                     ForEach(ChatReasoningEffort.allCases) { effort in
                         Text(effort.title).tag(effort)

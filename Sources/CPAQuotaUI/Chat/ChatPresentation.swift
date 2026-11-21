@@ -26,19 +26,19 @@ public struct ChatFailurePresentation: Equatable, Sendable {
             summary = "请先从 CPA 提供的模型列表中选择一个模型。"
             symbolName = "cpu"
             severity = .warning
-        case .unauthorized(let status):
+        case .unauthorized:
             title = "API Key 鉴权失败"
-            summary = "CPA 拒绝了当前客户端 API Key（HTTP \(status)）。请在对话设置中重新选择或更换 Key。"
+            summary = "CPA 拒绝了当前客户端 API Key。请在对话设置中重新选择或更换 Key。"
             symbolName = "lock.trianglebadge.exclamationmark"
             severity = .critical
-        case .forbidden(let status):
+        case .forbidden:
             title = "无权使用此模型"
-            summary = "当前 API Key 没有调用此模型的权限（HTTP \(status)）。可以换用其他模型或 Key。"
+            summary = "当前 API Key 没有调用此模型的权限。可以换用其他模型或 Key。"
             symbolName = "hand.raised"
             severity = .warning
-        case .modelUnavailable(let status):
+        case .modelUnavailable:
             title = "模型不可用"
-            summary = "CPA 未找到或暂时无法提供此模型（HTTP \(status)）。请刷新模型列表后重新选择。"
+            summary = "CPA 未找到或暂时无法提供此模型。请刷新模型列表后重新选择。"
             symbolName = "questionmark.square.dashed"
             severity = .warning
         case .rateLimited(let retryAfter):
@@ -50,9 +50,9 @@ public struct ChatFailurePresentation: Equatable, Sendable {
             }
             symbolName = "hourglass"
             severity = .warning
-        case .upstream(let status):
+        case .upstream:
             title = "模型服务响应异常"
-            summary = "CPA 或上游返回了错误（HTTP \(status)）。已生成的内容会保留，可以重新生成。"
+            summary = "CPA 或上游返回了错误。已生成的内容会保留，可以重新生成。"
             symbolName = "exclamationmark.icloud"
             severity = .warning
         case .network:

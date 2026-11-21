@@ -39,7 +39,9 @@ public final class ChatWorkspaceModel {
     public private(set) var isDiscoveringKeys = false
     public private(set) var keyDiscoveryError: CPAError?
     private var activeKey: CPAClientAPIKey?
-    private var activeKeyIsManual = false
+    @ObservationIgnored private var credentialRevision: UInt64 = 0
+    @ObservationIgnored private var keyWriteTail: Task<Void, any Error>?
+    public private(set) var keyRemovalFailed = false
 
     private struct StoredKey: Codable {
         var v: Int
@@ -50,30 +52,30 @@ public final class ChatWorkspaceModel {
     /// Binds the workspace to the accepted CPA connection. Rebinding the same
     /// server is a no-op unless the state needs recovery (`.failed`/`.missingKey`).
     public func bind(server: CPAServer?, discovery: @escaping @Sendable () async -> CPAAPIKeyDiscovery?) async {
+        guard !Task.isCancelled else { return }
         guard let server else {
             unbind()
             return
         }
-        if self.server == server, !isRecoverable {
-            return
-        }
+        if self.server == server, !isRecoverable { return }
+        unbind()
+        let revision = credentialRevision
         self.server = server
-        self.discoveryFactory = discovery
-        self.discoveredKeys = []
-        self.keyDiscoveryError = nil
+        discoveryFactory = discovery
         credentialState = .loading
+        _ = await keyWriteTail?.result
+        guard isCurrent(revision) else { return }
         do {
-            if let stored = try await secrets.loadSecret(
-                account: ChatSecrets.clientAPIKeyAccount(for: server)),
-               let decoded = decodeStoredKey(stored) {
+            let stored = try await secrets.loadSecret(account: ChatSecrets.clientAPIKeyAccount(for: server))
+            guard isCurrent(revision) else { return }
+            if let stored, let decoded = decodeStoredKey(stored) {
                 await activate(key: decoded.key, isManual: decoded.manual)
                 return
             }
             credentialState = .missingKey
-        } catch let error as CPAError {
-            credentialState = .failed(error)
         } catch {
-            credentialState = .failed(CPAError(.secureStorageFailure))
+            guard isCurrent(revision) else { return }
+            credentialState = .failed(storageError(error))
         }
         await discoverKeys()
     }
@@ -84,96 +86,146 @@ public final class ChatWorkspaceModel {
         return false
     }
 
-    private func unbind() {
+    package func unbind() {
+        advanceCredentialRevision()
         server = nil
         discoveryFactory = nil
         activeKey = nil
-        activeKeyIsManual = false
         credentialState = .unbound
         discoveredKeys = []
-        isDiscoveringKeys = false
-        keyDiscoveryError = nil
+        keyRemovalFailed = false
         models = []
         modelListState = .idle
     }
 
+    private func advanceCredentialRevision() {
+        credentialRevision &+= 1
+        isDiscoveringKeys = false
+        keyDiscoveryError = nil
+        for task in generationTasks.values { task.cancel() }
+        for task in titleTasks.values { task.cancel() }
+    }
+
+    private func isCurrent(_ revision: UInt64) -> Bool {
+        revision == credentialRevision && !Task.isCancelled
+    }
+
+    private func storageError(_ error: any Error) -> CPAError {
+        (error as? CPAError) ?? CPAError(.secureStorageFailure)
+    }
+
     private func activate(key: CPAClientAPIKey, isManual: Bool) async {
         activeKey = key
-        activeKeyIsManual = isManual
         credentialState = .ready(hint: key.hint, isManual: isManual)
         await refreshModels()
     }
 
     public func discoverKeys() async {
-        guard server != nil, let discoveryFactory else { return }
-        guard !isDiscoveringKeys else { return }
+        guard server != nil, let discoveryFactory, credentialState != .loading,
+              !isDiscoveringKeys, !Task.isCancelled else { return }
+        let revision = credentialRevision
         isDiscoveringKeys = true
-        defer { isDiscoveringKeys = false }
-        guard let discovery = await discoveryFactory() else {
-            keyDiscoveryError = nil
-            return
-        }
+        defer { if revision == credentialRevision { isDiscoveringKeys = false } }
+        guard let discovery = await discoveryFactory(), isCurrent(revision) else { return }
         do {
             let keys = try await discovery.keys()
+            guard isCurrent(revision) else { return }
             discoveredKeys = keys
             keyDiscoveryError = nil
             if keys.count == 1 {
                 await selectKey(keys[0])
             }
-            // 0 or several keys: stay .missingKey and let the UI show the list.
-        } catch let error as CPAError {
-            keyDiscoveryError = error
         } catch {
-            keyDiscoveryError = CPAError(.network)
+            guard isCurrent(revision) else { return }
+            keyDiscoveryError = (error as? CPAError) ?? CPAError(.network)
         }
     }
 
     public func selectKey(_ key: CPAClientAPIKey) async {
-        guard let server else { return }
-        do {
-            try await saveStoredKey(key, manual: false, for: server)
-        } catch let error as CPAError {
-            credentialState = .failed(error)
-            return
-        } catch {
-            credentialState = .failed(CPAError(.secureStorageFailure))
-            return
-        }
-        await activate(key: key, isManual: false)
+        guard discoveredKeys.contains(key) else { return }
+        _ = await installKey(key, manual: false)
     }
 
     @discardableResult
     public func useManualKey(_ text: String) async -> Bool {
-        guard let server, let key = CPAClientAPIKey(text) else { return false }
+        guard let key = CPAClientAPIKey(text) else { return false }
+        return await installKey(key, manual: true)
+    }
+
+    private func installKey(_ key: CPAClientAPIKey, manual: Bool) async -> Bool {
+        guard let server, credentialState != .loading, !Task.isCancelled else { return false }
+        advanceCredentialRevision()
+        let revision = credentialRevision
+        activeKey = nil
+        credentialState = .loading
+        keyRemovalFailed = false
+        models = []
+        modelListState = .idle
         do {
-            try await saveStoredKey(key, manual: true, for: server)
-        } catch let error as CPAError {
-            credentialState = .failed(error)
-            return false
+            try await saveStoredKey(key, manual: manual, for: server)
         } catch {
-            credentialState = .failed(CPAError(.secureStorageFailure))
+            guard isCurrent(revision) else { return false }
+            credentialState = .failed(storageError(error))
             return false
         }
-        await activate(key: key, isManual: true)
-        return true
+        guard isCurrent(revision) else { return false }
+        await activate(key: key, isManual: manual)
+        return isCurrent(revision)
     }
 
     public func removeStoredKey() async {
-        guard let server else { return }
-        try? await secrets.removeSecret(account: ChatSecrets.clientAPIKeyAccount(for: server))
-        activeKey = nil
-        activeKeyIsManual = false
-        credentialState = .missingKey
-        models = []
-        modelListState = .idle
+        guard let server, credentialState != .loading else { return }
+        // The error is exposed via keyRemovalFailed; the same button remains usable.
+        try? await deleteStoredKey(for: server, unbindAfterSuccess: false)
     }
 
-    /// Removes another server's stored key; unbinds if it is the bound server.
-    public func forget(server: CPAServer) async {
-        try? await secrets.removeSecret(account: ChatSecrets.clientAPIKeyAccount(for: server))
+    /// Only unbind after a successful Keychain removal. The caller can retry a failure.
+    public func forget(server: CPAServer) async throws {
+        try await deleteStoredKey(for: server, unbindAfterSuccess: true)
+    }
+
+    private func deleteStoredKey(for server: CPAServer, unbindAfterSuccess: Bool) async throws {
+        let previousState = credentialState
+        let revision: UInt64?
         if self.server == server {
-            unbind()
+            advanceCredentialRevision()
+            revision = credentialRevision
+            credentialState = .loading
+            keyRemovalFailed = false
+            modelListState = models.isEmpty ? .idle : .loaded
+        } else {
+            revision = nil
         }
+        let store = secrets
+        let account = ChatSecrets.clientAPIKeyAccount(for: server)
+        do {
+            try await enqueueKeyWrite { try await store.removeSecret(account: account) }.value
+        } catch {
+            if let revision, revision == credentialRevision {
+                keyRemovalFailed = true
+                credentialState = previousState == .loading ? .failed(storageError(error)) : previousState
+            }
+            throw storageError(error)
+        }
+        guard let revision, revision == credentialRevision else { return }
+        if unbindAfterSuccess {
+            unbind()
+        } else {
+            activeKey = nil
+            credentialState = .missingKey
+            models = []
+            modelListState = .idle
+        }
+    }
+
+    private func enqueueKeyWrite(_ work: @escaping @Sendable () async throws -> Void) -> Task<Void, any Error> {
+        let previous = keyWriteTail
+        let next = Task {
+            _ = await previous?.result
+            try await work()
+        }
+        keyWriteTail = next
+        return next
     }
 
     private func saveStoredKey(_ key: CPAClientAPIKey, manual: Bool, for server: CPAServer) async throws {
@@ -182,7 +234,9 @@ public final class ChatWorkspaceModel {
         guard let text = String(data: data, encoding: .utf8) else {
             throw CPAError(.secureStorageFailure)
         }
-        try await secrets.saveSecret(text, account: ChatSecrets.clientAPIKeyAccount(for: server))
+        let store = secrets
+        let account = ChatSecrets.clientAPIKeyAccount(for: server)
+        try await enqueueKeyWrite { try await store.saveSecret(text, account: account) }.value
     }
 
     private func decodeStoredKey(_ text: String) -> (key: CPAClientAPIKey, manual: Bool)? {
@@ -201,18 +255,19 @@ public final class ChatWorkspaceModel {
     public private(set) var modelListState: ChatModelListState = .idle
 
     public func refreshModels() async {
-        guard let server, let activeKey else {
-            models = []
-            modelListState = .idle
-            return
-        }
+        guard case .ready = credentialState, let server, let activeKey, !Task.isCancelled else { return }
+        let revision = credentialRevision
         modelListState = .loading
         do {
-            models = try await modelCatalog(server, activeKey).models()
+            let refreshed = try await modelCatalog(server, activeKey).models()
+            guard isCurrent(revision) else { return }
+            models = refreshed
             modelListState = .loaded
         } catch let error as CPAError {
+            guard isCurrent(revision) else { return }
             modelListState = .failed(Self.chatFailure(for: error))
         } catch {
+            guard isCurrent(revision) else { return }
             modelListState = .failed(AnyLanguageModelChatEngine.failure(for: error) ?? .network)
         }
     }
@@ -356,8 +411,13 @@ public final class ChatWorkspaceModel {
         guard !trimmed.isEmpty || !attachments.isEmpty,
               generationTasks[conversationID] == nil,
               let conversation = self.conversation(conversationID) else { return }
-        generationTasks[conversationID] = Task {
-            await self.performSend(text: text, attachments: attachments, conversation: conversation)
+        startGeneration(text: text, attachments: attachments, conversation: conversation)
+    }
+
+    private func startGeneration(text: String?, attachments: [ChatImageAttachment], conversation: ChatConversation) {
+        let revision = credentialRevision
+        generationTasks[conversation.id] = Task {
+            await self.performSend(text: text, attachments: attachments, conversation: conversation, revision: revision)
         }
     }
 
@@ -378,9 +438,7 @@ public final class ChatWorkspaceModel {
         // The triggering user message is now the last one (if any).
         updateConversationSilently(conversation)
         guard conversation.messages.last?.role == .user else { return }
-        generationTasks[conversationID] = Task {
-            await self.performSend(text: nil, attachments: [], conversation: conversation)
-        }
+        startGeneration(text: nil, attachments: [], conversation: conversation)
     }
 
     /// Replaces the user message text, drops everything after it, then reruns.
@@ -394,9 +452,7 @@ public final class ChatWorkspaceModel {
         conversation.messages[index].text = text
         conversation.messages.removeSubrange((index + 1)...)
         updateConversationSilently(conversation)
-        generationTasks[conversationID] = Task {
-            await self.performSend(text: nil, attachments: [], conversation: conversation)
-        }
+        startGeneration(text: nil, attachments: [], conversation: conversation)
     }
 
     public func deleteMessage(_ id: UUID, in conversationID: UUID) {
@@ -417,14 +473,14 @@ public final class ChatWorkspaceModel {
     /// `text` nil means the triggering user message is already the last
     /// message (regenerate / editAndResend); otherwise it is appended.
     private func performSend(text: String?, attachments: [ChatImageAttachment],
-                             conversation snapshot: ChatConversation) async {
+                             conversation snapshot: ChatConversation, revision: UInt64) async {
         let conversationID = snapshot.id
         defer {
             generationTasks[conversationID] = nil
             stopReasons[conversationID] = nil
         }
-        // A deleted conversation must not be resurrected by a cancelled task's late run.
-        guard conversations.contains(where: { $0.id == conversationID }) else { return }
+        // A cancelled or superseded task must not change the next connection's state.
+        guard isCurrent(revision), conversations.contains(where: { $0.id == conversationID }) else { return }
         var conversation = snapshot
 
         // Append the user message unless this is a rerun.
@@ -436,7 +492,7 @@ public final class ChatWorkspaceModel {
         }
 
         // Missing credential / missing model fast paths.
-        guard case .ready = credentialState, let apiKey = activeKey else {
+        guard case .ready = credentialState, let server, let apiKey = activeKey else {
             failFast(&conversation, with: .missingAPIKey, modelID: conversation.modelID)
             return
         }
@@ -471,7 +527,7 @@ public final class ChatWorkspaceModel {
             !$0.text.isEmpty && ($0.status == .complete || $0.status == .stopped)
         }
 
-        guard let server else { return }
+        let baseURL = server.baseURL.appendingPathComponent("v1")
         let token = backgroundRunner.beginTask { [weak self] in
             guard let self else { return }
             self.stopReasons[conversationID] = .backgroundExpired
@@ -503,7 +559,7 @@ public final class ChatWorkspaceModel {
         }
 
         // Cancelled during the search step: end per stop reason, no engine call.
-        if Task.isCancelled {
+        if !isCurrent(revision) {
             finishAborted(assistantID: assistantID, in: conversationID)
             if let updated = self.conversation(conversationID) {
                 await persist(updated).value
@@ -515,7 +571,7 @@ public final class ChatWorkspaceModel {
             ? modelPrompt
             : ChatPromptBuilder.searchInjectedPrompt(modelPrompt, sources: sources)
         let request = ChatEngineRequest(
-            baseURL: server.baseURL.appendingPathComponent("v1"),
+            baseURL: baseURL,
             apiKey: apiKey,
             modelID: modelID,
             instructions: instructions,
@@ -527,6 +583,7 @@ public final class ChatWorkspaceModel {
         var succeeded = false
         do {
             for try await event in engine.stream(request) {
+                try Task.checkCancellation()
                 switch event {
                 case .snapshot(let text, let reasoning):
                     mutateAssistant(assistantID, in: conversationID) {
@@ -544,7 +601,7 @@ public final class ChatWorkspaceModel {
             mutateAssistant(assistantID, in: conversationID) { $0.status = .complete }
             succeeded = true
         } catch {
-            if AnyLanguageModelChatEngine.failure(for: error) == nil {
+            if !isCurrent(revision) || AnyLanguageModelChatEngine.failure(for: error) == nil {
                 // Cancellation: user stop or background expiration.
                 finishAborted(assistantID: assistantID, in: conversationID)
             } else {
@@ -561,19 +618,19 @@ public final class ChatWorkspaceModel {
             await persist(updated).value
         }
 
-        if succeeded {
+        if succeeded, isCurrent(revision) {
             if backgroundRunner.isAppInBackground, settings.notifiesOnBackgroundCompletion {
                 let title = self.conversation(conversationID)?.title ?? ""
                 await backgroundRunner.notifyCompletion(
                     conversationID: conversationID,
                     title: title.isEmpty ? "新对话" : title)
             }
-            if settings.generatesTitles,
+            if isCurrent(revision), settings.generatesTitles,
                let current = self.conversation(conversationID),
                current.messages.filter({ $0.role == .assistant && $0.status == .complete }).count == 1,
                let reply = current.messages.last(where: { $0.id == assistantID })?.text {
                 generateTitle(conversationID: conversationID, userText: userMessage.text,
-                              reply: reply, apiKey: apiKey, modelID: modelID)
+                              reply: reply, request: request, revision: revision)
             }
         }
     }
@@ -606,18 +663,16 @@ public final class ChatWorkspaceModel {
     }
 
     private func generateTitle(conversationID: UUID, userText: String, reply: String,
-                               apiKey: CPAClientAPIKey, modelID: String) {
-        guard let server else { return }
+                               request: ChatEngineRequest, revision: UInt64) {
         titleTasks[conversationID] = Task {
             defer { self.titleTasks[conversationID] = nil }
-            let request = ChatEngineRequest(
-                baseURL: server.baseURL.appendingPathComponent("v1"),
-                apiKey: apiKey,
-                modelID: modelID,
-                instructions: "",
-                history: [],
+            guard isCurrent(revision), self.conversation(conversationID) != nil else { return }
+            let titleRequest = ChatEngineRequest(
+                baseURL: request.baseURL,
+                apiKey: request.apiKey,
+                modelID: request.modelID,
                 prompt: "用不超过 12 个字概括以下对话的主题，只输出标题：\n\(userText)\n\(String(reply.prefix(500)))")
-            guard let raw = try? await engine.complete(request) else { return }
+            guard let raw = try? await engine.complete(titleRequest), isCurrent(revision) else { return }
             var title = raw.trimmingCharacters(in: Self.titleTrimming)
             title = String(title.prefix(30))
             guard !title.isEmpty else { return }

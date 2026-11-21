@@ -27,6 +27,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install pinned Swift macro trust
+        run: bash ci/install_trusted_swift_macros.sh
+
       - name: Select exact Duo simulator
         id: simulator
         shell: bash
@@ -61,7 +64,7 @@ jobs:
           DUO_UDID: ${{ steps.simulator.outputs.udid }}
         run: |
           set -euo pipefail
-          xcodebuild build -project Apple/CPAQuota.xcodeproj -scheme CPAQuota -configuration Debug -destination "platform=iOS Simulator,id=$DUO_UDID" -derivedDataPath "$RUNNER_TEMP/DuoInnerDerivedData" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= > "$EVIDENCE/app-build.log" 2>&1 || { tail -n 100 "$EVIDENCE/app-build.log"; exit 1; }
+          xcodebuild build -project Apple/CPAQuota.xcodeproj -scheme CPAQuota -onlyUsePackageVersionsFromResolvedFile -configuration Debug -destination "platform=iOS Simulator,id=$DUO_UDID" -derivedDataPath "$RUNNER_TEMP/DuoInnerDerivedData" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= > "$EVIDENCE/app-build.log" 2>&1 || { tail -n 100 "$EVIDENCE/app-build.log"; exit 1; }
           APP="$RUNNER_TEMP/DuoInnerDerivedData/Build/Products/Debug-iphonesimulator/CPAQuota.app"
           test -d "$APP"
           # The ordinary CI readiness verifier is inventory-heavy on a cold Duo.

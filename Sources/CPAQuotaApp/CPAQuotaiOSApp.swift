@@ -129,11 +129,52 @@ private struct UITestWorkspace: View {
                 },
                 chatWorkspace: ChatWorkspaceModel(
                     persistence: ChatMemoryPersistence(),
-                    secrets: MemorySecretStore())
+                    secrets: MemorySecretStore(),
+                    engine: UITestChatEngine(),
+                    modelCatalog: { _, _ in UITestChatModelCatalog() })
             )
         } catch {
             preparationFailed = true
         }
+    }
+}
+
+private struct UITestChatModelCatalog: ChatModelCatalog {
+    func models() async throws -> [CPAModel] {
+        [CPAModel(id: "fixture-chat-default"), CPAModel(id: "fixture-chat-alternate")]
+    }
+}
+
+private actor UITestChatEngine: ChatEngine {
+    private var attempt = 0
+
+    nonisolated func stream(_ request: ChatEngineRequest) -> AsyncThrowingStream<ChatEngineEvent, any Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                let attempt = await self.nextAttempt()
+                if attempt == 1 {
+                    continuation.yield(.snapshot(text: "第一段夹具回复", reasoning: nil))
+                    // Keep the initial reply in progress until the test stops it.
+                    do {
+                        try await Task.sleep(for: .seconds(60))
+                    } catch {
+                        continuation.finish(throwing: error)
+                        return
+                    }
+                } else {
+                    continuation.yield(.snapshot(text: "重新生成的夹具回复", reasoning: nil))
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    func complete(_ request: ChatEngineRequest) async throws -> String { "夹具对话" }
+
+    private func nextAttempt() -> Int {
+        attempt += 1
+        return attempt
     }
 }
 #endif

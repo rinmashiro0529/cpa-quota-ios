@@ -99,11 +99,14 @@ jobs:
           python3 -I ci/validate_source_layout.py --root .
           python3 -I ci/test_source_layout.py
           python3 -I ci/test_activity_extension.py
+      - name: Install pinned Swift macro trust
+        run: bash ci/install_trusted_swift_macros.sh
       - name: Run Swift package and contract tests
         shell: bash
         run: |
           set -euo pipefail
-          swift test --parallel 2>&1 | tee "$RUNNER_TEMP/FrontendEvidence/swift-tests.log"
+          cp Apple/CPAQuota.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved Package.resolved
+          swift test --disable-automatic-resolution --parallel 2>&1 | tee "$RUNNER_TEMP/FrontendEvidence/swift-tests.log"
       - name: Select and record the installed simulator
         id: simulator
         env:
@@ -137,6 +140,7 @@ jobs:
           xcodebuild test \
             -project Apple/CPAQuota.xcodeproj \
             -scheme CPAQuota \
+            -onlyUsePackageVersionsFromResolvedFile \
             -configuration Debug \
             -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
             -derivedDataPath "$RUNNER_TEMP/FrontendDerivedData" \
@@ -161,6 +165,7 @@ jobs:
           xcodebuild build \
             -project Apple/CPAQuota.xcodeproj \
             -scheme CPAQuota \
+            -onlyUsePackageVersionsFromResolvedFile \
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/ReleaseDerivedData" \

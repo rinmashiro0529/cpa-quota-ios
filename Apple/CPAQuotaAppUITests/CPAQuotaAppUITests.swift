@@ -356,6 +356,56 @@ final class CPAQuotaAppUITests: XCTestCase {
     }
 
     @MainActor
+    func testChatSelectsModelStreamsStopsAndRegenerates() {
+        let app = launch(connected: true)
+        defer { app.terminate() }
+        selectTab("chat", title: "AI 对话", in: app)
+        let newChat = element("chat.emptyNew", in: app)
+        reveal(newChat, in: app)
+        newChat.tap()
+
+        let modelMenu = element("chat.modelMenu", in: app)
+        expectExists(modelMenu, in: app)
+        modelMenu.tap()
+        let alternateModel = textContaining("fixture-chat-alternate", in: app)
+        expectExists(alternateModel, in: app)
+        alternateModel.tap()
+        verify(modelMenu.label.contains("fixture-chat-alternate"), in: app,
+               "The selected model must apply to this conversation.")
+
+        let input = element("chat.input", in: app)
+        expectExists(input, in: app)
+        input.tap()
+        input.typeText("Fixture question")
+        let send = element("chat.send", in: app)
+        expectExists(send, in: app)
+        send.tap()
+        let partial = textContaining("第一段夹具回复", in: app)
+        expectExists(partial, in: app)
+        let stop = element("chat.stop", in: app)
+        expectExists(stop, in: app)
+        stop.tap()
+        expectExists(textContaining("已停止生成", in: app), in: app)
+        verify(partial.exists, in: app, "Stopping must keep the streamed text.")
+
+        let regenerate = element("chat.regenerate", in: app)
+        reveal(regenerate, in: app)
+        regenerate.tap()
+        expectExists(textContaining("重新生成的夹具回复", in: app), in: app)
+        verify(!partial.exists, in: app, "Regenerating must replace the stopped reply.")
+    }
+
+    @MainActor
+    func testMonitoringDeepLinkOpensMonitoringPage() throws {
+        let app = launch(connected: true)
+        defer { app.terminate() }
+        selectTab("chat", title: "AI 对话", in: app)
+        app.open(try XCTUnwrap(URL(string: "cpaquota://monitor?source=personal")))
+        expectExists(app.navigationBars["监控与活动"], in: app, timeout: 10)
+        expectExists(element("monitoring.unconfigured", in: app), in: app)
+    }
+
+    @MainActor
     func testUnconfiguredMonitoringRequiresSeparateCredentials() {
         let app = launch(connected: true)
         defer { app.terminate() }

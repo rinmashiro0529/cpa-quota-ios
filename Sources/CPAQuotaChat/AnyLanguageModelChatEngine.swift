@@ -3,13 +3,14 @@ import Foundation
 import FoundationNetworking
 #endif
 import AnyLanguageModel
+import HTTPTypes
 import CPAQuotaKit
 
 /// `ChatEngine` on AnyLanguageModel's `OpenAILanguageModel` in Chat Completions
 /// mode against `{baseURL}chat/completions`. Each request builds a fresh
 /// `LanguageModelSession` from the request's transcript.
 public struct AnyLanguageModelChatEngine: ChatEngine {
-    private let transport: URLSession
+    private let transport: CompletionCheckingTransport
 
     public init() {
         let configuration = URLSessionConfiguration.ephemeral
@@ -20,8 +21,12 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
         configuration.httpCookieAcceptPolicy = .never
         configuration.urlCredentialStorage = nil
         // A redirect would forward the bearer key to a foreign host; refuse it.
-        transport = URLSession(configuration: configuration,
-                               delegate: RedirectRefusingDelegate(), delegateQueue: nil)
+        self.init(transport: URLSession(configuration: configuration,
+                                       delegate: RedirectRefusingDelegate(), delegateQueue: nil))
+    }
+
+    init(transport: any AnyLanguageModel.HTTPTransport) {
+        self.transport = CompletionCheckingTransport(base: transport)
     }
 
     private final class RedirectRefusingDelegate: NSObject, URLSessionTaskDelegate {
@@ -39,7 +44,7 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
                 do {
                     let session = makeSession(for: request)
                     let response = session.streamResponse(to: makePrompt(for: request),
-                                                          options: makeOptions(for: request))
+                                                          options: makeOptions(for: request, streaming: true))
                     for try await snapshot in response {
                         continuation.yield(.snapshot(text: snapshot.content,
                                                      reasoning: Self.reasoningText(snapshot.transcriptEntries)))
@@ -78,20 +83,19 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
         return LanguageModelSession(model: model, transcript: Self.makeTranscript(for: request))
     }
 
-    private func makeOptions(for request: ChatEngineRequest) -> GenerationOptions {
+    private func makeOptions(for request: ChatEngineRequest, streaming: Bool = false) -> GenerationOptions {
         var options = GenerationOptions()
-        switch request.reasoningEffort {
-        case .automatic:
-            break
-        case .low, .medium, .high:
-            let effort: OpenAILanguageModel.CustomGenerationOptions.ReasoningEffort =
-                switch request.reasoningEffort {
-                case .low: .low
-                case .medium: .medium
-                case .high: .high
-                case .automatic: .low // unreachable
-                }
-            options[custom: OpenAILanguageModel.self] = .init(reasoningEffort: effort)
+        let effort: OpenAILanguageModel.CustomGenerationOptions.ReasoningEffort? = switch request.reasoningEffort {
+        case .automatic: nil
+        case .low: .low
+        case .medium: .medium
+        case .high: .high
+        }
+        if streaming || effort != nil {
+            // AnyLanguageModel 1.3.0 only requests usage automatically on OpenAI's own host.
+            options[custom: OpenAILanguageModel.self] = .init(
+                reasoningEffort: effort,
+                extraBody: streaming ? ["stream_options": .object(["include_usage": .bool(true)])] : nil)
         }
         return options
     }
@@ -182,21 +186,66 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
         case 401: return .unauthorized(statusCode: code)
         case 403: return .forbidden(statusCode: code)
         case 404: return .modelUnavailable(statusCode: code)
-        case 429: return .rateLimited(retryAfter: parseRetryAfter(retryAfter))
+        case 429: return .rateLimited(retryAfter: WireDate.retryAfter(retryAfter, now: Date()))
         default: return .upstream(statusCode: code)
         }
     }
+}
 
-    private static func parseRetryAfter(_ value: String?) -> Date? {
-        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !trimmed.isEmpty else { return nil }
-        if let seconds = Double(trimmed), seconds.isFinite, seconds >= 0 {
-            return Date().addingTimeInterval(seconds)
+/// AnyLanguageModel 1.3.0 treats EOF as success even if CPA didn't finish the SSE stream.
+private struct CompletionCheckingTransport: AnyLanguageModel.HTTPTransport {
+    let base: any AnyLanguageModel.HTTPTransport
+
+    func send<Return>(request: HTTPRequest, body: Data?, timeout: Duration?,
+                      responseHandler: (HTTPResponse, HTTPResponseBody) async throws -> Return) async throws -> Return {
+        try await base.send(request: request, body: body, timeout: timeout) { response, chunks in
+            guard request.headerFields[.accept] == "text/event-stream", response.status.kind == .successful else {
+                return try await responseHandler(response, chunks)
+            }
+            return try await responseHandler(response, HTTPResponseBody(CompletionCheckedChunks(body: chunks)))
         }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "GMT")
-        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
-        return formatter.date(from: trimmed)
+    }
+}
+
+private struct CompletionCheckedChunks: AsyncSequence {
+    let body: HTTPResponseBody
+
+    func makeAsyncIterator() -> Iterator { Iterator(upstream: body.makeAsyncIterator()) }
+
+    struct Iterator: AsyncIteratorProtocol {
+        var upstream: HTTPResponseBody.AsyncIterator
+        private var line = [UInt8]()
+        private var exceedsMarkerLength = false
+        private var sawCompletion = false
+
+        init(upstream: HTTPResponseBody.AsyncIterator) { self.upstream = upstream }
+
+        mutating func next() async throws -> Data? {
+            try Task.checkCancellation()
+            if sawCompletion { return nil }
+            guard let chunk = try await upstream.next() else {
+                throw HTTPTransportError(kind: .decodingError)
+            }
+            // A marker can be split across network chunks. Keep only a bounded
+            // line prefix so ordinary long JSON events need no extra buffering.
+            for byte in chunk {
+                switch byte {
+                case 10, 13: // LF and CR (including CRLF)
+                    if !exceedsMarkerLength {
+                        let text = String(decoding: line, as: UTF8.self)
+                        if text.hasPrefix("data:"),
+                           text.dropFirst(5).trimmingCharacters(in: .whitespaces) == "[DONE]" {
+                            sawCompletion = true
+                        }
+                    }
+                    line.removeAll(keepingCapacity: true)
+                    exceedsMarkerLength = false
+                default:
+                    if line.count < 64 { line.append(byte) }
+                    else { exceedsMarkerLength = true }
+                }
+            }
+            return chunk
+        }
     }
 }

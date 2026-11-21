@@ -238,7 +238,7 @@ func nonEmptyWireString(_ text: String?) -> String? {
     return trimmed.isEmpty ? nil : trimmed
 }
 
-enum WireDate {
+package enum WireDate {
     // Keep decoded instants inside the RFC 3339 year 1...9999 calendar range.
     private static let minimumEpoch: TimeInterval = -62_135_596_800
     private static let maximumEpoch: TimeInterval = 253_402_300_800
@@ -271,7 +271,7 @@ enum WireDate {
         return parseRFC3339(trimmed)
     }
 
-    static func retryAfter(_ value: String?, now: Date) -> Date? {
+    package static func retryAfter(_ value: String?, now: Date) -> Date? {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }

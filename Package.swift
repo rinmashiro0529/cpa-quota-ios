@@ -14,6 +14,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/huggingface/AnyLanguageModel", exact: "1.3.0"),
+        .package(url: "https://github.com/apple/swift-http-types", exact: "1.8.0"),
         // Pinned to the v0.7.0 tag commit: a version pin is rejected because the
         // package itself depends on revision-pinned packages (highlightswift, iosMath).
         .package(url: "https://github.com/microsoft/SwiftStreamingMarkdown",
@@ -24,7 +25,8 @@ let package = Package(
         .target(name: "CPAQuotaActivity", dependencies: ["CPAQuotaKit"]),
         .target(name: "CPAQuotaChat", dependencies: [
             "CPAQuotaKit",
-            .product(name: "AnyLanguageModel", package: "AnyLanguageModel")
+            .product(name: "AnyLanguageModel", package: "AnyLanguageModel"),
+            .product(name: "HTTPTypes", package: "swift-http-types")
         ]),
         .target(name: "CPAQuotaUI", dependencies: [
             "CPAQuotaKit",
