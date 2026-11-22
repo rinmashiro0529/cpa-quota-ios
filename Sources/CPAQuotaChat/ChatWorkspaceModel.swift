@@ -788,7 +788,9 @@ public final class ChatWorkspaceModel {
             }
             sources = await performSearch(query, enabled: true, assistantID: saved.id,
                                           in: id, revision: target.revision, attemptID: attemptID)
-            guard isCurrent(target.revision), generationTasks[id]?.id == attemptID else {
+            // If the conversation was deleted or superseded, exit without re-persisting it.
+            guard generationTasks[id]?.id == attemptID else { return }
+            guard isCurrent(target.revision) else {
                 finishAborted(assistantID: saved.id, in: id)
                 mutateAssistant(saved.id, in: id) { $0.finishAttempt(commitPending: false) }
                 if let updated = self.conversation(id) {
@@ -980,8 +982,10 @@ public final class ChatWorkspaceModel {
                                           assistantID: assistantID, in: conversationID,
                                           revision: revision, attemptID: attemptID)
 
+        // If the conversation was deleted or superseded during search, exit without re-persisting it.
+        guard generationTasks[conversationID]?.id == attemptID else { return }
         // Cancelled during the search step: end per stop reason, no engine call.
-        if !isCurrent(revision) || generationTasks[conversationID]?.id != attemptID {
+        if !isCurrent(revision) {
             finishAborted(assistantID: assistantID, in: conversationID)
             if let updated = self.conversation(conversationID) {
                 await persist(updated).value

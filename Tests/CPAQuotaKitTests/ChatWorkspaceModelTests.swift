@@ -1839,9 +1839,6 @@ struct ChatWorkspaceModelTests {
 
     @Test @MainActor func stoppingMidReplayDiscardsPendingContinuationBytes() async throws {
         let persistence = ChatMemoryPersistence()
-        let fixture = makeFixture(persistence: persistence)
-        await fixture.workspace.loadIfNeeded()
-        await bind(fixture, apiKeys: ["test-client-key-0001"])
         let baseText = "First, install the package completely."
         let question = ChatMessage(role: .user, text: "Continue")
         var reply = ChatMessage(role: .assistant, text: baseText, modelID: "test-model", status: .stopped)
@@ -1858,9 +1855,9 @@ struct ChatWorkspaceModelTests {
         reloaded.engine.block()
         let target = try #require(reloaded.workspace.continuation(for: seeded.id))
         #expect(reloaded.workspace.continueReply(target))
-        #expect(await waitUntil {
+        #expect(await waitUntil { [workspace = reloaded.workspace] in
             await MainActor.run {
-                reloaded.workspace.conversation(seeded.id)?.messages.last?.pendingContinuation == "First, install"
+                workspace.conversation(seeded.id)?.messages.last?.pendingContinuation == "First, install"
             }
         })
         reloaded.workspace.stop(seeded.id)
