@@ -79,77 +79,75 @@ private struct UITestWorkspace: View {
             if let session {
                 CPAQuotaRootView(session: session)
                     .environment(\.dynamicTypeSize, usesLargeText ? .accessibility5 : .large)
-                    .overlay(alignment: .top) {
-                        GeometryReader { geometry in
-                            VStack(spacing: 2) {
-                                #if os(iOS)
-                                if ProcessInfo.processInfo.arguments.contains("--ui-test-chat-html"), gatedChat.generation > 0,
-                                   !gatedChat.isWaiting {
-                                    Button(copyCheck) {
-                                        switch UIPasteboard.general.string {
-                                        case GatedUITestChatEngine.htmlFixture: copyCheck = "完整源码一致"
-                                        case "<p>Second fragment</p>\n": copyCheck = "片段源码一致"
-                                        default: copyCheck = "源码不符"
-                                        }
+                    .safeAreaInset(edge: .top) {
+                        VStack(spacing: 2) {
+                            #if os(iOS)
+                            if ProcessInfo.processInfo.arguments.contains("--ui-test-chat-html"), gatedChat.generation > 0,
+                               !gatedChat.isWaiting {
+                                Button(copyCheck) {
+                                    switch UIPasteboard.general.string {
+                                    case GatedUITestChatEngine.htmlFixture: copyCheck = "完整源码一致"
+                                    case "<p>Second fragment</p>\n": copyCheck = "片段源码一致"
+                                    default: copyCheck = "源码不符"
                                     }
-                                    .accessibilityIdentifier("ui-test.chat.checkCopy")
                                 }
-                                #endif
-                                if usesChatGate, gatedChat.isWaiting {
-                                    if ProcessInfo.processInfo.arguments.contains("--ui-test-chat-scroll") {
-                                        Button("追加段落") { gatedChat.extendAnswer() }
-                                            .accessibilityIdentifier("ui-test.chat.extend")
-                                    }
-                                    if chatFiles != nil {
-                                        HStack {
-                                            Button("写入片段") { gatedChat.checkpoint() }
-                                                .accessibilityIdentifier("ui-test.chat.checkpoint")
-                                            Button("触发过期") { gatedChat.expire() }
-                                                .accessibilityIdentifier("ui-test.chat.expire")
-                                        }
-                                    }
-                                    Button("放行正文") { gatedChat.releaseAnswer() }
-                                        .accessibilityIdentifier("ui-test.chat.release")
-                                }
-                                if usesChatGate, chatFiles != nil {
-                                    Text("生成请求 \(gatedChat.generation)，已写块 \(checkpointOnDisk ? 1 : 0)")
-                                        .accessibilityIdentifier("ui-test.chat.counts")
-                                        .allowsHitTesting(false)
-                                        .task(id: gatedChat.generation) {
-                                            guard gatedChat.generation > 0, let chatFiles else { return }
-                                            checkpointOnDisk = false
-                                            let deadline = ContinuousClock.now + .seconds(90)
-                                            while !Task.isCancelled && ContinuousClock.now < deadline {
-                                                if let records = try? await chatFiles.loadConversations(),
-                                                   records.contains(where: { $0.messages.last?.text == gatedChat.expectedCheckpoint && $0.messages.last?.status == .streaming }) {
-                                                    checkpointOnDisk = true
-                                                    return
-                                                }
-                                                try? await Task.sleep(for: .milliseconds(100))
-                                            }
-                                        }
-                                }
-                                if let chatFiles, ProcessInfo.processInfo.arguments.contains("--ui-test-chat-models") {
-                                    let selected = session.chatWorkspace.settings.recentModelIDs
-                                    Text(modelPreferenceOnDisk ? "模型选择已写入" : "等待模型选择")
-                                        .allowsHitTesting(false)
-                                        .task(id: selected) {
-                                            modelPreferenceOnDisk = false
-                                            guard selected != nil else { return }
-                                            let deadline = ContinuousClock.now + .seconds(15)
-                                            while !Task.isCancelled && ContinuousClock.now < deadline {
-                                                if (try? await chatFiles.loadSettings())?.recentModelIDs == selected {
-                                                    modelPreferenceOnDisk = true
-                                                    return
-                                                }
-                                                try? await Task.sleep(for: .milliseconds(100))
-                                            }
-                                        }
-                                }
+                                .accessibilityIdentifier("ui-test.chat.checkCopy")
                             }
-                            .padding(.top, max(24, geometry.safeAreaInsets.top))
-                            .frame(maxWidth: .infinity)
+                            #endif
+                            if usesChatGate, gatedChat.isWaiting {
+                                if ProcessInfo.processInfo.arguments.contains("--ui-test-chat-scroll") {
+                                    Button("追加段落") { gatedChat.extendAnswer() }
+                                        .accessibilityIdentifier("ui-test.chat.extend")
+                                }
+                                if chatFiles != nil {
+                                    HStack {
+                                        Button("写入片段") { gatedChat.checkpoint() }
+                                            .accessibilityIdentifier("ui-test.chat.checkpoint")
+                                        Button("触发过期") { gatedChat.expire() }
+                                            .accessibilityIdentifier("ui-test.chat.expire")
+                                    }
+                                }
+                                Button("放行正文") { gatedChat.releaseAnswer() }
+                                    .accessibilityIdentifier("ui-test.chat.release")
+                            }
+                            if usesChatGate, chatFiles != nil {
+                                Text("生成请求 \(gatedChat.generation)，已写块 \(checkpointOnDisk ? 1 : 0)")
+                                    .accessibilityIdentifier("ui-test.chat.counts")
+                                    .allowsHitTesting(false)
+                                    .task(id: gatedChat.generation) {
+                                        guard gatedChat.generation > 0, let chatFiles else { return }
+                                        checkpointOnDisk = false
+                                        let deadline = ContinuousClock.now + .seconds(90)
+                                        while !Task.isCancelled && ContinuousClock.now < deadline {
+                                            if let records = try? await chatFiles.loadConversations(),
+                                               records.contains(where: { $0.messages.last?.text == gatedChat.expectedCheckpoint && $0.messages.last?.status == .streaming }) {
+                                                checkpointOnDisk = true
+                                                return
+                                            }
+                                            try? await Task.sleep(for: .milliseconds(100))
+                                        }
+                                    }
+                            }
+                            if let chatFiles, ProcessInfo.processInfo.arguments.contains("--ui-test-chat-models") {
+                                let selected = session.chatWorkspace.settings.recentModelIDs
+                                Text(modelPreferenceOnDisk ? "模型选择已写入" : "等待模型选择")
+                                    .allowsHitTesting(false)
+                                    .task(id: selected) {
+                                        modelPreferenceOnDisk = false
+                                        guard selected != nil else { return }
+                                        let deadline = ContinuousClock.now + .seconds(15)
+                                        while !Task.isCancelled && ContinuousClock.now < deadline {
+                                            if (try? await chatFiles.loadSettings())?.recentModelIDs == selected {
+                                                modelPreferenceOnDisk = true
+                                                return
+                                            }
+                                            try? await Task.sleep(for: .milliseconds(100))
+                                        }
+                                    }
+                            }
                         }
+                        .padding(.top, usesChatGate ? 24 : 0)
+                        .frame(maxWidth: .infinity)
                     }
                     .safeAreaInset(edge: .bottom) {
                         // Do not change the presenting workspace's safe area
