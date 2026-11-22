@@ -992,7 +992,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         // Inspect after every gesture, including the final one. Once a lazy
         // target exists, move toward its center instead of blindly sweeping.
         for attempt in 0...30 {
-            let context = geometry(in: app)
+            let context = geometry(in: app, scrollingTo: element)
             let exists = element.exists
             let frame = exists ? element.frame : .null
             let hittable = exists && element.isHittable
@@ -1087,7 +1087,7 @@ final class CPAQuotaAppUITests: XCTestCase {
 
     /// Capture geometry once per attempt, then refresh it after each gesture.
     @MainActor
-    private func geometry(in app: XCUIApplication) -> GeometryContext {
+    private func geometry(in app: XCUIApplication, scrollingTo target: XCUIElement? = nil) -> GeometryContext {
         let appFrame = app.frame
         let navBars = app.navigationBars.allElementsBoundByIndex.filter { $0.exists }
         let tabBars = app.tabBars.allElementsBoundByIndex.filter { $0.exists }
@@ -1109,9 +1109,20 @@ final class CPAQuotaAppUITests: XCTestCase {
         let selected = (detailForms.isEmpty ? candidates : detailForms).max {
             $0.viewport.width * $0.viewport.height < $1.viewport.width * $1.viewport.height
         }
+        var viewport = selected?.viewport
+        if target?.identifier.hasPrefix("chat.html.snippet.") == true {
+            let chatInput = app.textFields.matching(identifier: "chat.input").firstMatch
+            if chatInput.exists, var visibleViewport = viewport {
+                let composerTop = chatInput.frame.minY
+                if composerTop > visibleViewport.minY, composerTop < visibleViewport.maxY {
+                    visibleViewport.size.height = composerTop - visibleViewport.minY
+                    viewport = visibleViewport
+                }
+            }
+        }
         return GeometryContext(appFrame: appFrame, bars: navBars + tabBars,
                                container: selected?.element, containerFrame: selected?.frame ?? .null,
-                               viewport: selected?.viewport)
+                               viewport: viewport)
     }
 
     private func visibleContentFrame(_ frame: CGRect, appFrame: CGRect, navFrames: [CGRect],
@@ -1164,17 +1175,10 @@ final class CPAQuotaAppUITests: XCTestCase {
     private func scrollContent(upward: Bool, target: XCUIElement, targetFrame: CGRect,
                                targetHittable: Bool, context: GeometryContext, in app: XCUIApplication,
                                file: StaticString, line: UInt) {
-        guard let container = context.container, var viewport = context.viewport else {
+        guard let container = context.container, let viewport = context.viewport else {
             attachDiagnostics(app, name: "missing-scroll-container")
             XCTFail("A reachable native List/Form scroll container is required.", file: file, line: line)
             return
-        }
-        let chatInput = app.textFields.matching(identifier: "chat.input").firstMatch
-        if chatInput.exists, target.identifier != chatInput.identifier {
-            let composerTop = chatInput.frame.minY
-            if composerTop > viewport.minY, composerTop < viewport.maxY {
-                viewport.size.height = composerTop - viewport.minY
-            }
         }
         guard viewport.width > 44, viewport.height > 80 else {
             attachDiagnostics(app, name: "obscured-scroll-container")
