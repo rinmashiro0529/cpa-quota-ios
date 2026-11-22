@@ -658,15 +658,6 @@ public final class ChatWorkspaceModel {
         } else {
             original = question.text
         }
-        let effectivePrompt = ChatPromptBuilder.searchInjectedPrompt(original, sources: saved.searchSources)
-        let context = ChatPromptBuilder.continuationContext(
-            earlier: eligibleHistory(conversation), question: question, reply: saved, effectivePrompt: effectivePrompt)
-        let request = ChatEngineRequest(baseURL: server.baseURL.appendingPathComponent("v1"), apiKey: apiKey,
-                                       modelID: target.modelID,
-                                       instructions: ChatPromptBuilder.instructions(settings: settings, memories: memories,
-                                                                                    conversation: conversation),
-                                       history: context.history, prompt: context.prompt, images: context.images,
-                                       reasoningEffort: conversation.reasoningEffort)
         if reply.attempts == nil {
             reply.attempts = [ChatReplyAttempt(modelID: saved.modelID, status: saved.status,
                                                failure: saved.failure, usage: saved.usage)]
@@ -674,13 +665,40 @@ public final class ChatWorkspaceModel {
         reply.replyToID = question.id
         reply.status = .streaming
         reply.failure = nil
-        reply.omittedHistoryCount = context.omitted > 0 ? context.omitted : nil
         conversation.messages[conversation.messages.count - 1] = reply
         conversation.serverIdentifier = server.identifier
         conversation.updatedAt = Date()
         applyConversation(conversation)
+        persist(conversation)
         let token = beginBackgroundTask(in: id, assistantID: saved.id, attemptID: attemptID)
         defer { backgroundRunner.endTask(token) }
+
+        var sources = saved.searchSources
+        if target.isRetry, sources.isEmpty, conversation.isWebSearchEnabled {
+            let query = ChatPromptBuilder.applySkill(to: question.text, skills: skills).rest
+            sources = await performSearch(query, enabled: true, assistantID: saved.id,
+                                          in: id, revision: target.revision)
+            guard isCurrent(target.revision) else {
+                finishAborted(assistantID: saved.id, in: id)
+                if let updated = self.conversation(id) {
+                    await persist(updated).value
+                }
+                return
+            }
+            reply.searchSources = sources
+        }
+
+        let effectivePrompt = ChatPromptBuilder.searchInjectedPrompt(original, sources: sources)
+        let context = ChatPromptBuilder.continuationContext(
+            earlier: eligibleHistory(conversation), question: question, reply: reply, effectivePrompt: effectivePrompt)
+        reply.omittedHistoryCount = context.omitted > 0 ? context.omitted : nil
+        mutateAssistant(saved.id, in: id) { $0.omittedHistoryCount = reply.omittedHistoryCount }
+        let request = ChatEngineRequest(baseURL: server.baseURL.appendingPathComponent("v1"), apiKey: apiKey,
+                                       modelID: target.modelID,
+                                       instructions: ChatPromptBuilder.instructions(settings: settings, memories: memories,
+                                                                                    conversation: conversation),
+                                       history: context.history, prompt: context.prompt, images: context.images,
+                                       reasoningEffort: conversation.reasoningEffort)
         _ = await consume(request, in: id, assistant: reply, revision: target.revision, attemptID: attemptID)
     }
 
@@ -820,32 +838,8 @@ public final class ChatWorkspaceModel {
 
         // Optional web search injection. Cancellation mid-search ends the turn
         // below without marking the message as a search failure.
-        var sources: [ChatSearchSource] = []
-        var searchKey: (provider: ChatSearchProvider, key: String)?
-        if conversation.isWebSearchEnabled, let provider = settings.searchProvider,
-           let key = try? await secrets.loadSecret(account: ChatSecrets.searchKeyAccount(for: provider)),
-           !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            searchKey = (provider, key)
-        } else if conversation.isWebSearchEnabled, isCurrent(revision) {
-            // Web search is on but cannot run: say so on the reply instead of answering silently without it.
-            mutateAssistant(assistantID, in: conversationID) { $0.failure = .searchNotConfigured }
-        }
-        if let provider = searchKey?.provider, let key = searchKey?.key {
-            do {
-                sources = try await searchClient(provider).search(strippedText, apiKey: key)
-                if !sources.isEmpty {
-                    mutateAssistant(assistantID, in: conversationID) {
-                        $0.searchSources = sources
-                    }
-                }
-            } catch {
-                if !Task.isCancelled {
-                    mutateAssistant(assistantID, in: conversationID) {
-                        $0.failure = .searchFailed
-                    }
-                }
-            }
-        }
+        let sources = await performSearch(strippedText, enabled: conversation.isWebSearchEnabled,
+                                          assistantID: assistantID, in: conversationID, revision: revision)
 
         // Cancelled during the search step: end per stop reason, no engine call.
         if !isCurrent(revision) {
@@ -880,6 +874,37 @@ public final class ChatWorkspaceModel {
                           reply: reply, request: request, revision: revision,
                           replacing: replaceableTitle)
         }
+    }
+
+    private func performSearch(_ query: String, enabled: Bool, assistantID: UUID,
+                               in conversationID: UUID, revision: UInt64) async -> [ChatSearchSource] {
+        var sources: [ChatSearchSource] = []
+        var searchKey: (provider: ChatSearchProvider, key: String)?
+        if enabled, let provider = settings.searchProvider,
+           let key = try? await secrets.loadSecret(account: ChatSecrets.searchKeyAccount(for: provider)),
+           !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            searchKey = (provider, key)
+        } else if enabled, isCurrent(revision) {
+            // Web search is on but cannot run: say so on the reply instead of answering silently without it.
+            mutateAssistant(assistantID, in: conversationID) { $0.failure = .searchNotConfigured }
+        }
+        if let provider = searchKey?.provider, let key = searchKey?.key {
+            do {
+                sources = try await searchClient(provider).search(query, apiKey: key)
+                if !sources.isEmpty {
+                    mutateAssistant(assistantID, in: conversationID) {
+                        $0.searchSources = sources
+                    }
+                }
+            } catch {
+                if !Task.isCancelled {
+                    mutateAssistant(assistantID, in: conversationID) {
+                        $0.failure = .searchFailed
+                    }
+                }
+            }
+        }
+        return sources
     }
 
     private func eligibleHistory(_ conversation: ChatConversation) -> [ChatMessage] {

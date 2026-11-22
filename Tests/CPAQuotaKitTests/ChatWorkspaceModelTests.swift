@@ -912,6 +912,99 @@ struct ChatWorkspaceModelTests {
         #expect(fixture.engine.streamRequests.isEmpty)
     }
 
+    @Test @MainActor func retryAfterStoppedSearchRepeatsSearchAndInjectsResults() async throws {
+        let search = FakeSearchClient()
+        search.gate()
+        let source = ChatSearchSource(title: "重试结果", url: URL(string: "https://example.test/retry")!,
+                                      snippet: "重试摘要")
+        search.respond(with: [source])
+        let fixture = makeFixture(searchClient: search)
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let id = await fixture.workspace.createConversation()
+        await enableSearch(fixture, search: search, in: id)
+
+        fixture.workspace.send("/translate 查一下", attachments: [], in: id)
+        #expect(await waitUntil { search.queries == ["查一下"] })
+        fixture.workspace.stop(id)
+        search.release()
+        try await waitForGeneration(fixture.workspace, id: id)
+        let stopped = try #require(fixture.workspace.conversation(id)?.messages.last)
+        #expect(stopped.text.isEmpty)
+        #expect(stopped.searchSources.isEmpty)
+
+        search.gate()
+        fixture.engine.respond(with: [.snapshot(text: "找到答案", reasoning: nil)])
+        let target = try #require(fixture.workspace.continuation(for: id))
+        #expect(target.isRetry)
+        #expect(fixture.workspace.continueReply(target))
+        #expect(await waitUntil { search.queries == ["查一下", "查一下"] })
+        search.release()
+        try await waitForGeneration(fixture.workspace, id: id)
+
+        let result = try #require(fixture.workspace.conversation(id)?.messages.last)
+        #expect(result.id == stopped.id)
+        #expect(result.searchSources == [source])
+        #expect(fixture.engine.streamRequests.last?.prompt.contains("[1] 重试结果") == true)
+    }
+
+    @Test @MainActor func stoppingRetryDuringSearchEndsWithoutSearchFailureOrEngineCall() async throws {
+        let search = FakeSearchClient()
+        search.gate()
+        let fixture = makeFixture(searchClient: search)
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let id = await fixture.workspace.createConversation()
+        await enableSearch(fixture, search: search, in: id)
+
+        fixture.workspace.send("查一下", attachments: [], in: id)
+        #expect(await waitUntil { search.queries == ["查一下"] })
+        fixture.workspace.stop(id)
+        search.release()
+        try await waitForGeneration(fixture.workspace, id: id)
+
+        search.gate()
+        let target = try #require(fixture.workspace.continuation(for: id))
+        #expect(fixture.workspace.continueReply(target))
+        #expect(await waitUntil { search.queries == ["查一下", "查一下"] })
+        fixture.workspace.stop(id)
+        search.release()
+        try await waitForGeneration(fixture.workspace, id: id)
+
+        let stopped = try #require(fixture.workspace.conversation(id)?.messages.last)
+        #expect(stopped.status == .stopped)
+        #expect(stopped.failure == nil)
+        #expect(fixture.engine.streamRequests.isEmpty)
+    }
+
+    @Test @MainActor func nonRetryContinuationReusesSavedSearchSourcesWithoutSearching() async throws {
+        let question = ChatMessage(role: .user, text: "查一下")
+        let source = ChatSearchSource(title: "已保存结果", url: URL(string: "https://example.test/saved")!,
+                                      snippet: "已保存摘要")
+        var reply = ChatMessage(role: .assistant, text: "unfinished response",
+                                modelID: "test-model", status: .interrupted)
+        reply.searchSources = [source]
+        reply.attempts = [ChatReplyAttempt(modelID: "test-model", status: .interrupted,
+                                           failure: nil, usage: nil)]
+        let seeded = ChatConversation(modelID: "test-model", messages: [question, reply],
+                                      serverIdentifier: server.identifier)
+        let search = FakeSearchClient()
+        let fixture = makeFixture(persistence: RecordingPersistence(seeded: [seeded]), searchClient: search)
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        await enableSearch(fixture, search: search, in: seeded.id)
+        fixture.engine.respond(with: [.snapshot(text: " more", reasoning: nil)])
+
+        let target = try #require(fixture.workspace.continuation(for: seeded.id))
+        #expect(!target.isRetry)
+        #expect(fixture.workspace.continueReply(target))
+        try await waitForGeneration(fixture.workspace, id: seeded.id)
+
+        #expect(search.queries.isEmpty)
+        let request = try #require(fixture.engine.streamRequests.last)
+        #expect(request.history.contains(where: { $0.text.contains("[1] 已保存结果") }))
+    }
+
     // MARK: - Persistence ordering
 
     @Test @MainActor func persistenceWritesAreSerializedAndFinalStateLandsLast() async {
