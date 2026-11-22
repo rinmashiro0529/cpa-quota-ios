@@ -69,6 +69,9 @@ private struct UITestWorkspace: View {
     @State private var chatFiles: ChatFilePersistence?
     @State private var checkpointOnDisk = false
     @State private var modelPreferenceOnDisk = false
+    #if os(iOS)
+    @State private var copiedFixtureMatches = false
+    #endif
 
     var body: some View {
         Group {
@@ -77,6 +80,15 @@ private struct UITestWorkspace: View {
                     .environment(\.dynamicTypeSize, usesLargeText ? .accessibility5 : .large)
                     .safeAreaInset(edge: .top) {
                         VStack(spacing: 2) {
+                            #if os(iOS)
+                            if ProcessInfo.processInfo.arguments.contains("--ui-test-chat-html"), gatedChat.generation > 0,
+                               !gatedChat.isWaiting {
+                                Button(copiedFixtureMatches ? "完整源码一致" : "校验合成消息") {
+                                    copiedFixtureMatches = UIPasteboard.general.string == GatedUITestChatEngine.htmlFixture
+                                }
+                                .accessibilityIdentifier("ui-test.chat.checkCopy")
+                            }
+                            #endif
                             if usesChatGate, gatedChat.isWaiting {
                                 if ProcessInfo.processInfo.arguments.contains("--ui-test-chat-scroll") {
                                     Button("追加段落") { gatedChat.extendAnswer() }
@@ -269,10 +281,26 @@ private struct UITestChatModelCatalog: ChatModelCatalog {
     }
 
     func releaseAnswer() {
-        current?.yield(.snapshot(text: "放行后的正文", reasoning: "可见推理片段"))
+        let answer = ProcessInfo.processInfo.arguments.contains("--ui-test-chat-html") ? Self.htmlFixture : "放行后的正文"
+        current?.yield(.snapshot(text: answer, reasoning: "可见推理片段"))
         current?.finish()
         current = nil
     }
+
+    static let htmlFixture = """
+        Complete snippets
+        ~~~html
+        <p>First fragment</p>
+        ~~~
+        ~~~text
+        ordinary code
+        ~~~
+        ~~~html
+        <p>Second fragment</p>
+        ~~~
+        ~~~html
+        <p>incomplete
+        """
 
     func checkpoint() {
         current?.yield(.snapshot(text: "保存片段一", reasoning: "可见推理片段"))

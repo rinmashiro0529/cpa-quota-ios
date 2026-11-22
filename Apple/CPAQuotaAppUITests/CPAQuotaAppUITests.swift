@@ -829,6 +829,26 @@ final class CPAQuotaAppUITests: XCTestCase {
     }
 
     @MainActor
+    func testHTMLFallbackCopiesOriginalMixedFences() {
+        let app = launch(connected: true, arguments: ["--ui-test-chat-gate", "--ui-test-chat-html"])
+        defer { app.terminate() }
+        selectTab("chat", title: "AI 对话", in: app)
+        element("chat.emptyNew", in: app).tap()
+        let input = element("chat.input", in: app)
+        input.tap()
+        input.typeText("HTML")
+        element("chat.send", in: app).tap()
+        element("ui-test.chat.release", in: app).tap()
+        let copy = app.buttons.matching(identifier: "doc.on.doc").firstMatch
+        reveal(copy, in: app)
+        copy.tap()
+        let check = element("ui-test.chat.checkCopy", in: app)
+        check.tap()
+        XCTAssertEqual(check.label, "完整源码一致")
+        XCTAssertFalse(app.webViews.firstMatch.exists)
+    }
+
+    @MainActor
     private func textContaining(_ text: String, in app: XCUIApplication) -> XCUIElement {
         app.descendants(matching: .any)
             .matching(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
