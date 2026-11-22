@@ -1164,10 +1164,17 @@ final class CPAQuotaAppUITests: XCTestCase {
     private func scrollContent(upward: Bool, target: XCUIElement, targetFrame: CGRect,
                                targetHittable: Bool, context: GeometryContext, in app: XCUIApplication,
                                file: StaticString, line: UInt) {
-        guard let container = context.container, let viewport = context.viewport else {
+        guard let container = context.container, var viewport = context.viewport else {
             attachDiagnostics(app, name: "missing-scroll-container")
             XCTFail("A reachable native List/Form scroll container is required.", file: file, line: line)
             return
+        }
+        let chatInput = app.textFields.matching(identifier: "chat.input").firstMatch
+        if chatInput.exists, target.identifier != chatInput.identifier {
+            let composerTop = chatInput.frame.minY
+            if composerTop > viewport.minY, composerTop < viewport.maxY {
+                viewport.size.height = composerTop - viewport.minY
+            }
         }
         guard viewport.width > 44, viewport.height > 80 else {
             attachDiagnostics(app, name: "obscured-scroll-container")
