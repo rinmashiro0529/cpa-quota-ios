@@ -33,7 +33,20 @@ struct ChatMessageView: View {
         let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         Group {
             switch message.role {
-            case .user: userBody(palette)
+            case .user:
+                VStack(alignment: .trailing, spacing: 0) {
+                    userBody(palette)
+                    if let edit = actions.edit, !isConversationGenerating {
+                        Button(action: edit) {
+                            Label("编辑并重新发送", systemImage: "pencil")
+                                .labelStyle(.iconOnly)
+                                .frame(minWidth: 44, minHeight: 44)
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(palette.textSecondary)
+                        .accessibilityIdentifier("chat.edit")
+                    }
+                }
             case .assistant: assistantBody(palette)
             }
         }

@@ -157,6 +157,30 @@ struct ChatComposerView: View {
     @ViewBuilder
     private func accessoryButtons(_ palette: BrandPalette) -> some View {
         #if canImport(PhotosUI)
+        #if DEBUG && os(iOS)
+        if ProcessInfo.processInfo.arguments.contains("--ui-testing"),
+           ProcessInfo.processInfo.arguments.contains("--ui-test-chat-image") {
+            Button("添加测试图片") {
+                let renderer = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8))
+                let data = renderer.pngData { context in
+                    UIColor.blue.setFill()
+                    context.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
+                }
+                attachments.append(ChatImageAttachment(mimeType: "image/png", data: data))
+            }
+            .accessibilityIdentifier("chat.attach")
+        } else {
+            photoPicker
+        }
+        #else
+        photoPicker
+        #endif
+        #endif
+        searchButton(palette)
+    }
+
+    #if canImport(PhotosUI)
+    private var photoPicker: some View {
         PhotosPicker(selection: $pickerItems, maxSelectionCount: 4, matching: .images) {
             Image(systemName: isLoadingAttachments ? "hourglass" : "photo.on.rectangle")
                 .font(.title3)
@@ -165,7 +189,10 @@ struct ChatComposerView: View {
         .disabled(editingMessageID != nil || isGenerating || attachments.count >= 4)
         .accessibilityLabel("添加图片")
         .accessibilityIdentifier("chat.attach")
-        #endif
+    }
+    #endif
+
+    private func searchButton(_ palette: BrandPalette) -> some View {
         Button {
             chat.updateConversation(conversation.id) { $0.isWebSearchEnabled.toggle() }
         } label: {

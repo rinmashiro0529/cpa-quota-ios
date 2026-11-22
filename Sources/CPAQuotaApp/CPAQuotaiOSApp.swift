@@ -77,53 +77,57 @@ private struct UITestWorkspace: View {
                     .environment(\.dynamicTypeSize, usesLargeText ? .accessibility5 : .large)
                     .safeAreaInset(edge: .top) {
                         VStack(spacing: 2) {
-                        if usesChatGate, gatedChat.isWaiting {
-                            if chatFiles != nil {
-                                HStack {
-                                    Button("写入片段") { gatedChat.checkpoint() }
-                                        .accessibilityIdentifier("ui-test.chat.checkpoint")
-                                    Button("触发过期") { gatedChat.expire() }
-                                        .accessibilityIdentifier("ui-test.chat.expire")
+                            if usesChatGate, gatedChat.isWaiting {
+                                if ProcessInfo.processInfo.arguments.contains("--ui-test-chat-scroll") {
+                                    Button("追加段落") { gatedChat.extendAnswer() }
+                                        .accessibilityIdentifier("ui-test.chat.extend")
                                 }
+                                if chatFiles != nil {
+                                    HStack {
+                                        Button("写入片段") { gatedChat.checkpoint() }
+                                            .accessibilityIdentifier("ui-test.chat.checkpoint")
+                                        Button("触发过期") { gatedChat.expire() }
+                                            .accessibilityIdentifier("ui-test.chat.expire")
+                                    }
+                                }
+                                Button("放行正文") { gatedChat.releaseAnswer() }
+                                    .accessibilityIdentifier("ui-test.chat.release")
                             }
-                            Button("放行正文") { gatedChat.releaseAnswer() }
-                                .accessibilityIdentifier("ui-test.chat.release")
-                        }
-                        if usesChatGate, chatFiles != nil {
-                            Text("生成请求 \(gatedChat.generation)，已写块 \(checkpointOnDisk ? 1 : 0)")
-                                .accessibilityIdentifier("ui-test.chat.counts")
-                                .allowsHitTesting(false)
-                                .task(id: gatedChat.generation) {
-                                    guard gatedChat.generation > 0, let chatFiles else { return }
-                                    checkpointOnDisk = false
-                                    let deadline = ContinuousClock.now + .seconds(90)
-                                    while !Task.isCancelled && ContinuousClock.now < deadline {
-                                        if let records = try? await chatFiles.loadConversations(),
-                                           records.contains(where: { $0.messages.last?.text == "保存片段一" && $0.messages.last?.status == .streaming }) {
-                                            checkpointOnDisk = true
-                                            return
+                            if usesChatGate, chatFiles != nil {
+                                Text("生成请求 \(gatedChat.generation)，已写块 \(checkpointOnDisk ? 1 : 0)")
+                                    .accessibilityIdentifier("ui-test.chat.counts")
+                                    .allowsHitTesting(false)
+                                    .task(id: gatedChat.generation) {
+                                        guard gatedChat.generation > 0, let chatFiles else { return }
+                                        checkpointOnDisk = false
+                                        let deadline = ContinuousClock.now + .seconds(90)
+                                        while !Task.isCancelled && ContinuousClock.now < deadline {
+                                            if let records = try? await chatFiles.loadConversations(),
+                                               records.contains(where: { $0.messages.last?.text == "保存片段一" && $0.messages.last?.status == .streaming }) {
+                                                checkpointOnDisk = true
+                                                return
+                                            }
+                                            try? await Task.sleep(for: .milliseconds(100))
                                         }
-                                        try? await Task.sleep(for: .milliseconds(100))
                                     }
-                                }
-                        }
-                        if let chatFiles, ProcessInfo.processInfo.arguments.contains("--ui-test-chat-models") {
-                            let selected = session.chatWorkspace.settings.recentModelIDs
-                            Text(modelPreferenceOnDisk ? "模型选择已写入" : "等待模型选择")
-                                .allowsHitTesting(false)
-                                .task(id: selected) {
-                                    modelPreferenceOnDisk = false
-                                    guard selected != nil else { return }
-                                    let deadline = ContinuousClock.now + .seconds(15)
-                                    while !Task.isCancelled && ContinuousClock.now < deadline {
-                                        if (try? await chatFiles.loadSettings())?.recentModelIDs == selected {
-                                            modelPreferenceOnDisk = true
-                                            return
+                            }
+                            if let chatFiles, ProcessInfo.processInfo.arguments.contains("--ui-test-chat-models") {
+                                let selected = session.chatWorkspace.settings.recentModelIDs
+                                Text(modelPreferenceOnDisk ? "模型选择已写入" : "等待模型选择")
+                                    .allowsHitTesting(false)
+                                    .task(id: selected) {
+                                        modelPreferenceOnDisk = false
+                                        guard selected != nil else { return }
+                                        let deadline = ContinuousClock.now + .seconds(15)
+                                        while !Task.isCancelled && ContinuousClock.now < deadline {
+                                            if (try? await chatFiles.loadSettings())?.recentModelIDs == selected {
+                                                modelPreferenceOnDisk = true
+                                                return
+                                            }
+                                            try? await Task.sleep(for: .milliseconds(100))
                                         }
-                                        try? await Task.sleep(for: .milliseconds(100))
                                     }
-                                }
-                        }
+                            }
                         }
                     }
                     .safeAreaInset(edge: .bottom) {
@@ -239,6 +243,7 @@ private struct UITestChatModelCatalog: ChatModelCatalog {
 @MainActor @Observable private final class GatedUITestChatEngine: ChatEngine, ChatBackgroundRunner {
     private var current: AsyncThrowingStream<ChatEngineEvent, any Error>.Continuation?
     private(set) var generation = 0
+    private var paragraphs: [String] = []
     private var expiration: (@MainActor @Sendable () -> Void)?
     var isWaiting: Bool { current != nil }
 
@@ -249,6 +254,7 @@ private struct UITestChatModelCatalog: ChatModelCatalog {
                 generation += 1
                 let id = generation
                 current = continuation
+                paragraphs = []
                 continuation.yield(.snapshot(text: "", reasoning: "可见推理片段"))
                 do {
                     try await Task.sleep(for: .seconds(120))
@@ -270,6 +276,12 @@ private struct UITestChatModelCatalog: ChatModelCatalog {
 
     func checkpoint() {
         current?.yield(.snapshot(text: "保存片段一", reasoning: "可见推理片段"))
+    }
+
+    func extendAnswer() {
+        let first = paragraphs.count + 1
+        paragraphs += (first..<(first + 18)).map { "阅读段落 \($0)" }
+        current?.yield(.snapshot(text: paragraphs.joined(separator: "\n\n"), reasoning: "可见推理片段"))
     }
 
     func expire() { expiration?() }

@@ -666,7 +666,15 @@ final class CPAQuotaAppUITests: XCTestCase {
         let regenerate = element("chat.regenerate", in: app)
         reveal(regenerate, in: app)
         regenerate.tap()
-        app.buttons["取消"].tap()
+        let confirmation = app.buttons["确认重新生成"]
+        expectExists(confirmation, in: app)
+        if app.buttons["取消"].exists {
+            app.buttons["取消"].tap()
+        } else {
+            // Compact confirmation popovers can expose only the affirmative action.
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.06, dy: 0.12)).tap()
+        }
+        XCTAssertFalse(confirmation.exists)
         XCTAssertTrue(element("ui-test.chat.counts", in: app).label.contains("生成请求 1"))
         regenerate.tap()
         app.buttons["确认重新生成"].tap()
@@ -677,6 +685,94 @@ final class CPAQuotaAppUITests: XCTestCase {
     @MainActor
     private func element(_ identifier: String, in app: XCUIApplication) -> XCUIElement {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+    }
+
+    @MainActor
+    func testReadingPositionDuringStreamGrowth() {
+        let app = launch(connected: true, arguments: ["--ui-test-chat-gate", "--ui-test-chat-scroll"])
+        defer { app.terminate() }
+        selectTab("chat", title: "AI 对话", in: app)
+        element("chat.emptyNew", in: app).tap()
+        let input = element("chat.input", in: app)
+        input.tap()
+        input.typeText("Reading anchor")
+        element("chat.send", in: app).tap()
+        let extend = element("ui-test.chat.extend", in: app)
+        extend.tap()
+        let last = textContaining("阅读段落 18", in: app)
+        expectExists(last, in: app)
+        let viewport = CGRect(x: 0, y: app.navigationBars.firstMatch.frame.maxY,
+                              width: app.frame.width, height: max(0, input.frame.minY - app.navigationBars.firstMatch.frame.maxY))
+        XCTAssertTrue(viewport.contains(CGPoint(x: last.frame.midX, y: last.frame.midY)), "U1 bottom \(last.frame) viewport \(viewport)")
+        let first = element("chat.message.user", in: app)
+        reveal(first, in: app, upward: false, requiresHitTarget: false)
+        let originalY = first.frame.midY
+        XCTAssertTrue(viewport.contains(CGPoint(x: first.frame.midX, y: originalY)))
+        extend.tap()
+        expectExists(textContaining("阅读段落 36", in: app), in: app)
+        XCTAssertTrue(viewport.contains(CGPoint(x: first.frame.midX, y: first.frame.midY)))
+        XCTAssertEqual(first.frame.midY, originalY, accuracy: 30)
+    }
+
+    @MainActor
+    func testChatEditCancelRestoresMultilineDraft() {
+        let app = launch(connected: true, arguments: ["--ui-test-chat-gate", "--ui-test-chat-image"])
+        defer { app.terminate() }
+        selectTab("chat", title: "AI 对话", in: app)
+        element("chat.emptyNew", in: app).tap()
+        let input = element("chat.input", in: app)
+        input.tap()
+        input.typeText("Earlier")
+        element("chat.send", in: app).tap()
+        element("ui-test.chat.release", in: app).tap()
+        expectExists(textContaining("放行后的正文", in: app), in: app)
+        input.tap()
+        input.typeText("draft one\ndraft two")
+        element("chat.attach", in: app).tap()
+        expectExists(app.buttons["移除图片"], in: app)
+        let edit = app.buttons["编辑并重新发送"].firstMatch
+        guard edit.exists else {
+            XCTFail("U3 user-message editing has no discoverable button")
+            return
+        }
+        reveal(edit, in: app, upward: false)
+        edit.tap()
+        XCTAssertEqual(input.value as? String, "Earlier")
+        XCTAssertFalse(app.buttons["移除图片"].exists)
+        app.buttons["取消"].tap()
+        XCTAssertEqual(input.value as? String, "draft one\ndraft two")
+        XCTAssertTrue(app.buttons["移除图片"].exists)
+        XCTAssertTrue(app.buttons["复制"].firstMatch.exists)
+        XCTAssertTrue(element("chat.regenerate", in: app).exists)
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        element("chat.new", in: app).tap()
+        XCTAssertFalse((element("chat.input", in: app).value as? String)?.contains("draft one") == true)
+    }
+
+    @MainActor
+    func testLargeChatControlsInLightAndDarkLandscape() async throws {
+        let app = launch(connected: true, largeText: true)
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        for appearance in ["浅色羊皮纸", "深色曜石"] {
+            XCUIDevice.shared.orientation = .portrait
+            selectTab("connection", title: "连接管理", in: app)
+            chooseAppearance(appearance, picker: element("settings.appearance", in: app), in: app)
+            selectTab("chat", title: "AI 对话", in: app)
+            element("chat.new", in: app).tap()
+            let menu = element("chat.modelMenu", in: app)
+            let send = element("chat.send", in: app)
+            XCTAssertTrue(menu.isHittable)
+            XCTAssertTrue(send.exists)
+            let lightness = try canvasBrightness(app.screenshot().image)
+            if appearance == "浅色羊皮纸" { XCTAssertGreaterThan(lightness, 0.65) }
+            else { XCTAssertLessThan(lightness, 0.25) }
+            _ = await rotateDeviceAndWaitForWindow(in: app, policy: layoutPolicy(in: app))
+            XCTAssertTrue(menu.isHittable)
+            XCTAssertTrue(element("chat.attach", in: app).isHittable)
+            XCTAssertTrue(app.frame.contains(CGPoint(x: send.frame.midX, y: send.frame.midY)))
+            attach(app, name: appearance == "浅色羊皮纸" ? "chat-large-landscape-light" : "chat-large-landscape-dark")
+            app.buttons["BackButton"].tap()
+        }
     }
 
     @MainActor
