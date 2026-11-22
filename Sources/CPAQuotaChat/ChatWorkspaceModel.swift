@@ -42,6 +42,8 @@ public final class ChatWorkspaceModel {
     public private(set) var isDiscoveringKeys = false
     public private(set) var keyDiscoveryError: CPAError?
     private var activeKey: CPAClientAPIKey?
+    private var temporaryRecentModelID: String?
+    @ObservationIgnored private var catalogRequest = UUID()
     @ObservationIgnored private var credentialRevision: UInt64 = 0
     @ObservationIgnored private var keyWriteTail: Task<Void, any Error>?
     public private(set) var keyRemovalFailed = false
@@ -116,6 +118,7 @@ public final class ChatWorkspaceModel {
     package func unbind() {
         advanceCredentialRevision()
         server = nil
+        temporaryRecentModelID = nil
         persistsKey = true
         discoveryFactory = nil
         activeKey = nil
@@ -286,18 +289,20 @@ public final class ChatWorkspaceModel {
     public func refreshModels() async {
         guard case .ready = credentialState, let server, let activeKey, !Task.isCancelled else { return }
         let revision = credentialRevision
+        let request = UUID()
+        catalogRequest = request
         modelListState = .loading
         do {
             let refreshed = try await modelCatalog(server, activeKey).models()
-            guard isCurrent(revision) else { return }
+            guard isCurrent(revision), catalogRequest == request else { return }
             models = refreshed
             modelListState = .loaded
             assignDefaultModelWhereMissing()
         } catch let error as CPAError {
-            guard isCurrent(revision) else { return }
+            guard isCurrent(revision), catalogRequest == request else { return }
             modelListState = .failed(Self.chatFailure(for: error))
         } catch {
-            guard isCurrent(revision) else { return }
+            guard isCurrent(revision), catalogRequest == request else { return }
             modelListState = .failed(AnyLanguageModelChatEngine.failure(for: error) ?? .network)
         }
     }
@@ -424,7 +429,7 @@ public final class ChatWorkspaceModel {
         if let index = conversations.firstIndex(where: { $0.messages.isEmpty && generationTasks[$0.id] == nil }) {
             var reused = conversations.remove(at: index)
             reused.serverIdentifier = server?.identifier
-            if reused.modelID == nil { reused.modelID = defaultModelID }
+            reused.modelID = defaultModelID
             reused.updatedAt = Date()
             conversations.insert(reused, at: 0)
             return reused.id
@@ -434,8 +439,18 @@ public final class ChatWorkspaceModel {
         return conversation.id
     }
 
+    private var preferredModelID: String? {
+        switch settings.newConversationModelStrategy {
+        case .fixed: return settings.defaultModelID
+        case .mostRecent:
+            guard let server else { return nil }
+            return persistsKey ? settings.recentModelIDs?[server.identifier] : temporaryRecentModelID
+        }
+    }
+
     private var defaultModelID: String? {
-        if let preferred = settings.defaultModelID, models.contains(where: { $0.id == preferred }) {
+        guard modelListState == .loaded else { return nil }
+        if let preferred = preferredModelID, isAvailableModel(preferred) {
             return preferred
         }
         return models.first?.id
@@ -443,10 +458,31 @@ public final class ChatWorkspaceModel {
 
     /// Conversations opened before the model list arrived get the default model.
     private func assignDefaultModelWhereMissing() {
-        guard let modelID = defaultModelID else { return }
-        for index in conversations.indices where conversations[index].modelID == nil {
+        guard let server, let modelID = defaultModelID else { return }
+        for index in conversations.indices where conversations[index].messages.isEmpty
+            && (conversations[index].serverIdentifier == nil || conversations[index].serverIdentifier == server.identifier)
+            && !isAvailableModel(conversations[index].modelID) {
+            conversations[index].serverIdentifier = server.identifier
             conversations[index].modelID = modelID
-            persist(conversations[index])
+        }
+    }
+
+    public func isAvailableModel(_ id: String?) -> Bool {
+        modelListState == .loaded && id != nil && models.contains { $0.id == id }
+    }
+
+    public var preferredModelUnavailable: Bool {
+        modelListState == .loaded && !models.isEmpty && preferredModelID != nil && !isAvailableModel(preferredModelID)
+    }
+
+    /// Only explicit selections in the conversation menu update the server preference.
+    public func selectModel(_ id: String, in conversationID: UUID) {
+        guard let server, isAvailableModel(id), conversation(conversationID) != nil else { return }
+        updateConversation(conversationID) { $0.modelID = id }
+        if persistsKey {
+            settings.rememberModel(id, for: server.identifier)
+        } else {
+            temporaryRecentModelID = id
         }
     }
 
@@ -530,7 +566,7 @@ public final class ChatWorkspaceModel {
     /// Reruns check this before truncating anything.
     public func generationBlocker(for conversationID: UUID) -> ChatFailure? {
         guard case .ready = credentialState, server != nil, activeKey != nil else { return .missingAPIKey }
-        guard let modelID = conversation(conversationID)?.modelID, !modelID.isEmpty else { return .missingModel }
+        guard isAvailableModel(conversation(conversationID)?.modelID) else { return .missingModel }
         return nil
     }
 
@@ -643,7 +679,7 @@ public final class ChatWorkspaceModel {
             failFast(&conversation, with: .missingAPIKey, modelID: conversation.modelID)
             return
         }
-        guard let modelID = conversation.modelID, !modelID.isEmpty else {
+        guard let modelID = conversation.modelID, isAvailableModel(modelID) else {
             failFast(&conversation, with: .missingModel, modelID: nil)
             return
         }

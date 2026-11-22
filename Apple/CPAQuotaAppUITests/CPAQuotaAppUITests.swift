@@ -680,6 +680,59 @@ final class CPAQuotaAppUITests: XCTestCase {
     }
 
     @MainActor
+    func testRecentModelPersistsAcrossCreationAndLaunch() {
+        let args = ["--ui-test-chat-store=\(UUID().uuidString)", "--ui-test-chat-models", "--ui-test-chat-gate"]
+        let app = launch(connected: true, arguments: args)
+        selectTab("chat", title: "AI 对话", in: app)
+        element("chat.emptyNew", in: app).tap()
+        element("chat.modelMenu", in: app).tap()
+        textContaining("fixture-chat-alternate", in: app).tap()
+        expectExists(app.staticTexts["模型选择已写入"], in: app)
+        let input = element("chat.input", in: app)
+        input.tap()
+        input.typeText("M1")
+        element("chat.send", in: app).tap()
+        element("ui-test.chat.release", in: app).tap()
+        expectExists(textContaining("放行后的正文", in: app), in: app)
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        element("chat.new", in: app).tap()
+        XCTAssertTrue(element("chat.modelMenu", in: app).label.contains("fixture-chat-alternate"))
+        app.terminate()
+
+        let reopened = launch(connected: true, arguments: args)
+        selectTab("chat", title: "AI 对话", in: reopened)
+        element("chat.new", in: reopened).tap()
+        XCTAssertTrue(element("chat.modelMenu", in: reopened).label.contains("fixture-chat-alternate"))
+        reopened.terminate()
+
+        let removed = launch(connected: true, arguments: args + ["--ui-test-removed-model"])
+        defer { removed.terminate() }
+        selectTab("chat", title: "AI 对话", in: removed)
+        let row = removed.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "chat.conversation.")).firstMatch
+        row.tap()
+        expectExists(textContaining("原模型已不可用", in: removed), in: removed)
+        element("chat.modelMenu", in: removed).tap()
+        textContaining("刷新模型列表", in: removed).tap()
+        element("chat.modelMenu", in: removed).tap()
+        textContaining("fixture-chat-default", in: removed).tap()
+        let next = element("chat.input", in: removed)
+        next.tap()
+        next.typeText("M4")
+        element("chat.send", in: removed).tap()
+        expectExists(element("chat.stop", in: removed), in: removed)
+    }
+
+    @MainActor
+    func testLegacyFixedModelSurvivesLaunch() {
+        let args = ["--ui-test-chat-store=\(UUID().uuidString)", "--ui-test-chat-legacy"]
+        let app = launch(connected: true, arguments: args)
+        defer { app.terminate() }
+        selectTab("chat", title: "AI 对话", in: app)
+        element("chat.emptyNew", in: app).tap()
+        XCTAssertTrue(element("chat.modelMenu", in: app).label.contains("fixture-chat-alternate"))
+    }
+
+    @MainActor
     private func textContaining(_ text: String, in app: XCUIApplication) -> XCUIElement {
         app.descendants(matching: .any)
             .matching(NSPredicate(format: "label CONTAINS %@", text)).firstMatch

@@ -375,7 +375,9 @@ struct ChatModelMenu: View {
         Menu {
             Picker("模型", selection: Binding(
                 get: { conversation.modelID },
-                set: { value in chat.updateConversation(conversation.id) { $0.modelID = value } }
+                set: { value in
+                    if let value { chat.selectModel(value, in: conversation.id) }
+                }
             )) {
                 ForEach(chat.models) { model in
                     Text(model.id).tag(Optional(model.id))

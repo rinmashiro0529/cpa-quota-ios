@@ -37,7 +37,7 @@ struct ChatComposerView: View {
     }
 
     private var canSend: Bool {
-        guard isCredentialReady, conversation.modelID != nil, !isGenerating, !isLoadingAttachments else { return false }
+        guard isCredentialReady, chat.isAvailableModel(conversation.modelID), !isGenerating, !isLoadingAttachments else { return false }
         let hasText = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return editingMessageID == nil ? hasText || !attachments.isEmpty : hasText
     }
@@ -47,8 +47,12 @@ struct ChatComposerView: View {
         VStack(alignment: .leading, spacing: 8) {
             if !isCredentialReady {
                 blockedNotice(palette)
-            } else if conversation.modelID == nil {
+            } else if !chat.isAvailableModel(conversation.modelID) {
                 Label(modelMissingText, systemImage: "cpu")
+                    .font(.footnote)
+                    .foregroundStyle(palette.textSecondary)
+            } else if conversation.messages.isEmpty, chat.preferredModelUnavailable {
+                Text("首选模型已不在当前目录中，本次暂用可用模型。")
                     .font(.footnote)
                     .foregroundStyle(palette.textSecondary)
             }
@@ -133,6 +137,8 @@ struct ChatComposerView: View {
         case .loading: "正在读取模型列表"
         case .failed(let failure): "模型列表读取失败：\(ChatFailurePresentation(failure).title)"
         case .loaded where chat.models.isEmpty: "CPA 没有返回可用模型"
+        case .loaded where conversation.modelID != nil: "原模型已不可用，请在顶部重新选择"
+        case .idle: "模型目录尚未读取，可在顶部菜单刷新"
         default: "请先在顶部选择模型"
         }
     }

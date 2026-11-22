@@ -246,17 +246,23 @@ struct ChatSettingsView: View {
 
     private func modelSection(_ palette: BrandPalette) -> some View {
         Section {
-            Picker("新对话默认模型", selection: $chat.settings.defaultModelID) {
-                Text("列表中的第一个").tag(String?.none)
-                ForEach(chat.models) { model in
-                    Text(model.id).tag(Optional(model.id))
-                }
+            Picker("新对话模型", selection: $chat.settings.newConversationModelStrategy) {
+                Text("沿用上次选择").tag(ChatModelStrategy.mostRecent)
+                Text("固定指定模型").tag(ChatModelStrategy.fixed)
             }
-            #if os(iOS)
-            .pickerStyle(.navigationLink)
-            #else
-            .pickerStyle(.menu)
-            #endif
+            if chat.settings.newConversationModelStrategy == .fixed {
+                Picker("固定模型", selection: $chat.settings.defaultModelID) {
+                    Text("列表中的第一个").tag(String?.none)
+                    ForEach(chat.models) { model in
+                        Text(model.id).tag(Optional(model.id))
+                    }
+                }
+                #if os(iOS)
+                .pickerStyle(.navigationLink)
+                #else
+                .pickerStyle(.menu)
+                #endif
+            }
             switch chat.modelListState {
             case .idle:
                 EmptyView()

@@ -208,10 +208,26 @@ public enum ChatSearchProvider: String, CaseIterable, Codable, Identifiable, Sen
     }
 }
 
+public enum ChatModelStrategy: String, Codable, Sendable {
+    case mostRecent, fixed
+}
+
 public struct ChatSettings: Codable, Equatable, Sendable {
     public var globalInstructions: String
     public var isMemoryEnabled: Bool
     public var defaultModelID: String?
+    // Optional storage keeps settings written before the strategy existed readable.
+    private var modelStrategy: ChatModelStrategy?
+    public var newConversationModelStrategy: ChatModelStrategy {
+        get { modelStrategy ?? (defaultModelID == nil ? .mostRecent : .fixed) }
+        set { modelStrategy = newValue }
+    }
+    public private(set) var recentModelIDs: [String: String]?
+
+    mutating func rememberModel(_ id: String, for server: String) {
+        if recentModelIDs == nil { recentModelIDs = [:] }
+        recentModelIDs?[server] = id
+    }
     public var searchProvider: ChatSearchProvider?
     public var notifiesOnBackgroundCompletion: Bool
     public var generatesTitles: Bool

@@ -1272,6 +1272,98 @@ struct ChatWorkspaceModelTests {
         #expect(fixture.workspace.conversations.count == 2)
     }
 
+    @Test func legacyModelStrategyKeepsSettings() throws {
+        let json = #"{"globalInstructions":"fixture","isMemoryEnabled":false,"defaultModelID":"pinned","searchProvider":"brave","notifiesOnBackgroundCompletion":false,"generatesTitles":false}"#
+        let settings = try JSONDecoder().decode(ChatSettings.self, from: Data(json.utf8))
+        #expect(settings.newConversationModelStrategy == .fixed)
+        #expect(settings.globalInstructions == "fixture")
+        #expect(settings.searchProvider == .brave)
+        #expect(!settings.isMemoryEnabled && !settings.notifiesOnBackgroundCompletion && !settings.generatesTitles)
+        let withoutID = json.replacingOccurrences(of: #","defaultModelID":"pinned""#, with: "")
+        #expect(try JSONDecoder().decode(ChatSettings.self, from: Data(withoutID.utf8)).newConversationModelStrategy == .mostRecent)
+    }
+
+    @Test @MainActor func explicitModelChoicesAreScopedToRememberedServers() async throws {
+        let models = ["shared", "second", "third"].map { CPAModel(id: $0) }
+        let fixture = makeFixture(models: models)
+        let workspace = fixture.workspace
+        await workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let first = workspace.createConversation()
+        workspace.selectModel("second", in: first)
+        fixture.engine.respond(with: [.snapshot(text: "done", reasoning: nil)])
+        await completeTurn(fixture, "M1", in: first)
+        let empty = workspace.createConversation()
+        #expect(workspace.conversation(empty)?.modelID == "second")
+        let other = try CPAServer(baseURL: "https://b.example.invalid")
+        await workspace.bind(server: other) { nil }
+        #expect(await workspace.useManualKey("fixture-client-b"))
+        #expect(workspace.createConversation() == empty)
+        #expect(workspace.conversation(empty)?.modelID == "shared")
+        workspace.selectModel("third", in: empty)
+        await workspace.bind(server: server) { nil }
+        #expect(workspace.createConversation() == empty)
+        #expect(workspace.conversation(empty)?.modelID == "second")
+        #expect(workspace.conversation(first)?.modelID == "second")
+        await workspace.bind(server: other, persistsKey: false) { nil }
+        #expect(await workspace.useManualKey("fixture-session-only"))
+        #expect(workspace.createConversation() == empty)
+        #expect(workspace.conversation(empty)?.modelID == "shared")
+        workspace.selectModel("second", in: empty)
+        #expect(workspace.settings.recentModelIDs?[other.identifier] == "third")
+        #expect(fixture.engine.streamRequests.count == 1)
+    }
+
+    @Test @MainActor func lateCatalogFromPreviousKeyCannotAuthorizeAModel() async throws {
+        struct WaitingCatalog: ChatModelCatalog {
+            let gate: HeldDiscovery
+            func models() async throws -> [CPAModel] {
+                await gate.wait()
+                return [CPAModel(id: "obsolete")]
+            }
+        }
+        let gate = HeldDiscovery()
+        let engine = FakeChatEngine()
+        let workspace = ChatWorkspaceModel(persistence: ChatMemoryPersistence(), secrets: MemorySecretStore(),
+                                          engine: engine, modelCatalog: { _, key in
+            if key.hint.hasSuffix("0001") { return WaitingCatalog(gate: gate) }
+            return FakeModelCatalog(result: .success([CPAModel(id: "current")]))
+        })
+        await workspace.bind(server: server) { nil }
+        let old = Task { await workspace.useManualKey("fixture-key-0001") }
+        #expect(await waitUntil { await gate.hasStarted })
+        let empty = workspace.createConversation()
+        #expect(workspace.modelListState == .loading)
+        #expect(workspace.generationBlocker(for: empty) == .missingModel)
+        #expect(await workspace.useManualKey("fixture-key-0002"))
+        await gate.release()
+        _ = await old.value
+        #expect(workspace.models.map(\.id) == ["current"])
+        #expect(workspace.conversation(empty)?.modelID == "current")
+        #expect(engine.streamRequests.isEmpty)
+    }
+
+    @Test @MainActor func invalidModelDoesNotTruncateAnExistingReply() async throws {
+        let fixture = makeFixture()
+        let workspace = fixture.workspace
+        await workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let id = workspace.createConversation()
+        fixture.engine.respond(with: [.snapshot(text: "fixture", reasoning: nil)])
+        await completeTurn(fixture, "M4", in: id)
+        let before = try #require(workspace.conversation(id)?.messages)
+        workspace.updateConversation(id) { $0.modelID = "removed" }
+        #expect(!workspace.regenerate(try #require(before.last?.id), in: id))
+        #expect(workspace.conversation(id)?.messages == before)
+        #expect(fixture.engine.streamRequests.count == 1)
+        workspace.settings.defaultModelID = "removed"
+        workspace.settings.newConversationModelStrategy = .fixed
+        let fresh = workspace.createConversation()
+        #expect(workspace.preferredModelUnavailable)
+        #expect(workspace.conversation(fresh)?.modelID == "test-model")
+        #expect(workspace.settings.defaultModelID == "removed")
+    }
+
     @Test @MainActor func longHistoryIsBoundedAndTheReplySaysHowMuchWasLeftOut() async throws {
         let long = String(repeating: "长", count: 25_000)
         var messages: [ChatMessage] = []

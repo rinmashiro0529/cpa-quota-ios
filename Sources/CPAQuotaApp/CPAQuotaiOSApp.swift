@@ -68,13 +68,15 @@ private struct UITestWorkspace: View {
     @State private var gatedChat = GatedUITestChatEngine()
     @State private var chatFiles: ChatFilePersistence?
     @State private var checkpointOnDisk = false
+    @State private var modelPreferenceOnDisk = false
 
     var body: some View {
         Group {
             if let session {
                 CPAQuotaRootView(session: session)
                     .environment(\.dynamicTypeSize, usesLargeText ? .accessibility5 : .large)
-                    .safeAreaInset(edge: .bottom) {
+                    .safeAreaInset(edge: .top) {
+                        VStack(spacing: 2) {
                         if usesChatGate, gatedChat.isWaiting {
                             if chatFiles != nil {
                                 HStack {
@@ -90,6 +92,7 @@ private struct UITestWorkspace: View {
                         if usesChatGate, chatFiles != nil {
                             Text("生成请求 \(gatedChat.generation)，已写块 \(checkpointOnDisk ? 1 : 0)")
                                 .accessibilityIdentifier("ui-test.chat.counts")
+                                .allowsHitTesting(false)
                                 .task(id: gatedChat.generation) {
                                     guard gatedChat.generation > 0, let chatFiles else { return }
                                     checkpointOnDisk = false
@@ -104,6 +107,26 @@ private struct UITestWorkspace: View {
                                     }
                                 }
                         }
+                        if let chatFiles, ProcessInfo.processInfo.arguments.contains("--ui-test-chat-models") {
+                            let selected = session.chatWorkspace.settings.recentModelIDs
+                            Text(modelPreferenceOnDisk ? "模型选择已写入" : "等待模型选择")
+                                .allowsHitTesting(false)
+                                .task(id: selected) {
+                                    modelPreferenceOnDisk = false
+                                    guard selected != nil else { return }
+                                    let deadline = ContinuousClock.now + .seconds(15)
+                                    while !Task.isCancelled && ContinuousClock.now < deadline {
+                                        if (try? await chatFiles.loadSettings())?.recentModelIDs == selected {
+                                            modelPreferenceOnDisk = true
+                                            return
+                                        }
+                                        try? await Task.sleep(for: .milliseconds(100))
+                                    }
+                                }
+                        }
+                        }
+                    }
+                    .safeAreaInset(edge: .bottom) {
                         // Do not change the presenting workspace's safe area
                         // while the real connection sheet is being dismissed.
                         if slowPhase != .idle, !session.isPresentingConnectionSheet {
@@ -169,7 +192,16 @@ private struct UITestWorkspace: View {
                 }
                 let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                                        appropriateFor: nil, create: true)
-                chatFiles = ChatFilePersistence(directory: base.appendingPathComponent("ChatUITests/\(id.uuidString)"))
+                let root = base.appendingPathComponent("ChatUITests/\(id.uuidString)")
+                chatFiles = ChatFilePersistence(directory: root)
+                if ProcessInfo.processInfo.arguments.contains("--ui-test-chat-legacy") {
+                    let url = root.appendingPathComponent("settings.json")
+                    if !FileManager.default.fileExists(atPath: url.path) {
+                        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                        let old = #"{"globalInstructions":"legacy fixture","isMemoryEnabled":false,"defaultModelID":"fixture-chat-alternate","notifiesOnBackgroundCompletion":false,"generatesTitles":false}"#
+                        try Data(old.utf8).write(to: url, options: .atomic)
+                    }
+                }
             }
             session = CPAQuotaSession(
                 credentialStore: credentials,
@@ -196,7 +228,10 @@ private struct UITestWorkspace: View {
 
 private struct UITestChatModelCatalog: ChatModelCatalog {
     func models() async throws -> [CPAModel] {
-        [CPAModel(id: "fixture-chat-default"), CPAModel(id: "fixture-chat-alternate")]
+        if ProcessInfo.processInfo.arguments.contains("--ui-test-removed-model") {
+            return [CPAModel(id: "fixture-chat-default")]
+        }
+        return [CPAModel(id: "fixture-chat-default"), CPAModel(id: "fixture-chat-alternate")]
     }
 }
 
