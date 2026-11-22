@@ -146,7 +146,7 @@ private struct UITestWorkspace: View {
                                     }
                             }
                         }
-                        .padding(.top, usesChatGate ? 24 : 0)
+                        .padding(.top, usesChatGate ? 82 : 0)
                         .frame(maxWidth: .infinity)
                     }
                     .safeAreaInset(edge: .bottom) {
