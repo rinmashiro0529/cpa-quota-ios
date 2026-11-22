@@ -648,7 +648,16 @@ public final class ChatWorkspaceModel {
               continuationTarget(for: id) == target,
               let server, let apiKey = activeKey, var conversation = conversation(id),
               let saved = conversation.messages.last, let question = conversation.messages.dropLast().last else { return }
-        let original = saved.expandedPrompt ?? question.text
+        var reply = saved
+        let original: String
+        if let expandedPrompt = saved.expandedPrompt {
+            original = expandedPrompt
+        } else if saved.attempts == nil {
+            original = ChatPromptBuilder.applySkill(to: question.text, skills: skills).modelPrompt
+            if original != question.text { reply.expandedPrompt = original }
+        } else {
+            original = question.text
+        }
         let effectivePrompt = ChatPromptBuilder.searchInjectedPrompt(original, sources: saved.searchSources)
         let context = ChatPromptBuilder.continuationContext(
             earlier: eligibleHistory(conversation), question: question, reply: saved, effectivePrompt: effectivePrompt)
@@ -658,7 +667,6 @@ public final class ChatWorkspaceModel {
                                                                                     conversation: conversation),
                                        history: context.history, prompt: context.prompt, images: context.images,
                                        reasoningEffort: conversation.reasoningEffort)
-        var reply = saved
         if reply.attempts == nil {
             reply.attempts = [ChatReplyAttempt(modelID: saved.modelID, status: saved.status,
                                                failure: saved.failure, usage: saved.usage)]

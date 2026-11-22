@@ -1344,6 +1344,120 @@ struct ChatWorkspaceModelTests {
         try #require(finished)
     }
 
+    @Test @MainActor func continuationThatOnlyReplaysSavedTextFailsWithUsageAndCanRetry() async throws {
+        let question = ChatMessage(role: .user, text: "Continue")
+        let initialUsage = ChatTokenUsage(inputTokens: 3, outputTokens: 4)
+        var reply = ChatMessage(role: .assistant, text: "First, install the package.",
+                                modelID: "test-model", usage: initialUsage, status: .stopped)
+        reply.attempts = [ChatReplyAttempt(modelID: "test-model", status: .stopped,
+                                           failure: nil, usage: initialUsage)]
+        let seeded = ChatConversation(modelID: "test-model", messages: [question, reply],
+                                      serverIdentifier: server.identifier)
+        let fixture = makeFixture(persistence: RecordingPersistence(seeded: [seeded]))
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        fixture.engine.respond(with: [
+            .snapshot(text: reply.text, reasoning: nil),
+            .usage(.init(inputTokens: 5, outputTokens: 6)),
+        ])
+
+        let target = try #require(fixture.workspace.continuation(for: seeded.id))
+        #expect(fixture.workspace.continueReply(target))
+        try await waitForGeneration(fixture.workspace, id: seeded.id)
+
+        let result = try #require(fixture.workspace.conversation(seeded.id)?.messages.last)
+        #expect(result.id == reply.id)
+        #expect(result.text == reply.text)
+        #expect(result.status == .failed)
+        #expect(result.failure == .continuationAddedNothing)
+        #expect(result.attempts?.count == 2)
+        #expect(result.attempts?.last?.usage == ChatTokenUsage(inputTokens: 5, outputTokens: 6))
+        #expect(result.usage == ChatTokenUsage(inputTokens: 8, outputTokens: 10))
+        #expect(fixture.workspace.continuation(for: seeded.id) != nil)
+    }
+
+    @Test @MainActor func emptyRetryWithNoStreamTextRemainsRetryEligible() async throws {
+        let question = ChatMessage(role: .user, text: "Try again")
+        var reply = ChatMessage(role: .assistant, text: "", modelID: "test-model", status: .interrupted)
+        reply.attempts = [ChatReplyAttempt(modelID: "test-model", status: .interrupted,
+                                           failure: nil, usage: nil)]
+        let seeded = ChatConversation(modelID: "test-model", messages: [question, reply],
+                                      serverIdentifier: server.identifier)
+        let fixture = makeFixture(persistence: RecordingPersistence(seeded: [seeded]))
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+
+        let target = try #require(fixture.workspace.continuation(for: seeded.id))
+        #expect(target.isRetry)
+        #expect(fixture.workspace.continueReply(target))
+        try await waitForGeneration(fixture.workspace, id: seeded.id)
+
+        let result = try #require(fixture.workspace.conversation(seeded.id)?.messages.last)
+        #expect(result.status == .failed)
+        #expect(result.failure == .continuationAddedNothing)
+        #expect(fixture.workspace.continuation(for: seeded.id) != nil)
+    }
+
+    @Test @MainActor func legacyContinuationRestoresAndReusesSlashSkillPrompt() async throws {
+        let question = ChatMessage(role: .user, text: "/translate Hello")
+        var reply = ChatMessage(role: .assistant, text: "unfinished response",
+                                modelID: "test-model", status: .interrupted)
+        reply.attempts = nil
+        reply.expandedPrompt = nil
+        let seeded = ChatConversation(modelID: "test-model", messages: [question, reply],
+                                      serverIdentifier: server.identifier)
+        let fixture = makeFixture(persistence: RecordingPersistence(seeded: [seeded]))
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let chat = fixture.workspace
+        let skill = try #require(chat.skills.first(where: { $0.command == "translate" }))
+        fixture.engine.respond(with: [.snapshot(text: " more", reasoning: nil)])
+        fixture.engine.fail(with: URLError(.networkConnectionLost))
+
+        let firstTarget = try #require(chat.continuation(for: seeded.id))
+        #expect(chat.continueReply(firstTarget))
+        try await waitForGeneration(chat, id: seeded.id)
+
+        let expansion = skill.prompt + "\n\nHello"
+        let firstRequest = try #require(fixture.engine.streamRequests.last)
+        #expect(firstRequest.history.contains(where: { $0.text == expansion }))
+        #expect(chat.conversation(seeded.id)?.messages.last?.expandedPrompt == expansion)
+        chat.deleteSkill(skill.id)
+        #expect(!chat.skills.contains(where: { $0.command == "translate" }))
+        fixture.engine.respond(with: [.snapshot(text: " again", reasoning: nil)])
+        fixture.engine.fail(with: URLError(.networkConnectionLost))
+
+        let secondTarget = try #require(chat.continuation(for: seeded.id))
+        #expect(chat.continueReply(secondTarget))
+        try await waitForGeneration(chat, id: seeded.id)
+
+        let secondRequest = try #require(fixture.engine.streamRequests.last)
+        #expect(secondRequest.history.contains(where: { $0.text == expansion }))
+    }
+
+    @Test @MainActor func nonLegacyContinuationWithoutExpansionUsesRawSlashText() async throws {
+        let question = ChatMessage(role: .user, text: "/translate Hello")
+        var reply = ChatMessage(role: .assistant, text: "unfinished response",
+                                modelID: "test-model", status: .interrupted)
+        reply.attempts = [ChatReplyAttempt(modelID: "test-model", status: .interrupted,
+                                           failure: nil, usage: nil)]
+        let seeded = ChatConversation(modelID: "test-model", messages: [question, reply],
+                                      serverIdentifier: server.identifier)
+        let fixture = makeFixture(persistence: RecordingPersistence(seeded: [seeded]))
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        fixture.engine.respond(with: [.snapshot(text: " more", reasoning: nil)])
+
+        let target = try #require(fixture.workspace.continuation(for: seeded.id))
+        #expect(fixture.workspace.continueReply(target))
+        try await waitForGeneration(fixture.workspace, id: seeded.id)
+
+        let request = try #require(fixture.engine.streamRequests.last)
+        #expect(request.history.contains(where: { $0.text == question.text }))
+        #expect(!request.history.contains(where: { $0.text.contains("将以下内容翻译成中文") }))
+        #expect(fixture.workspace.conversation(seeded.id)?.messages.last?.expandedPrompt == nil)
+    }
+
     @Test @MainActor func retryReasoningOnlyLegacyReplyRequiresCurrentDestinationAndParent() async throws {
         let question = ChatMessage(role: .user, text: "original")
         let reply = ChatMessage(role: .assistant, text: "", reasoning: "saved", modelID: "test-model", status: .interrupted)
