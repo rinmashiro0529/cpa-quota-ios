@@ -1110,7 +1110,7 @@ final class CPAQuotaAppUITests: XCTestCase {
             $0.viewport.width * $0.viewport.height < $1.viewport.width * $1.viewport.height
         }
         var viewport = selected?.viewport
-        if target?.identifier.hasPrefix("chat.html.snippet.") == true {
+        if let target, target.exists, target.identifier.hasPrefix("chat.html.snippet.") {
             let chatInput = app.textFields.matching(identifier: "chat.input").firstMatch
             if chatInput.exists, var visibleViewport = viewport {
                 let composerTop = chatInput.frame.minY
