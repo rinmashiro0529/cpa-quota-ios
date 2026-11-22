@@ -95,7 +95,7 @@ struct ChatMessageView: View {
                 Image(systemName: "sparkles")
                     .foregroundStyle(palette.accent)
                     .accessibilityHidden(true)
-                Text(message.modelID ?? "助手")
+                Text(message.attempts?.last?.modelID ?? message.modelID ?? "助手")
                     .font(.caption.monospaced())
                     .foregroundStyle(palette.textMuted)
                     .lineLimit(1)
@@ -153,6 +153,12 @@ struct ChatMessageView: View {
             Label("较早的 \(omitted) 条消息未随本轮发送", systemImage: "text.badge.minus")
                 .font(.footnote)
                 .foregroundStyle(palette.textSecondary)
+        }
+        if let attempts = message.attempts, attempts.count > 1 {
+            let unknown = attempts.contains { $0.usage == nil }
+            Text("共 \(attempts.count) 次请求" + (unknown ? " · 含用量未返回的请求" : ""))
+                .font(.caption)
+                .foregroundStyle(palette.textMuted)
         }
         if let usage = message.usage, message.status != .streaming,
            usage.inputTokens + usage.outputTokens > 0 {

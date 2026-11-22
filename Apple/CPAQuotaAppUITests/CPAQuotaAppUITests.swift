@@ -650,8 +650,46 @@ final class CPAQuotaAppUITests: XCTestCase {
         expectExists(textContaining("生成已中断", in: reopened), in: reopened)
         textContaining("思考过程", in: reopened).tap()
         expectExists(reopened.staticTexts["可见推理片段"], in: reopened)
+        expectExists(element("chat.continue", in: reopened), in: reopened)
         XCTAssertFalse(element("chat.stop", in: reopened).exists)
         XCTAssertTrue(element("ui-test.chat.counts", in: reopened).label.contains("生成请求 0"))
+    }
+
+    @MainActor
+    func testStopContinueAndCompleteOneReply() {
+        let arguments = ["--ui-test-chat-gate", "--ui-test-chat-continuation", "--ui-test-chat-store=\(UUID().uuidString)"]
+        let app = launch(connected: true, arguments: arguments)
+        startCheckpointScenario(app)
+        element("chat.stop", in: app).tap()
+        let resume = element("chat.continue", in: app)
+        expectExists(resume, in: app)
+        XCTAssertEqual(resume.label, "续写上一条回复")
+        let field = element("chat.input", in: app)
+        field.tap()
+        field.typeText("X")
+        XCTAssertTrue(element("chat.send", in: app).isEnabled)
+        XCTAssertFalse(resume.exists)
+        field.typeText(XCUIKeyboardKey.delete.rawValue)
+        expectExists(resume, in: app)
+        resume.tap()
+        expectExists(element("chat.stop", in: app), in: app)
+        element("ui-test.chat.checkpoint", in: app).tap()
+        expectExists(app.staticTexts["生成请求 2，已写块 1"], in: app)
+        app.terminate()
+
+        let reopened = launch(connected: true, arguments: arguments)
+        defer { reopened.terminate() }
+        selectTab("chat", title: "AI 对话", in: reopened)
+        reopened.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "chat.conversation.")).firstMatch.tap()
+        expectExists(textContaining("保存片段一追加片段二", in: reopened), in: reopened)
+        XCTAssertTrue(element("ui-test.chat.counts", in: reopened).label.contains("生成请求 0"))
+        element("chat.continue", in: reopened).tap()
+        element("ui-test.chat.release", in: reopened).tap()
+        expectExists(textContaining("保存片段一追加片段二放行后的正文", in: reopened), in: reopened)
+        XCTAssertTrue(element("ui-test.chat.counts", in: reopened).label.contains("生成请求 1"))
+        XCTAssertFalse(element("chat.continue", in: reopened).exists)
+        attach(reopened, name: "continued-assistant-reply")
     }
 
     @MainActor

@@ -120,7 +120,7 @@ private struct UITestWorkspace: View {
                                         let deadline = ContinuousClock.now + .seconds(90)
                                         while !Task.isCancelled && ContinuousClock.now < deadline {
                                             if let records = try? await chatFiles.loadConversations(),
-                                               records.contains(where: { $0.messages.last?.text == "保存片段一" && $0.messages.last?.status == .streaming }) {
+                                               records.contains(where: { $0.messages.last?.text == gatedChat.expectedCheckpoint && $0.messages.last?.status == .streaming }) {
                                                 checkpointOnDisk = true
                                                 return
                                             }
@@ -265,6 +265,9 @@ private struct UITestChatModelCatalog: ChatModelCatalog {
     private var currentID: UUID?
     private var releaseToken: Int32?
     private(set) var generation = 0
+    private var checkpointBase = ""
+    private var checkpointSuffix: String { checkpointBase.isEmpty ? "保存片段一" : "追加片段二" }
+    var expectedCheckpoint: String { checkpointBase + checkpointSuffix }
     private var paragraphs: [String] = []
     private var expiration: (@MainActor @Sendable () -> Void)?
     var isWaiting: Bool { current != nil }
@@ -274,6 +277,12 @@ private struct UITestChatModelCatalog: ChatModelCatalog {
             let id = UUID()
             let task = Task { @MainActor in
                 guard !Task.isCancelled else { return }
+                if ProcessInfo.processInfo.arguments.contains("--ui-test-chat-continuation"),
+                   let partial = request.history.last, partial.role == .assistant {
+                    checkpointBase = partial.text
+                } else {
+                    checkpointBase = ""
+                }
                 generation += 1
                 currentID = id
                 current = continuation
@@ -331,7 +340,7 @@ private struct UITestChatModelCatalog: ChatModelCatalog {
         """
 
     func checkpoint() {
-        current?.yield(.snapshot(text: "保存片段一", reasoning: "可见推理片段"))
+        current?.yield(.snapshot(text: checkpointSuffix, reasoning: "可见推理片段"))
     }
 
     func extendAnswer() {

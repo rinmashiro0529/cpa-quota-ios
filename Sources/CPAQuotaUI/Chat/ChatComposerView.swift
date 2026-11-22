@@ -18,6 +18,7 @@ struct ChatComposerView: View {
     @Binding var editingMessageID: UUID?
     let onOpenSettings: () -> Void
     let onCancelEdit: () -> Void
+    let onContinue: (ChatContinuation) -> Void
     let onSubmit: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
@@ -40,6 +41,14 @@ struct ChatComposerView: View {
         guard isCredentialReady, chat.isAvailableModel(conversation.modelID), !isGenerating, !isLoadingAttachments else { return false }
         let hasText = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return editingMessageID == nil ? hasText || !attachments.isEmpty : hasText
+    }
+
+    private var continuation: ChatContinuation? {
+        guard draft.isEmpty, attachments.isEmpty, editingMessageID == nil, !isLoadingAttachments else { return nil }
+        #if canImport(PhotosUI)
+        guard pickerItems.isEmpty else { return nil }
+        #endif
+        return chat.continuation(for: conversation.id)
     }
 
     var body: some View {
@@ -80,6 +89,12 @@ struct ChatComposerView: View {
                     .font(.footnote)
                     .frame(minHeight: 44)
                 }
+            }
+
+            if let continuation {
+                Text(continuation.isRetry ? "重试将重新发起请求，可能产生额外用量。" : "续写将根据已有内容发起新请求，可能产生额外用量。")
+                    .font(.footnote)
+                    .foregroundStyle(palette.textSecondary)
             }
 
             let suggestions = chat.skillSuggestions(for: draft)
@@ -222,6 +237,20 @@ struct ChatComposerView: View {
             .modifier(ChatRoundButtonStyle(prominent: false))
             .accessibilityLabel("停止生成")
             .accessibilityIdentifier("chat.stop")
+        } else if let target = continuation {
+            Button {
+                guard continuation == target else { return }
+                onContinue(target)
+            } label: {
+                Image(systemName: target.isRetry ? "arrow.clockwise" : "arrow.up.right")
+                    .font(.headline.weight(.bold))
+                    .frame(width: 44, height: 44)
+            }
+            .modifier(ChatRoundButtonStyle(prominent: true))
+            .keyboardShortcut(.return, modifiers: .command)
+            .accessibilityLabel(target.isRetry ? "重试生成回复" : "续写上一条回复")
+            .accessibilityHint("发起一次新的生成请求，可能产生额外用量")
+            .accessibilityIdentifier(target.isRetry ? "chat.retry" : "chat.continue")
         } else {
             Button(action: onSubmit) {
                 Image(systemName: editingMessageID == nil ? "arrow.up" : "checkmark")

@@ -144,6 +144,7 @@ struct ChatConversationView: View {
                         editingMessageID: $editingMessageID,
                         onOpenSettings: { isPresentingSettings = true },
                         onCancelEdit: endEditing,
+                        onContinue: { request(.continueReply($0), in: conversation) },
                         onSubmit: { submit(in: conversation) }
                     )
                 }
@@ -203,11 +204,15 @@ struct ChatConversationView: View {
         } else {
             replacesInterrupted = false
         }
-        guard change != nil || removed > 0 || replacesInterrupted else {
+        var parts: [String] = []
+        if case .continueReply(let target) = action, target.previousModelID != target.modelID {
+            let previous = target.previousModelID ?? "未知模型"
+            parts.append("上一请求使用「\(previous)」，本次将使用「\(target.modelID)」。")
+        }
+        guard change != nil || removed > 0 || replacesInterrupted || !parts.isEmpty else {
             perform(action, confirmingServerChange: false)
             return
         }
-        var parts: [String] = []
         if replacesInterrupted { parts.append("将发送一次新的生成请求并替换这条中断的回复，可能产生新的用量。") }
         if let change {
             let images = change.imageCount > 0 ? "和 \(change.imageCount) 张图片" : ""
@@ -218,11 +223,13 @@ struct ChatConversationView: View {
         if removed > 0 {
             parts.append("此后的 \(removed) 条消息将被删除，无法恢复。")
         }
+        let isContinuation: Bool
+        if case .continueReply = action { isContinuation = true } else { isContinuation = false }
         pendingConfirmation = PendingConfirmation(
             action: action,
-            title: change != nil ? "在当前服务继续这段对话？" : (removed > 0 ? "删除后续消息并重新生成？" : "替换中断的回复？"),
+            title: change != nil ? "在当前服务继续这段对话？" : (removed > 0 ? "删除后续消息并重新生成？" : (isContinuation ? "使用当前模型继续？" : "替换中断的回复？")),
             message: parts.joined(separator: "\n"),
-            confirmTitle: change != nil ? "继续发送" : (removed > 0 ? "删除并重新生成" : "确认重新生成"),
+            confirmTitle: change != nil ? "继续发送" : (removed > 0 ? "删除并重新生成" : (isContinuation ? "继续生成" : "确认重新生成")),
             isDestructive: removed > 0)
     }
 
@@ -237,6 +244,9 @@ struct ChatConversationView: View {
             guard chat.editAndResend(messageID, text: text, in: conversationID,
                                      confirmingServerChange: confirmingServerChange) else { return }
             endEditing()
+        case .continueReply(let target):
+            guard draft.isEmpty, attachments.isEmpty, editingMessageID == nil else { return }
+            chat.continueReply(target, confirmingServerChange: confirmingServerChange)
         case .regenerate(let messageID):
             chat.regenerate(messageID, in: conversationID, confirmingServerChange: confirmingServerChange)
         }
@@ -246,7 +256,7 @@ struct ChatConversationView: View {
     private func laterMessageCount(for action: PendingAction, in conversation: ChatConversation) -> Int {
         let messages = conversation.messages
         switch action {
-        case .send:
+        case .send, .continueReply:
             return 0
         case .regenerate(let id):
             guard let index = messages.firstIndex(where: { $0.id == id }) else { return 0 }
@@ -303,6 +313,7 @@ struct ChatConversationView: View {
 }
 
 private enum PendingAction {
+    case continueReply(ChatContinuation)
     case send(String, [ChatImageAttachment])
     case edit(UUID, String)
     case regenerate(UUID)
