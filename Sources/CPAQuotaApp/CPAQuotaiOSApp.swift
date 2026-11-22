@@ -92,6 +92,7 @@ private struct UITestWorkspace: View {
                                     }
                                 }
                                 .accessibilityIdentifier("ui-test.chat.checkCopy")
+                                .padding(.top, usesChatGate ? 58 : 0)
                             }
                             #endif
                             if usesChatGate, gatedChat.isWaiting {
@@ -146,7 +147,7 @@ private struct UITestWorkspace: View {
                                     }
                             }
                         }
-                        .padding(.top, usesChatGate ? 82 : 0)
+                        .padding(.top, usesChatGate ? 24 : 0)
                         .frame(maxWidth: .infinity)
                     }
                     .safeAreaInset(edge: .bottom) {
