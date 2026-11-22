@@ -108,11 +108,13 @@ struct ChatConversationView: View {
             .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
             .modifier(ChatScrollEdgeModifier())
-            .onChange(of: conversation.messages.count) { _, _ in
-                withAnimation(.easeOut(duration: 0.2)) {
-                    proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
-                }
-            }
+            .modifier(ChatStreamingAutoScrollModifier(
+                proxy: proxy,
+                bottomAnchor: Self.bottomAnchor,
+                isGenerating: isGenerating,
+                messageCount: conversation.messages.count,
+                latestTextLength: conversation.messages.last?.text.count ?? 0
+            ))
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
                     if chat.unsavedConversations.contains(conversation.id) {
@@ -457,6 +459,69 @@ private struct ChatScrollEdgeModifier: ViewModifier {
         } else {
             content
         }
+    }
+}
+
+/// Follows streaming growth while the reader stays at the bottom without yanking them back once they scroll up.
+private struct ChatStreamingAutoScrollModifier: ViewModifier {
+    let proxy: ScrollViewProxy
+    let bottomAnchor: String
+    let isGenerating: Bool
+    let messageCount: Int
+    let latestTextLength: Int
+    @State private var isPinnedToBottom = true
+    @State private var isUserScrolling = false
+    @State private var distanceFromBottom: CGFloat = 0
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        let base = content
+            .onChange(of: messageCount) { oldCount, newCount in
+                guard newCount > oldCount else { return }
+                isPinnedToBottom = true
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                }
+            }
+        if #available(iOS 18.0, macOS 15.0, *) {
+            base
+                .onScrollPhaseChange { oldPhase, newPhase in
+                    let wasUser = oldPhase == .interacting || oldPhase == .decelerating
+                    let isUser = newPhase == .interacting || newPhase == .decelerating
+                    isUserScrolling = isUser
+                    if isUser || wasUser {
+                        isPinnedToBottom = distanceFromBottom <= 24
+                    }
+                }
+                .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
+                    let maxOffsetY = max(
+                        -geometry.contentInsets.top,
+                        geometry.contentSize.height + geometry.contentInsets.bottom - geometry.containerSize.height
+                    )
+                    let distance = max(0, maxOffsetY - geometry.contentOffset.y)
+                    return ScrollMetrics(contentHeight: geometry.contentSize.height, distanceFromBottom: distance)
+                } action: { oldValue, newValue in
+                    distanceFromBottom = newValue.distanceFromBottom
+                    if isUserScrolling {
+                        isPinnedToBottom = newValue.distanceFromBottom <= 24
+                    } else if isPinnedToBottom, isGenerating,
+                              newValue.contentHeight > oldValue.contentHeight + 1,
+                              newValue.distanceFromBottom > 1 {
+                        proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                    }
+                }
+                .onChange(of: latestTextLength) { oldLength, newLength in
+                    guard isGenerating, isPinnedToBottom, !isUserScrolling, newLength > oldLength else { return }
+                    proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                }
+        } else {
+            base
+        }
+    }
+
+    private struct ScrollMetrics: Equatable, Sendable {
+        let contentHeight: CGFloat
+        let distanceFromBottom: CGFloat
     }
 }
 #endif
