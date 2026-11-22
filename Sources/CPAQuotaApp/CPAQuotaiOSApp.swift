@@ -64,6 +64,8 @@ private struct UITestWorkspace: View {
     @State private var slowResponse = CPAQuotaUITestFixtures.SlowResponseControl()
     @State private var slowPhase: CPAQuotaUITestFixtures.SlowResponseControl.Phase = .idle
     private let usesLargeText = ProcessInfo.processInfo.arguments.contains("--ui-test-large-text")
+    private let usesChatGate = ProcessInfo.processInfo.arguments.contains("--ui-test-chat-gate")
+    @State private var gatedChat = GatedUITestChatEngine()
 
     var body: some View {
         Group {
@@ -71,6 +73,10 @@ private struct UITestWorkspace: View {
                 CPAQuotaRootView(session: session)
                     .environment(\.dynamicTypeSize, usesLargeText ? .accessibility5 : .large)
                     .safeAreaInset(edge: .bottom) {
+                        if usesChatGate, gatedChat.isWaiting {
+                            Button("放行正文") { gatedChat.releaseAnswer() }
+                                .accessibilityIdentifier("ui-test.chat.release")
+                        }
                         // Do not change the presenting workspace's safe area
                         // while the real connection sheet is being dismissed.
                         if slowPhase != .idle, !session.isPresentingConnectionSheet {
@@ -140,7 +146,7 @@ private struct UITestWorkspace: View {
                 chatWorkspace: ChatWorkspaceModel(
                     persistence: ChatMemoryPersistence(),
                     secrets: MemorySecretStore(),
-                    engine: UITestChatEngine(),
+                    engine: usesChatGate ? gatedChat as any ChatEngine : UITestChatEngine(),
                     modelCatalog: { _, _ in UITestChatModelCatalog() })
             )
         } catch {
@@ -153,6 +159,41 @@ private struct UITestChatModelCatalog: ChatModelCatalog {
     func models() async throws -> [CPAModel] {
         [CPAModel(id: "fixture-chat-default"), CPAModel(id: "fixture-chat-alternate")]
     }
+}
+
+/// An optional test scenario with an observable boundary between reasoning and answer.
+@MainActor @Observable private final class GatedUITestChatEngine: ChatEngine {
+    private var current: AsyncThrowingStream<ChatEngineEvent, any Error>.Continuation?
+    private var generation = 0
+    var isWaiting: Bool { current != nil }
+
+    nonisolated func stream(_ request: ChatEngineRequest) -> AsyncThrowingStream<ChatEngineEvent, any Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task { @MainActor in
+                guard !Task.isCancelled else { return }
+                generation += 1
+                let id = generation
+                current = continuation
+                continuation.yield(.snapshot(text: "", reasoning: "可见推理片段"))
+                do {
+                    try await Task.sleep(for: .seconds(45))
+                    continuation.finish(throwing: URLError(.timedOut))
+                } catch {
+                    continuation.finish(throwing: CancellationError())
+                }
+                if generation == id { current = nil }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    func releaseAnswer() {
+        current?.yield(.snapshot(text: "放行后的正文", reasoning: "可见推理片段"))
+        current?.finish()
+        current = nil
+    }
+
+    func complete(_ request: ChatEngineRequest) async throws -> String { "夹具对话" }
 }
 
 private actor UITestChatEngine: ChatEngine {

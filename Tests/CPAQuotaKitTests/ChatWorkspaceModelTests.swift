@@ -1263,3 +1263,81 @@ struct ChatWorkspaceModelTests {
         #expect(fixture.engine.streamRequests.count == 1)
     }
 }
+private actor StreamObservation {
+    var requests = 0
+    var reads = 0
+    var snapshots: [(text: String, reasoning: String?)] = []
+    func opened() { requests += 1 }
+    func read(_ bytes: Data) -> Data { reads += 1; return bytes }
+    func received(_ event: ChatEngineEvent) {
+        if case .snapshot(let text, let reasoning) = event { snapshots.append((text, reasoning)) }
+    }
+}
+
+private struct GatedTransport: AnyLanguageModel.HTTPTransport {
+    let chunks: AsyncStream<Data>
+    let observation: StreamObservation
+
+    func send<Return>(request: HTTPRequest, body: Data?, timeout: Duration?,
+                      responseHandler: (HTTPTypes.HTTPResponse, HTTPResponseBody) async throws -> Return) async throws -> Return {
+        await observation.opened()
+        return try await responseHandler(.init(status: .ok), HTTPResponseBody(chunks.map { await observation.read($0) }))
+    }
+}
+
+extension CPAChatSSETests {
+    @Test func usageWithoutVisibleReasoningDoesNotProduceReasoningText() async throws {
+        let usage = #"{"id":"fixture","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":4,"completion_tokens_details":{"reasoning_tokens":3}}}"#
+        let parts = ["data: \(token)\n\n", "data: \(usage)\n\n", "data: [DONE]\n\n"]
+        let engine = AnyLanguageModelChatEngine(transport: FixtureSSETransport(fragments: parts))
+        var lastUsage: ChatTokenUsage?
+        var lastText: String?
+        for try await event in engine.stream(try request()) {
+            switch event {
+            case .snapshot(let text, let reasoning):
+                lastText = text
+                #expect(reasoning == nil)
+            case .usage(let usage): lastUsage = usage
+            }
+        }
+        #expect(lastText == "partial")
+        #expect(lastUsage?.reasoningTokens == 3)
+    }
+
+    private func event(_ delta: String) -> Data {
+        Data("data: {\"id\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":\(delta)}]}\r\n\r\n".utf8)
+    }
+
+    @Test func visibleReasoningArrivesBeforeBodyAndCompletion() async throws {
+        let observation = StreamObservation()
+        let (chunks, feed) = AsyncStream<Data>.makeStream()
+        let engine = AnyLanguageModelChatEngine(transport: GatedTransport(chunks: chunks, observation: observation))
+        let stream = engine.stream(try request())
+        let consumer = Task {
+            for try await event in stream { await observation.received(event) }
+        }
+        defer { feed.finish(); consumer.cancel() }
+        let first = event(#"{"reasoning_content":"甲"}"#)
+        let split = try #require(first.firstIndex(of: 0xe7)) + 1
+        feed.yield(first.prefix(split))
+        feed.yield(first.suffix(from: split))
+        feed.yield(event(#"{"reasoning_content":"乙"}"#))
+        let deadline = ContinuousClock.now + .seconds(4)
+        while await observation.snapshots.last?.reasoning != "甲乙", ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await observation.reads == 3)
+        #expect(await observation.snapshots.last?.reasoning == "甲乙")
+        #expect(await observation.snapshots.allSatisfy { $0.text.isEmpty })
+        feed.yield(event(#"{"content":"A"}"#))
+        feed.yield(event(#"{"content":"B","reasoning_content":"丙"}"#))
+        feed.yield(Data("data: [DONE]\r\n\r\n".utf8))
+        feed.finish()
+        try await consumer.value
+        let snapshots = await observation.snapshots
+        #expect(snapshots.last?.text == "AB")
+        #expect(snapshots.last?.reasoning == "甲乙丙")
+        #expect(snapshots.filter { !$0.text.isEmpty }.allSatisfy { $0.reasoning?.hasPrefix("甲乙") == true })
+        #expect(await observation.requests == 1)
+    }
+}

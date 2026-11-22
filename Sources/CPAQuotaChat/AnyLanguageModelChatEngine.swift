@@ -10,7 +10,7 @@ import CPAQuotaKit
 /// mode against `{baseURL}chat/completions`. Each request builds a fresh
 /// `LanguageModelSession` from the request's transcript.
 public struct AnyLanguageModelChatEngine: ChatEngine {
-    private let transport: CompletionCheckingTransport
+    private let transport: any AnyLanguageModel.HTTPTransport
 
     public init() {
         let configuration = URLSessionConfiguration.ephemeral
@@ -26,7 +26,7 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
     }
 
     init(transport: any AnyLanguageModel.HTTPTransport) {
-        self.transport = CompletionCheckingTransport(base: transport)
+        self.transport = transport
     }
 
     private final class RedirectRefusingDelegate: NSObject, URLSessionTaskDelegate {
@@ -42,12 +42,13 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let session = makeSession(for: request)
+                    let live = LiveChatSnapshots(continuation)
+                    let session = makeSession(for: request, live: live)
                     let response = session.streamResponse(to: makePrompt(for: request),
                                                           options: makeOptions(for: request, streaming: true))
                     for try await snapshot in response {
-                        continuation.yield(.snapshot(text: snapshot.content,
-                                                     reasoning: Self.reasoningText(snapshot.transcriptEntries)))
+                        live.publish(text: snapshot.content,
+                                     transcriptReasoning: Self.reasoningText(snapshot.transcriptEntries))
                         let usage = snapshot.usage
                         if usage.input.totalTokenCount > 0 || usage.output.totalTokenCount > 0
                             || usage.output.reasoningTokenCount > 0 {
@@ -73,13 +74,13 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
         return response.content
     }
 
-    private func makeSession(for request: ChatEngineRequest) -> LanguageModelSession {
+    private func makeSession(for request: ChatEngineRequest, live: LiveChatSnapshots? = nil) -> LanguageModelSession {
         let model = OpenAILanguageModel(
             baseURL: request.baseURL,
             apiKey: request.apiKey.exposedValue,
             model: request.modelID,
             apiVariant: .chatCompletions,
-            transport: transport)
+            transport: CompletionCheckingTransport(base: transport, live: live))
         return LanguageModelSession(model: model, transcript: Self.makeTranscript(for: request))
     }
 
@@ -195,6 +196,7 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
 /// AnyLanguageModel 1.3.0 treats EOF as success even if CPA didn't finish the SSE stream.
 private struct CompletionCheckingTransport: AnyLanguageModel.HTTPTransport {
     let base: any AnyLanguageModel.HTTPTransport
+    let live: LiveChatSnapshots?
 
     func send<Return>(request: HTTPRequest, body: Data?, timeout: Duration?,
                       responseHandler: (HTTPResponse, HTTPResponseBody) async throws -> Return) async throws -> Return {
@@ -202,23 +204,29 @@ private struct CompletionCheckingTransport: AnyLanguageModel.HTTPTransport {
             guard request.headerFields[.accept] == "text/event-stream", response.status.kind == .successful else {
                 return try await responseHandler(response, chunks)
             }
-            return try await responseHandler(response, HTTPResponseBody(CompletionCheckedChunks(body: chunks)))
+            return try await responseHandler(response, HTTPResponseBody(CompletionCheckedChunks(body: chunks, live: live)))
         }
     }
 }
 
 private struct CompletionCheckedChunks: AsyncSequence {
     let body: HTTPResponseBody
+    let live: LiveChatSnapshots?
 
-    func makeAsyncIterator() -> Iterator { Iterator(upstream: body.makeAsyncIterator()) }
+    func makeAsyncIterator() -> Iterator { Iterator(upstream: body.makeAsyncIterator(), live: live) }
 
     struct Iterator: AsyncIteratorProtocol {
         var upstream: HTTPResponseBody.AsyncIterator
+        let live: LiveChatSnapshots?
+        private var reasoningEvents = VisibleReasoningEvents()
         private var line = [UInt8]()
         private var exceedsMarkerLength = false
         private var sawCompletion = false
 
-        init(upstream: HTTPResponseBody.AsyncIterator) { self.upstream = upstream }
+        init(upstream: HTTPResponseBody.AsyncIterator, live: LiveChatSnapshots?) {
+            self.upstream = upstream
+            self.live = live
+        }
 
         mutating func next() async throws -> Data? {
             try Task.checkCancellation()
@@ -245,7 +253,97 @@ private struct CompletionCheckedChunks: AsyncSequence {
                     else { exceedsMarkerLength = true }
                 }
             }
+            if let live { reasoningEvents.consume(chunk, into: live) }
             return chunk
+        }
+    }
+}
+/// Combines the SDK's cumulative answer with visible reasoning from the same request.
+/// The transport and the SDK consume on different tasks; publish each pair under one lock.
+private final class LiveChatSnapshots: @unchecked Sendable {
+    private let lock = NSLock()
+    private let output: AsyncThrowingStream<ChatEngineEvent, any Error>.Continuation
+    private var text = ""
+    private var reasoning = ""
+    private var reasoningContent = ""
+
+    init(_ output: AsyncThrowingStream<ChatEngineEvent, any Error>.Continuation) {
+        self.output = output
+    }
+
+    func append(_ delta: VisibleReasoningChunk.Choice.Delta) {
+        guard delta.reasoning?.isEmpty == false || delta.reasoning_content?.isEmpty == false else { return }
+        lock.withLock {
+            reasoning += delta.reasoning ?? ""
+            reasoningContent += delta.reasoning_content ?? ""
+            output.yield(.snapshot(text: text, reasoning: visibleReasoning))
+        }
+    }
+
+    func publish(text: String, transcriptReasoning: String?) {
+        lock.withLock {
+            self.text = text
+            output.yield(.snapshot(text: text, reasoning: transcriptReasoning ?? visibleReasoning))
+        }
+    }
+
+    private var visibleReasoning: String? {
+        if !reasoningContent.isEmpty { return reasoningContent }
+        return reasoning.isEmpty ? nil : reasoning
+    }
+}
+
+/// Only these two text fields are displayable. Usage and the answer remain SDK-owned.
+private struct VisibleReasoningChunk: Decodable {
+    struct Choice: Decodable {
+        struct Delta: Decodable {
+            let reasoning: String?
+            let reasoning_content: String?
+        }
+        let delta: Delta
+    }
+    let id: String
+    let choices: [Choice]
+}
+
+/// Reads complete SSE data events without consuming the SDK's body a second time.
+private struct VisibleReasoningEvents {
+    private var line = Data()
+    private var data = Data()
+    private var skipEvent = false
+    private var skipLF = false
+    private let prefix = Data("data:".utf8)
+
+    mutating func consume(_ chunk: Data, into snapshots: LiveChatSnapshots) {
+        for byte in chunk {
+            if skipLF {
+                skipLF = false
+                if byte == 10 { continue }
+            }
+            if byte == 10 || byte == 13 {
+                skipLF = byte == 13
+                if line.isEmpty {
+                    if !skipEvent, !data.isEmpty,
+                       let event = try? JSONDecoder().decode(VisibleReasoningChunk.self, from: data),
+                       let first = event.choices.first {
+                        snapshots.append(first.delta)
+                    }
+                    data.removeAll(keepingCapacity: true)
+                    skipEvent = false
+                } else if !skipEvent, line.starts(with: prefix) {
+                    var value = line.dropFirst(prefix.count)
+                    if value.first == 32 { value = value.dropFirst() }
+                    if !data.isEmpty { data.append(10) }
+                    data.append(contentsOf: value)
+                }
+                line.removeAll(keepingCapacity: true)
+            } else if line.count + data.count < 1024 * 1024 {
+                line.append(byte)
+            } else {
+                // A large event still goes to the SDK, including its final transcript.
+                skipEvent = true
+                if line.isEmpty { line.append(byte) }
+            }
         }
     }
 }

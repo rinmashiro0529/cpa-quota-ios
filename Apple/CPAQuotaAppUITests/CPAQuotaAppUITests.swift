@@ -573,10 +573,11 @@ final class CPAQuotaAppUITests: XCTestCase {
     }
 
     @MainActor
-    private func launch(connected: Bool, largeText: Bool = false) -> XCUIApplication {
+    private func launch(connected: Bool, largeText: Bool = false, arguments: [String] = []) -> XCUIApplication {
         XCUIDevice.shared.orientation = .portrait
         let app = XCUIApplication()
         app.launchArguments += ["--ui-testing", connected ? "--fixture=connected" : "--fixture=unconfigured"]
+        app.launchArguments += arguments
         if largeText { app.launchArguments.append("--ui-test-large-text") }
         app.launch()
         verify(app.wait(for: .runningForeground, timeout: 10), in: app, "The fixture app must launch in the foreground.")
@@ -593,6 +594,27 @@ final class CPAQuotaAppUITests: XCTestCase {
             expectExists(app.textFields["connection.server"], in: app, timeout: 15)
         }
         return app
+    }
+
+    @MainActor
+    func testReasoningIsVisibleBeforeAnswerIsReleased() {
+        let app = launch(connected: true, arguments: ["--ui-test-chat-gate"])
+        defer { app.terminate() }
+        selectTab("chat", title: "AI 对话", in: app)
+        element("chat.emptyNew", in: app).tap()
+        let input = element("chat.input", in: app)
+        input.tap()
+        input.typeText("S1")
+        element("chat.send", in: app).tap()
+        let reasoning = app.staticTexts["可见推理片段"]
+        expectExists(reasoning, in: app)
+        XCTAssertTrue(reasoning.isHittable)
+        XCTAssertTrue(element("chat.stop", in: app).isHittable)
+        XCTAssertFalse(textContaining("放行后的正文", in: app).exists)
+        element("ui-test.chat.release", in: app).tap()
+        expectExists(textContaining("放行后的正文", in: app), in: app)
+        textContaining("思考过程", in: app).tap()
+        expectExists(reasoning, in: app)
     }
 
     @MainActor
