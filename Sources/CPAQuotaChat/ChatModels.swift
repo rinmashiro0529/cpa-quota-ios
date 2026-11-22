@@ -88,6 +88,10 @@ public struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     var pendingContinuation: String?
     /// Preserve the original expansion when a slash skill changes later.
     var expandedPrompt: String?
+    /// Records whether web search finished for this turn (distinguishes zero results from an aborted search).
+    var searchCompleted: Bool?
+    /// Preserves the resolved web-search query so skill edits cannot alter a retried search boundary.
+    var searchQuery: String?
     public var searchSources: [ChatSearchSource]
     public var status: Status
     public var failure: ChatFailure?

@@ -453,7 +453,7 @@ public final class ChatWorkspaceModel {
             where conversations[index].messages[messageIndex].status == .streaming {
                 conversations[index].messages[messageIndex].status = .interrupted
                 conversations[index].messages[messageIndex].failure = .generationInterrupted
-                conversations[index].messages[messageIndex].finishAttempt()
+                conversations[index].messages[messageIndex].finishAttempt(commitPending: false)
                 changed = true
             }
             if changed { persist(conversations[index]) }
@@ -765,6 +765,9 @@ public final class ChatWorkspaceModel {
             reply.attempts = [ChatReplyAttempt(modelID: saved.modelID, status: saved.status,
                                                failure: saved.failure, usage: saved.usage)]
         }
+        // Record the new streaming attempt before persisting so a crash during
+        // search recovery never overwrites the previous completed attempt.
+        reply.attempts?.append(ChatReplyAttempt(modelID: target.modelID, status: .streaming))
         reply.replyToID = question.id
         reply.status = .streaming
         reply.failure = nil
@@ -777,18 +780,36 @@ public final class ChatWorkspaceModel {
         defer { backgroundRunner.endTask(token) }
 
         var sources = saved.searchSources
-        if target.isRetry, sources.isEmpty, conversation.isWebSearchEnabled {
-            let query = ChatPromptBuilder.applySkill(to: question.text, skills: skills).rest
+        if target.isRetry, saved.searchCompleted != true, sources.isEmpty, conversation.isWebSearchEnabled {
+            let query = saved.searchQuery ?? ChatPromptBuilder.applySkill(to: question.text, skills: skills).rest
+            if saved.searchQuery == nil {
+                reply.searchQuery = query
+                mutateAssistant(saved.id, in: id) { $0.searchQuery = query }
+            }
             sources = await performSearch(query, enabled: true, assistantID: saved.id,
                                           in: id, revision: target.revision, attemptID: attemptID)
             guard isCurrent(target.revision), generationTasks[id]?.id == attemptID else {
                 finishAborted(assistantID: saved.id, in: id)
+                mutateAssistant(saved.id, in: id) { $0.finishAttempt(commitPending: false) }
                 if let updated = self.conversation(id) {
                     await persist(updated).value
                 }
                 return
             }
             reply.searchSources = sources
+        }
+
+        // Re-verify target model availability after async search completes.
+        guard isAvailableModel(target.modelID) else {
+            mutateAssistant(saved.id, in: id) {
+                $0.status = .failed
+                $0.failure = .missingModel
+                $0.finishAttempt(commitPending: false)
+            }
+            if let updated = self.conversation(id) {
+                await persist(updated).value
+            }
+            return
         }
 
         let effectivePrompt = ChatPromptBuilder.searchInjectedPrompt(original, sources: sources)
@@ -803,7 +824,9 @@ public final class ChatWorkspaceModel {
                                                                                     conversation: conversation),
                                        history: context.history, prompt: context.prompt, images: context.images,
                                        reasoningEffort: conversation.reasoningEffort)
-        _ = await consume(request, in: id, assistant: reply, revision: target.revision, attemptID: attemptID)
+        let sentExcerpt = target.isRetry ? nil : context.history.last?.text
+        _ = await consume(request, in: id, assistant: reply, revision: target.revision, attemptID: attemptID,
+                          isContinuation: true, attemptAlreadyAppended: true, sentReplyExcerpt: sentExcerpt)
     }
 
     public func stop(_ conversationID: UUID) {
@@ -859,10 +882,17 @@ public final class ChatWorkspaceModel {
     public func deleteMessage(_ id: UUID, in conversationID: UUID) {
         guard var conversation = self.conversation(conversationID) else { return }
         // A legacy reply might not have a parent ID yet. Removing its question
-        // must not make an earlier, unrelated question eligible for continuation.
+        // must not make an earlier, unrelated question eligible for continuation,
+        // and must also clear derived prompt/query copies of the deleted question.
         if let index = conversation.messages.firstIndex(where: { $0.id == id && $0.role == .user }),
            index + 1 < conversation.messages.count, conversation.messages[index + 1].role == .assistant {
             conversation.messages[index + 1].replyToID = id
+            conversation.messages[index + 1].expandedPrompt = nil
+            conversation.messages[index + 1].searchQuery = nil
+        }
+        for messageIndex in conversation.messages.indices where conversation.messages[messageIndex].replyToID == id {
+            conversation.messages[messageIndex].expandedPrompt = nil
+            conversation.messages[messageIndex].searchQuery = nil
         }
         conversation.messages.removeAll { $0.id == id }
         updateConversationSilently(conversation)
@@ -924,6 +954,7 @@ public final class ChatWorkspaceModel {
         assistant.replyToID = userMessage.id
         assistant.attempts = []
         assistant.expandedPrompt = modelPrompt == userMessage.text ? nil : modelPrompt
+        assistant.searchQuery = conversation.isWebSearchEnabled ? strippedText : nil
         let assistantID = assistant.id
         conversation.messages.append(assistant)
         conversation.updatedAt = Date()
@@ -958,6 +989,18 @@ public final class ChatWorkspaceModel {
             return
         }
 
+        // Re-verify model availability after async search completes.
+        guard isAvailableModel(modelID) else {
+            mutateAssistant(assistantID, in: conversationID) {
+                $0.status = .failed
+                $0.failure = .missingModel
+            }
+            if let updated = self.conversation(conversationID) {
+                await persist(updated).value
+            }
+            return
+        }
+
         let prompt = sources.isEmpty
             ? modelPrompt
             : ChatPromptBuilder.searchInjectedPrompt(modelPrompt, sources: sources)
@@ -972,7 +1015,9 @@ public final class ChatWorkspaceModel {
             reasoningEffort: conversation.reasoningEffort)
 
         let succeeded = await consume(request, in: conversationID, assistant: assistant,
-                                      revision: revision, attemptID: attemptID)
+                                      revision: revision, attemptID: attemptID,
+                                      isContinuation: false, attemptAlreadyAppended: false,
+                                      sentReplyExcerpt: nil)
         if succeeded, isCurrent(revision), settings.generatesTitles,
            let current = self.conversation(conversationID),
            current.messages.filter({ $0.role == .assistant && $0.status == .complete }).count == 1,
@@ -1008,8 +1053,9 @@ public final class ChatWorkspaceModel {
                 let fetched = try await searchClient(provider).search(query, apiKey: key)
                 guard isCurrent(revision), generationTasks[conversationID]?.id == attemptID else { return [] }
                 sources = fetched
-                if !sources.isEmpty {
-                    mutateAssistant(assistantID, in: conversationID) {
+                mutateAssistant(assistantID, in: conversationID) {
+                    $0.searchCompleted = true
+                    if !sources.isEmpty {
                         $0.searchSources = sources
                     }
                 }
@@ -1041,14 +1087,17 @@ public final class ChatWorkspaceModel {
     }
 
     private func consume(_ request: ChatEngineRequest, in conversationID: UUID, assistant: ChatMessage,
-                         revision: UInt64, attemptID: UUID) async -> Bool {
+                         revision: UInt64, attemptID: UUID, isContinuation: Bool,
+                         attemptAlreadyAppended: Bool, sentReplyExcerpt: String?) async -> Bool {
         let assistantID = assistant.id
-        var boundary = ChatContinuationBoundary(base: assistant.text)
+        var boundary = ChatContinuationBoundary(base: assistant.text, sentExcerpt: sentReplyExcerpt)
         let previousUsage = assistant.usage ?? ChatTokenUsage()
-        mutateAssistant(assistantID, in: conversationID) {
-            $0.attempts?.append(ChatReplyAttempt(modelID: request.modelID, status: .streaming))
+        if !attemptAlreadyAppended {
+            mutateAssistant(assistantID, in: conversationID) {
+                $0.attempts?.append(ChatReplyAttempt(modelID: request.modelID, status: .streaming))
+            }
+            if let current = conversation(conversationID) { persist(current) }
         }
-        if let current = conversation(conversationID) { persist(current) }
         var succeeded = false
         var lastPartialWrite = ContinuousClock.now
         do {
@@ -1087,7 +1136,7 @@ public final class ChatWorkspaceModel {
             let addedAnswerText = self.conversation(conversationID)?.messages
                 .first(where: { $0.id == assistantID })
                 .map { $0.text != assistant.text || !($0.pendingContinuation ?? "").isEmpty } ?? false
-            if assistant.attempts?.isEmpty == false, !addedAnswerText {
+            if isContinuation, !addedAnswerText {
                 mutateAssistant(assistantID, in: conversationID) {
                     $0.status = .failed
                     $0.failure = .continuationAddedNothing
@@ -1109,7 +1158,7 @@ public final class ChatWorkspaceModel {
             }
         }
 
-        mutateAssistant(assistantID, in: conversationID) { $0.finishAttempt() }
+        mutateAssistant(assistantID, in: conversationID) { $0.finishAttempt(commitPending: succeeded) }
         // Await the final write so an interrupted reply is on disk before iOS
         // can suspend the app when endTask runs.
         if let updated = self.conversation(conversationID) {

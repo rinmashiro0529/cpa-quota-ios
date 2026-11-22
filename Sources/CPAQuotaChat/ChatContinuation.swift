@@ -40,41 +40,55 @@ extension ChatMessage {
         }
     }
 
-    mutating func finishAttempt() {
-        if let pendingContinuation {
+    mutating func finishAttempt(commitPending: Bool = false) {
+        if commitPending, let pendingContinuation {
             text += pendingContinuation
-            self.pendingContinuation = nil
         }
-        guard let last = attempts?.indices.last else { return }
+        self.pendingContinuation = nil
+        guard let last = attempts?.indices.last, attempts?[last].status == .streaming else { return }
         attempts?[last].status = status
         attempts?[last].failure = failure
     }
 }
 
-/// Only a substantial full replay of the saved reply can be removed. Never
-/// strip a partial tail match or normalize the bytes of the saved reply.
+/// Only a substantial full replay of the saved reply (or the clipped excerpt
+/// sent to the model) can be removed. Never strip a partial tail match or
+/// normalize the bytes of the saved reply.
 struct ChatContinuationBoundary {
-    private var fullReply: String?
+    private var targets: [String]
     private var confirmedOverlap: Int?
 
-    init(base: String) {
-        let isSubstantial = base.utf8.count >= 16
-            && base.lazy.filter({ $0.isLetter || $0.isNumber }).prefix(6).count == 6
-        fullReply = isSubstantial ? base : nil
+    init(base: String, sentExcerpt: String? = nil) {
+        var candidates: [String] = []
+        for candidate in [base, sentExcerpt].compactMap({ $0 }) {
+            if Self.isSubstantial(candidate), !candidates.contains(candidate) {
+                candidates.append(candidate)
+            }
+        }
+        targets = candidates
     }
 
-    /// The second value is the literal text to preserve if the stream ends
-    /// (or the process dies) before we can disambiguate the opening bytes.
+    private static func isSubstantial(_ text: String) -> Bool {
+        text.utf8.count >= 16
+            && text.lazy.filter({ $0.isLetter || $0.isNumber }).prefix(6).count == 6
+    }
+
+    /// The second value is the literal text held back while the opening bytes
+    /// are still a prefix of the replay target.
     mutating func suffix(for snapshot: String) -> (visible: String, pending: String?) {
         guard !snapshot.isEmpty else { return ("", nil) }
         if let confirmedOverlap { return (dropping(confirmedOverlap, from: snapshot), nil) }
-        if let fullReply {
-            if snapshot.utf8.starts(with: fullReply.utf8) {
-                confirmedOverlap = fullReply.utf8.count
-                return (dropping(fullReply.utf8.count, from: snapshot), nil)
+        if !targets.isEmpty {
+            if let matched = targets.first(where: { snapshot.utf8.starts(with: $0.utf8) }) {
+                confirmedOverlap = matched.utf8.count
+                return (dropping(matched.utf8.count, from: snapshot), nil)
             }
-            if fullReply.utf8.starts(with: snapshot.utf8) { return ("", snapshot) }
-            self.fullReply = nil
+            let matchingPrefixes = targets.filter { $0.utf8.starts(with: snapshot.utf8) }
+            if !matchingPrefixes.isEmpty {
+                targets = matchingPrefixes
+                return ("", snapshot)
+            }
+            targets = []
         }
         confirmedOverlap = 0
         return (snapshot, nil)

@@ -1766,6 +1766,214 @@ struct ChatWorkspaceModelTests {
         #expect(fixture.workspace.continuation(for: seeded.id) != nil)
     }
 
+    @Test @MainActor func retryAfterInitialSearchStopWithOnlyUsageDoesNotCompleteOrNotify() async throws {
+        let search = FakeSearchClient()
+        search.gate()
+        let fixture = makeFixture(searchClient: search)
+        fixture.runner.inBackground = true
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let id = fixture.workspace.createConversation()
+        await enableSearch(fixture, search: search, in: id)
+
+        #expect(fixture.workspace.send("查一下", attachments: [], in: id))
+        #expect(await waitUntil { search.queries == ["查一下"] })
+        fixture.workspace.stop(id)
+        search.release()
+        try await waitForGeneration(fixture.workspace, id: id)
+
+        // B06: first turn stopped mid-search has attempts == []. Retry returning only usage must fail, not complete.
+        fixture.engine.respond(with: [.usage(.init(inputTokens: 9, outputTokens: 2))])
+        let target = try #require(fixture.workspace.continuation(for: id))
+        #expect(fixture.workspace.continueReply(target))
+        try await waitForGeneration(fixture.workspace, id: id)
+
+        let reply = try #require(fixture.workspace.conversation(id)?.messages.last)
+        #expect(reply.status == .failed)
+        #expect(reply.failure == .continuationAddedNothing)
+        #expect(reply.usage == ChatTokenUsage(inputTokens: 9, outputTokens: 2))
+        #expect(fixture.workspace.continuation(for: id) != nil)
+        #expect(fixture.runner.notificationCount == 0)
+    }
+
+    @Test @MainActor func crashDuringRetrySearchPreservesPriorCompletedAttemptRecord() async throws {
+        let search = FakeSearchClient()
+        search.gate()
+        let persistence = ChatMemoryPersistence()
+        let priorAttempt = ChatReplyAttempt(modelID: "old-model", status: .failed,
+                                            failure: .timeout, usage: .init(inputTokens: 4, outputTokens: 0))
+        let question = ChatMessage(role: .user, text: "查一下")
+        var reply = ChatMessage(role: .assistant, text: "", modelID: "old-model",
+                                usage: priorAttempt.usage, status: .failed, failure: .timeout)
+        reply.attempts = [priorAttempt]
+        let seeded = ChatConversation(modelID: "test-model", messages: [question, reply],
+                                      serverIdentifier: server.identifier)
+        try await persistence.saveConversation(seeded)
+
+        let fixture = makeFixture(persistence: persistence, searchClient: search)
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        await enableSearch(fixture, search: search, in: seeded.id)
+
+        let target = try #require(fixture.workspace.continuation(for: seeded.id))
+        #expect(fixture.workspace.continueReply(target))
+        #expect(await waitUntil { search.queries == ["查一下"] })
+        #expect(await waitUntil {
+            (try? await persistence.loadConversations().first(where: { $0.id == seeded.id })?.messages.last?.status) == .streaming
+        })
+
+        // B07: simulate cold-start recovery while retry is suspended inside search.
+        let relaunched = makeFixture(persistence: persistence)
+        await relaunched.workspace.loadIfNeeded()
+        let recovered = try #require(relaunched.workspace.conversation(seeded.id)?.messages.last)
+        #expect(recovered.attempts?.count == 2)
+        #expect(recovered.attempts?.first == priorAttempt)
+        #expect(recovered.attempts?.last?.modelID == "test-model")
+        #expect(recovered.attempts?.last?.status == .interrupted)
+        #expect(recovered.attempts?.last?.failure == .generationInterrupted)
+
+        fixture.workspace.stop(seeded.id)
+        search.release()
+        try await waitForGeneration(fixture.workspace, id: seeded.id)
+    }
+
+    @Test @MainActor func stoppingMidReplayDiscardsPendingContinuationBytes() async throws {
+        let persistence = ChatMemoryPersistence()
+        let fixture = makeFixture(persistence: persistence)
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let baseText = "First, install the package completely."
+        let question = ChatMessage(role: .user, text: "Continue")
+        var reply = ChatMessage(role: .assistant, text: baseText, modelID: "test-model", status: .stopped)
+        reply.attempts = [ChatReplyAttempt(modelID: "test-model", status: .stopped, failure: nil, usage: nil)]
+        let seeded = ChatConversation(modelID: "test-model", messages: [question, reply],
+                                      serverIdentifier: server.identifier)
+        try await persistence.saveConversation(seeded)
+
+        let reloaded = makeFixture(persistence: persistence)
+        await reloaded.workspace.loadIfNeeded()
+        await bind(reloaded, apiKeys: ["test-client-key-0001"])
+        // F02: stream emits only an undecided prefix of baseText, then user stops.
+        reloaded.engine.respond(with: [.snapshot(text: "First, install", reasoning: nil)])
+        reloaded.engine.block()
+        let target = try #require(reloaded.workspace.continuation(for: seeded.id))
+        #expect(reloaded.workspace.continueReply(target))
+        #expect(await waitUntil {
+            await MainActor.run {
+                reloaded.workspace.conversation(seeded.id)?.messages.last?.pendingContinuation == "First, install"
+            }
+        })
+        reloaded.workspace.stop(seeded.id)
+        try await waitForGeneration(reloaded.workspace, id: seeded.id)
+
+        let stopped = try #require(reloaded.workspace.conversation(seeded.id)?.messages.last)
+        #expect(stopped.status == .stopped)
+        #expect(stopped.text == baseText)
+        #expect(stopped.pendingContinuation == nil)
+    }
+
+    @Test func clippedExcerptReplayIsStrippedByContinuationBoundary() {
+        let full = String(repeating: "alpha ", count: 300) + "\nMIDDLE-OMITTED\n" + String(repeating: "omega ", count: 300)
+        let excerpt = String(full.prefix(400)) + "\n[…中间内容已省略…]\n" + String(full.suffix(400))
+        // B08: replaying the clipped excerpt yields empty visible text, and trailing new text is preserved cleanly.
+        var boundary = ChatContinuationBoundary(base: full, sentExcerpt: excerpt)
+        #expect(boundary.suffix(for: String(excerpt.prefix(200))).visible.isEmpty)
+        #expect(boundary.suffix(for: excerpt).visible.isEmpty)
+        #expect(boundary.suffix(for: excerpt + "NEXT-LINE").visible == "NEXT-LINE")
+    }
+
+    @Test @MainActor func zeroResultSearchIsNotRepeatedAndSkillEditDoesNotChangeRetriedSearchQuery() async throws {
+        let search = FakeSearchClient()
+        search.respond(with: [])
+        let fixture = makeFixture(searchClient: search)
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let id = fixture.workspace.createConversation()
+        await enableSearch(fixture, search: search, in: id)
+
+        // B10: search returns 0 results, then stream fails; retry must not search again.
+        fixture.engine.fail(with: URLError(.networkConnectionLost))
+        #expect(fixture.workspace.send("冷门问题", attachments: [], in: id))
+        try await waitForGeneration(fixture.workspace, id: id)
+        #expect(search.queries == ["冷门问题"])
+
+        fixture.engine.respond(with: [.snapshot(text: "完成", reasoning: nil)])
+        let retryTarget = try #require(fixture.workspace.continuation(for: id))
+        #expect(fixture.workspace.continueReply(retryTarget))
+        try await waitForGeneration(fixture.workspace, id: id)
+        #expect(search.queries == ["冷门问题"])
+
+        // B11: first turn stops during search for a skill command; deleting the skill before retry preserves query.
+        let id2 = fixture.workspace.createConversation()
+        await enableSearch(fixture, search: search, in: id2)
+        search.gate()
+        #expect(fixture.workspace.send("/translate 需要翻译的词", attachments: [], in: id2))
+        #expect(await waitUntil { search.queries.last == "需要翻译的词" })
+        fixture.workspace.stop(id2)
+        search.release()
+        try await waitForGeneration(fixture.workspace, id: id2)
+
+        if let translate = fixture.workspace.skills.first(where: { $0.command == "translate" }) {
+            fixture.workspace.deleteSkill(translate.id)
+        }
+        fixture.engine.respond(with: [.snapshot(text: "译文", reasoning: nil)])
+        let target2 = try #require(fixture.workspace.continuation(for: id2))
+        #expect(fixture.workspace.continueReply(target2))
+        try await waitForGeneration(fixture.workspace, id: id2)
+        #expect(search.queries == ["冷门问题", "需要翻译的词", "需要翻译的词"])
+    }
+
+    @Test @MainActor func deletingQuestionClearsDerivedExpandedPromptOnDisk() async throws {
+        let persistence = RecordingPersistence()
+        let fixture = makeFixture(persistence: persistence)
+        fixture.engine.respond(with: [.snapshot(text: "译文", reasoning: nil)])
+        fixture.workspace.settings.generatesTitles = false
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let id = fixture.workspace.createConversation()
+        await completeTurn(fixture, "/translate 机密原文", in: id)
+        let messages = try #require(fixture.workspace.conversation(id)?.messages)
+        #expect(messages[1].expandedPrompt?.contains("机密原文") == true)
+
+        // B12: deleting the user question clears expandedPrompt and searchQuery from the remaining reply.
+        fixture.workspace.deleteMessage(messages[0].id, in: id)
+        fixture.workspace.addMemory("drain")
+        #expect(await waitUntil { await persistence.operations.contains(.saveMemories(1)) })
+        let savedReply = try #require(await persistence.stored(id)?.messages.first)
+        #expect(savedReply.text == "译文")
+        #expect(savedReply.expandedPrompt == nil)
+        #expect(savedReply.searchQuery == nil)
+    }
+
+    @Test @MainActor func modelRemovedDuringSearchPreventsEngineInferenceCall() async throws {
+        final class MutableCatalog: ChatModelCatalog, @unchecked Sendable {
+            var ids = ["test-model"]
+            func models() async throws -> [CPAModel] { ids.map { CPAModel(id: $0) } }
+        }
+        let catalog = MutableCatalog()
+        let search = FakeSearchClient()
+        search.gate()
+        let fixture = makeFixture(catalog: { _, _ in catalog }, searchClient: search)
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let id = fixture.workspace.createConversation()
+        await enableSearch(fixture, search: search, in: id)
+
+        #expect(fixture.workspace.send("查一下", attachments: [], in: id))
+        #expect(await waitUntil { search.queries == ["查一下"] })
+
+        // B19: catalog refreshes while search is in flight and removes the conversation's model.
+        catalog.ids = ["different-model"]
+        await fixture.workspace.refreshModels()
+        search.release()
+        try await waitForGeneration(fixture.workspace, id: id)
+
+        #expect(fixture.engine.streamRequests.isEmpty)
+        let reply = try #require(fixture.workspace.conversation(id)?.messages.last)
+        #expect(reply.status == .failed)
+        #expect(reply.failure == .missingModel)
+    }
+
     @Test @MainActor func legacyContinuationRestoresAndReusesSlashSkillPrompt() async throws {
         let question = ChatMessage(role: .user, text: "/translate Hello")
         var reply = ChatMessage(role: .assistant, text: "unfinished response",
