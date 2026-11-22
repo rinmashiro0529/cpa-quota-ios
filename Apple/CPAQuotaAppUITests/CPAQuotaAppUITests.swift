@@ -751,12 +751,10 @@ final class CPAQuotaAppUITests: XCTestCase {
 
     @MainActor
     func testLargeChatControlsInLightAndDarkLandscape() async throws {
-        let app = launch(connected: true, largeText: true)
-        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
-        for appearance in ["浅色羊皮纸", "深色曜石"] {
-            XCUIDevice.shared.orientation = .portrait
-            selectTab("connection", title: "连接管理", in: app)
-            chooseAppearance(appearance, picker: element("settings.appearance", in: app), in: app)
+        defer { XCUIDevice.shared.orientation = .portrait }
+        for appearance in ["light", "dark"] {
+            let app = launch(connected: true, largeText: true, arguments: ["--ui-test-theme=" + appearance])
+            defer { app.terminate() }
             selectTab("chat", title: "AI 对话", in: app)
             element("chat.new", in: app).tap()
             let menu = element("chat.modelMenu", in: app)
@@ -764,14 +762,13 @@ final class CPAQuotaAppUITests: XCTestCase {
             XCTAssertTrue(menu.isHittable)
             XCTAssertTrue(send.exists)
             let lightness = try canvasBrightness(app.screenshot().image)
-            if appearance == "浅色羊皮纸" { XCTAssertGreaterThan(lightness, 0.65) }
+            if appearance == "light" { XCTAssertGreaterThan(lightness, 0.65) }
             else { XCTAssertLessThan(lightness, 0.25) }
             _ = await rotateDeviceAndWaitForWindow(in: app, policy: layoutPolicy(in: app))
             XCTAssertTrue(menu.isHittable)
             XCTAssertTrue(element("chat.attach", in: app).isHittable)
             XCTAssertTrue(app.frame.contains(CGPoint(x: send.frame.midX, y: send.frame.midY)))
-            attach(app, name: appearance == "浅色羊皮纸" ? "chat-large-landscape-light" : "chat-large-landscape-dark")
-            app.buttons["BackButton"].tap()
+            attach(app, name: "chat-large-landscape-" + appearance)
         }
     }
 

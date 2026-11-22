@@ -184,8 +184,11 @@ private struct UITestWorkspace: View {
         isPreparing = true
         let credentials = MemoryCredentialStore()
         let connected = ProcessInfo.processInfo.arguments.contains("--fixture=connected")
+        let theme = ProcessInfo.processInfo.arguments.first { $0.hasPrefix("--ui-test-theme=") }
+            .flatMap { CPAThemeMode(rawValue: String($0.dropFirst("--ui-test-theme=".count))) }
         let preferences = MemoryPreferencesStore(
-            serverIdentifier: connected ? CPAQuotaUITestFixtures.serverAddress : nil
+            serverIdentifier: connected ? CPAQuotaUITestFixtures.serverAddress : nil,
+            themeMode: theme ?? .system
         )
         do {
             if connected {
