@@ -349,6 +349,7 @@ struct ChatWorkspaceModelTests {
     @MainActor
     private func makeFixture(
         models: [CPAModel] = [CPAModel(id: "test-model")],
+        catalog: (@Sendable (CPAServer, CPAClientAPIKey) -> any ChatModelCatalog)? = nil,
         persistence: any ChatPersistence = ChatMemoryPersistence(),
         searchClient: (any ChatSearchClient)? = nil,
         streamingPersistInterval: Duration = .seconds(2)
@@ -362,7 +363,7 @@ struct ChatWorkspaceModelTests {
             secrets: secrets,
             engine: engine,
             searchClient: { _ in searchClient ?? FakeSearchClient() },
-            modelCatalog: { _, _ in FakeModelCatalog(result: .success(models)) },
+            modelCatalog: catalog ?? { _, _ in FakeModelCatalog(result: .success(models)) },
             backgroundRunner: runner,
             streamingPersistInterval: streamingPersistInterval)
         return Fixture(workspace: workspace, engine: engine, secrets: secrets,
@@ -1284,8 +1285,11 @@ struct ChatWorkspaceModelTests {
     }
 
     @Test @MainActor func explicitModelChoicesAreScopedToRememberedServers() async throws {
-        let models = ["shared", "second", "third"].map { CPAModel(id: $0) }
-        let fixture = makeFixture(models: models)
+        let other = try CPAServer(baseURL: "https://b.example.invalid")
+        let fixture = makeFixture(catalog: { server, _ in
+            let ids = server == other ? ["shared", "third"] : ["shared", "second"]
+            return FakeModelCatalog(result: .success(ids.map { CPAModel(id: $0) }))
+        })
         let workspace = fixture.workspace
         await workspace.loadIfNeeded()
         await bind(fixture, apiKeys: ["test-client-key-0001"])
@@ -1295,10 +1299,11 @@ struct ChatWorkspaceModelTests {
         await completeTurn(fixture, "M1", in: first)
         let empty = workspace.createConversation()
         #expect(workspace.conversation(empty)?.modelID == "second")
-        let other = try CPAServer(baseURL: "https://b.example.invalid")
         await workspace.bind(server: other) { nil }
         #expect(await workspace.useManualKey("fixture-client-b"))
         #expect(workspace.createConversation() == empty)
+        #expect(workspace.conversation(empty)?.modelID == "shared")
+        workspace.selectModel("second", in: empty)
         #expect(workspace.conversation(empty)?.modelID == "shared")
         workspace.selectModel("third", in: empty)
         await workspace.bind(server: server) { nil }
@@ -1309,7 +1314,7 @@ struct ChatWorkspaceModelTests {
         #expect(await workspace.useManualKey("fixture-session-only"))
         #expect(workspace.createConversation() == empty)
         #expect(workspace.conversation(empty)?.modelID == "shared")
-        workspace.selectModel("second", in: empty)
+        workspace.selectModel("shared", in: empty)
         #expect(workspace.settings.recentModelIDs?[other.identifier] == "third")
         #expect(fixture.engine.streamRequests.count == 1)
     }
@@ -1341,6 +1346,27 @@ struct ChatWorkspaceModelTests {
         #expect(workspace.models.map(\.id) == ["current"])
         #expect(workspace.conversation(empty)?.modelID == "current")
         #expect(engine.streamRequests.isEmpty)
+    }
+
+    @Test @MainActor func failedCatalogBlocksPreviouslyWorkingModel() async throws {
+        let fixture = makeFixture(catalog: { _, key in
+            key.hint.hasSuffix("0001")
+                ? FakeModelCatalog(result: .success([CPAModel(id: "working")]))
+                : FakeModelCatalog(result: .failure(CPAError(.requestRejected, statusCode: 403)))
+        })
+        let workspace = fixture.workspace
+        await workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let id = workspace.createConversation()
+        fixture.engine.respond(with: [.snapshot(text: "old reply", reasoning: nil)])
+        await completeTurn(fixture, "prompt", in: id)
+        let previous = try #require(workspace.conversation(id)?.messages)
+        #expect(await workspace.useManualKey("test-client-key-0002"))
+        #expect(workspace.modelListState == .failed(.forbidden(statusCode: 403)))
+        #expect(workspace.conversation(id)?.modelID == "working")
+        #expect(!workspace.regenerate(try #require(previous.last?.id), in: id))
+        #expect(workspace.conversation(id)?.messages == previous)
+        #expect(fixture.engine.streamRequests.count == 1)
     }
 
     @Test @MainActor func invalidModelDoesNotTruncateAnExistingReply() async throws {
