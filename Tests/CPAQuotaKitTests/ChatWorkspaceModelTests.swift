@@ -1855,11 +1855,12 @@ struct ChatWorkspaceModelTests {
         reloaded.engine.block()
         let target = try #require(reloaded.workspace.continuation(for: seeded.id))
         #expect(reloaded.workspace.continueReply(target))
-        #expect(await waitUntil { [workspace = reloaded.workspace] in
+        let hasPending = await waitUntil { [workspace = reloaded.workspace] in
             await MainActor.run {
                 workspace.conversation(seeded.id)?.messages.last?.pendingContinuation == "First, install"
             }
-        })
+        }
+        #expect(hasPending)
         reloaded.workspace.stop(seeded.id)
         try await waitForGeneration(reloaded.workspace, id: seeded.id)
 
