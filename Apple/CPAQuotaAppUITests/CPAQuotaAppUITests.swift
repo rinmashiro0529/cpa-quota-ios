@@ -720,7 +720,11 @@ final class CPAQuotaAppUITests: XCTestCase {
         regenerate.tap()
         app.buttons["确认重新生成"].tap()
         expectExists(element("chat.stop", in: app), in: app)
-        XCTAssertTrue(element("ui-test.chat.counts", in: app).label.contains("生成请求 2"))
+        // The Stop button tracks the workspace task. The engine increments its
+        // counter on a later main-actor turn, after the request actually starts.
+        let twoRequests = app.staticTexts.matching(identifier: "ui-test.chat.counts")
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "生成请求 2，")).firstMatch
+        expectExists(twoRequests, in: app)
     }
 
     @MainActor
