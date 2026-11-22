@@ -1483,4 +1483,36 @@ extension CPAChatSSETests {
         #expect(snapshots.filter { !$0.text.isEmpty }.allSatisfy { $0.reasoning?.hasPrefix("甲乙") == true })
         #expect(await observation.requests == 1)
     }
+
+    @Test @MainActor func stoppingTheLiveRequestKeepsItsReasoningOnlyCheckpoint() async throws {
+        let (chunks, feed) = AsyncStream<Data>.makeStream()
+        defer { feed.finish() }
+        let observation = StreamObservation()
+        let engine = AnyLanguageModelChatEngine(transport: GatedTransport(chunks: chunks, observation: observation))
+        let workspace = ChatWorkspaceModel(
+            persistence: ChatMemoryPersistence(), secrets: MemorySecretStore(), engine: engine,
+            modelCatalog: { _, _ in FakeModelCatalog(result: .success([CPAModel(id: "fixture")])) },
+            backgroundRunner: FakeBackgroundRunner())
+        await workspace.loadIfNeeded()
+        await workspace.bind(server: try CPAServer(baseURL: "https://sse.example.invalid")) { nil }
+        #expect(await workspace.useManualKey("fixture-key-for-gate"))
+        let id = workspace.createConversation()
+        #expect(workspace.send("Stop after R1", attachments: [], in: id))
+        feed.yield(event(#"{"reasoning_content":"R1"}"#))
+        let deadline = ContinuousClock.now + .seconds(5)
+        while workspace.conversation(id)?.messages.last?.reasoning != "R1", ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let pending = try #require(workspace.conversation(id)?.messages.last)
+        #expect(pending.reasoning == "R1" && pending.text.isEmpty && pending.status == .streaming)
+        workspace.stop(id)
+        feed.finish()
+        let stoppedDeadline = ContinuousClock.now + .seconds(5)
+        while workspace.isGenerating(id), ContinuousClock.now < stoppedDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let last = try #require(workspace.conversation(id)?.messages.last)
+        #expect(last.reasoning == "R1" && last.text.isEmpty && last.status == .stopped)
+        #expect(await observation.requests == 1)
+    }
 }
