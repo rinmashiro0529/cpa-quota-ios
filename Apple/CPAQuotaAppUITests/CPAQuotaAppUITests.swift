@@ -789,7 +789,9 @@ final class CPAQuotaAppUITests: XCTestCase {
         XCTAssertTrue(app.buttons["移除图片"].exists)
         XCTAssertTrue(app.buttons["复制"].firstMatch.exists)
         XCTAssertTrue(element("chat.regenerate", in: app).exists)
-        app.navigationBars.buttons.element(boundBy: 0).tap()
+        let backButton = element("BackButton", in: app)
+        expectExists(backButton, in: app)
+        backButton.tap()
         element("chat.new", in: app).tap()
         XCTAssertFalse((element("chat.input", in: app).value as? String)?.contains("draft one") == true)
     }
