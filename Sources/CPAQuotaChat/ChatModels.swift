@@ -49,6 +49,8 @@ public enum ChatFailure: Equatable, Sendable, Codable {
     case network
     case timeout
     case invalidResponse
+    case connectionChanged
+    case streamInterrupted
     case searchFailed
     /// Web search was on but no search service or key was usable; the reply was generated without it.
     case searchNotConfigured
@@ -78,6 +80,13 @@ public struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     public var attachments: [ChatImageAttachment]
     public var modelID: String?
     public var usage: ChatTokenUsage?
+    /// Optional for conversations saved before continuation was introduced.
+    public internal(set) var replyToID: UUID?
+    public internal(set) var attempts: [ChatReplyAttempt]?
+    /// Undecided opening bytes of a continuation, retained across process death.
+    var pendingContinuation: String?
+    /// Preserve the original expansion when a slash skill changes later.
+    var expandedPrompt: String?
     public var searchSources: [ChatSearchSource]
     public var status: Status
     public var failure: ChatFailure?

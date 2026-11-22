@@ -152,6 +152,7 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
     /// Maps engine-side failures to `ChatFailure`; `nil` means cancellation.
     public static func failure(for error: any Error) -> ChatFailure? {
         if error is CancellationError { return nil }
+        if error is IncompleteChatStream { return .streamInterrupted }
         if let error = error as? URLError {
             switch error.code {
             case .cancelled: return nil
@@ -209,6 +210,8 @@ private struct CompletionCheckingTransport: AnyLanguageModel.HTTPTransport {
     }
 }
 
+private struct IncompleteChatStream: Error {}
+
 private struct CompletionCheckedChunks: AsyncSequence {
     let body: HTTPResponseBody
     let live: LiveChatSnapshots?
@@ -232,7 +235,7 @@ private struct CompletionCheckedChunks: AsyncSequence {
             try Task.checkCancellation()
             if sawCompletion { return nil }
             guard let chunk = try await upstream.next() else {
-                throw HTTPTransportError(kind: .decodingError)
+                throw IncompleteChatStream()
             }
             // A marker can be split across network chunks. Keep only a bounded
             // line prefix so ordinary long JSON events need no extra buffering.

@@ -9,10 +9,12 @@ private struct FixtureSSETransport: AnyLanguageModel.HTTPTransport {
     let fragments: [String]
     var status: HTTPTypes.HTTPResponse.Status = .ok
     var headers: HTTPFields = [:]
+    var inspectRequest: (@Sendable (Data) throws -> Void)?
 
     func send<Return>(request: HTTPRequest, body: Data?, timeout: Duration?,
                       responseHandler: (HTTPTypes.HTTPResponse, HTTPResponseBody) async throws -> Return) async throws -> Return {
         #expect(request.headerFields[.accept] == "text/event-stream")
+        try inspectRequest?(body ?? Data())
         let json = try JSONSerialization.jsonObject(with: body ?? Data()) as? [String: Any]
         #expect((json?["stream_options"] as? [String: Bool])?["include_usage"] == true)
         let chunks = AsyncStream<Data> { continuation in
@@ -47,9 +49,30 @@ struct CPAChatSSETests {
             #expect(hasMarker)
         } catch {
             #expect(!hasMarker)
-            #expect(AnyLanguageModelChatEngine.failure(for: error) == .invalidResponse)
+            #expect(AnyLanguageModelChatEngine.failure(for: error) == .streamInterrupted)
         }
         #expect(latest == "partial")
+    }
+
+    @Test func continuationSendsOriginalTurnAndOneInternalPromptThroughSDK() async throws {
+        let question = ChatMessage(role: .user, text: "original question")
+        let reply = ChatMessage(role: .assistant, text: "unfinished answer", reasoning: "local reasoning only")
+        let context = ChatPromptBuilder.continuationContext(earlier: [], question: question, reply: reply,
+                                                            effectivePrompt: question.text)
+        var request = try self.request()
+        request.history = context.history
+        request.prompt = context.prompt
+        let transport = FixtureSSETransport(fragments: ["data: \(token)\n\n", "data: [DONE]\n\n"]) { body in
+            let object = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            let messages = try #require(object?["messages"] as? [[String: Any]])
+            #expect(messages.compactMap { $0["role"] as? String } == ["user", "assistant", "user"])
+            let payload = String(decoding: body, as: UTF8.self)
+            #expect(payload.contains(question.text))
+            #expect(payload.contains(reply.text))
+            #expect(payload.contains(context.prompt))
+            #expect(!payload.contains("local reasoning only"))
+        }
+        for try await _ in AnyLanguageModelChatEngine(transport: transport).stream(request) {}
     }
 
     @Test func nonSuccessfulStatusKeepsHTTPFailureMapping() async throws {

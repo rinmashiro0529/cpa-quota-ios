@@ -65,6 +65,16 @@ public struct ChatFailurePresentation: Equatable, Sendable {
             summary = "模型长时间没有返回内容，已结束本次请求。"
             symbolName = "clock.badge.exclamationmark"
             severity = .warning
+        case .connectionChanged:
+            title = "连接已更换"
+            summary = "服务器或 API Key 已更换，本次生成已中断。"
+            symbolName = "server.rack"
+            severity = .neutral
+        case .streamInterrupted:
+            title = "回复传输中断"
+            summary = "服务在生成结束前断开了连接，已收到的内容保留在对话中。"
+            symbolName = "wifi.exclamationmark"
+            severity = .warning
         case .invalidResponse:
             title = "回复格式无法识别"
             summary = "CPA 返回的数据不是可识别的对话格式。可以换用其他模型重试。"
