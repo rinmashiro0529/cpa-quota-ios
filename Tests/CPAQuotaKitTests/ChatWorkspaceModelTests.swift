@@ -1321,7 +1321,7 @@ struct ChatWorkspaceModelTests {
         #expect(reopened.engine.streamRequests.isEmpty)
         let saved = try #require(reopened.workspace.conversation(id)?.messages.last)
         #expect(saved.id == reply.id)
-        #expect(saved.text == original + " = ")
+        #expect(saved.text == original + "let resultingValue = ")
         #expect(saved.usage?.inputTokens == 112)
         #expect(saved.reasoning == "r1\n\nr2")
         reopened.engine.respond(with: [.snapshot(text: "42\n```", reasoning: nil)])
@@ -1330,7 +1330,7 @@ struct ChatWorkspaceModelTests {
         try await waitForGeneration(reopened.workspace, id: id)
         let final = try #require(reopened.workspace.conversation(id)?.messages)
         #expect(final.map(\.id) == [req.history[0].id, reply.id])
-        #expect(final.last?.text == original + " = 42\n```")
+        #expect(final.last?.text == original + "let resultingValue = 42\n```")
         #expect(final.last?.attempts?.map(\.status) == [.failed, .failed, .complete])
         #expect(final.last?.attempts?.compactMap(\.usage).count == 2)
         #expect(final.last?.reasoning == saved.reasoning)
@@ -1388,7 +1388,7 @@ struct ChatWorkspaceModelTests {
             ("a\n", "\n", "\n"),
             ("foo", "foo", "foo"),
             ("👩‍💻", "✅", "✅"),
-            ("上一次输出的这一行文字", "输出的这一行文字。", "。")
+            ("上一次输出的这一行文字", "输出的这一行文字。", "输出的这一行文字。")
         ] {
             var boundary = ChatContinuationBoundary(base: base)
             var visible = ""
@@ -1402,10 +1402,21 @@ struct ChatWorkspaceModelTests {
         var replay = ChatContinuationBoundary(base: long)
         #expect(replay.suffix(for: String(long.prefix(1200))).visible.isEmpty)
         #expect(replay.suffix(for: long + "next").visible == "next")
+        let base = "import sys\nprint(\"Processing complete\")\n"
+        let continuation = "print(\"Processing complete\")\nprint(\"done\")\n"
+        var repeatedLine = ChatContinuationBoundary(base: base)
+        #expect(repeatedLine.suffix(for: continuation).visible == continuation)
+        var fullReplay = ChatContinuationBoundary(base: base)
+        #expect(fullReplay.suffix(for: base.prefix(8).description).visible.isEmpty)
+        #expect(fullReplay.suffix(for: base + "next").visible == "next")
         var boundary = ChatContinuationBoundary(base: "line with enough distinct letters")
-        let undecided = boundary.suffix(for: "distinct")
-        #expect(undecided.visible == "")
-        #expect(undecided.pending == "distinct")
+        let undecided = boundary.suffix(for: "line with")
+        #expect(undecided.visible.isEmpty)
+        #expect(undecided.pending == "line with")
+        let diverged = boundary.suffix(for: "line with more")
+        #expect(diverged.visible == "line with more")
+        #expect(diverged.pending == nil)
+        #expect(boundary.suffix(for: "line with more text").visible == "line with more text")
     }
 
     @Test @MainActor func staleExpirationCannotCancelTheNextAttemptOnTheSameReply() async throws {

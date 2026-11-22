@@ -51,16 +51,16 @@ extension ChatMessage {
     }
 }
 
-/// Only the boundary of the new request can be removed. Never normalize
-/// Markdown, whitespace, or the bytes of the saved reply.
+/// Only a substantial full replay of the saved reply can be removed. Never
+/// strip a partial tail match or normalize the bytes of the saved reply.
 struct ChatContinuationBoundary {
-    private let tail: [UInt8]
     private var fullReply: String?
     private var confirmedOverlap: Int?
 
     init(base: String) {
-        tail = Array(base.utf8.suffix(1024))
-        fullReply = base.utf8.count > tail.count ? base : nil
+        let isSubstantial = base.utf8.count >= 16
+            && base.lazy.filter({ $0.isLetter || $0.isNumber }).prefix(6).count == 6
+        fullReply = isSubstantial ? base : nil
     }
 
     /// The second value is the literal text to preserve if the stream ends
@@ -76,29 +76,8 @@ struct ChatContinuationBoundary {
             if fullReply.utf8.starts(with: snapshot.utf8) { return ("", snapshot) }
             self.fullReply = nil
         }
-        let prefix = Array(snapshot.utf8.prefix(tail.count))
-        var possibleLongerMatch = false
-        var overlap = 0
-        for start in tail.indices {
-            let candidate = tail[start...]
-            // Short words, indentation and fence delimiters are commonly
-            // intentional repetitions. Only discard substantial exact text.
-            guard candidate.count >= 16, tail[start] & 0xc0 != 0x80,
-                  candidate.prefix(prefix.count).elementsEqual(prefix.prefix(candidate.count))
-            else { continue }
-            let literal = String(decoding: candidate, as: UTF8.self)
-            guard literal.lazy.filter({ $0.isLetter || $0.isNumber }).prefix(6).count == 6 else { continue }
-            if candidate.count > prefix.count {
-                possibleLongerMatch = true
-            } else {
-                overlap = candidate.count
-                break
-            }
-        }
-        let suffix = dropping(overlap, from: snapshot)
-        if possibleLongerMatch { return ("", suffix) }
-        confirmedOverlap = overlap
-        return (suffix, nil)
+        confirmedOverlap = 0
+        return (snapshot, nil)
     }
 
     private func dropping(_ count: Int, from text: String) -> String {
