@@ -257,6 +257,7 @@ private struct UITestChatModelCatalog: ChatModelCatalog {
 /// An optional test scenario with an observable boundary between reasoning and answer.
 @MainActor @Observable private final class GatedUITestChatEngine: ChatEngine, ChatBackgroundRunner {
     private var current: AsyncThrowingStream<ChatEngineEvent, any Error>.Continuation?
+    private var currentID: UUID?
     private(set) var generation = 0
     private var paragraphs: [String] = []
     private var expiration: (@MainActor @Sendable () -> Void)?
@@ -264,22 +265,23 @@ private struct UITestChatModelCatalog: ChatModelCatalog {
 
     nonisolated func stream(_ request: ChatEngineRequest) -> AsyncThrowingStream<ChatEngineEvent, any Error> {
         AsyncThrowingStream { continuation in
+            let id = UUID()
             let task = Task { @MainActor in
                 guard !Task.isCancelled else { return }
                 generation += 1
-                let id = generation
+                currentID = id
                 current = continuation
                 paragraphs = []
                 continuation.yield(.snapshot(text: "", reasoning: "可见推理片段"))
-                do {
-                    try await Task.sleep(for: .seconds(120))
-                    continuation.finish(throwing: URLError(.timedOut))
-                } catch {
-                    continuation.finish(throwing: CancellationError())
-                }
-                if generation == id { current = nil }
             }
-            continuation.onTermination = { _ in task.cancel() }
+            continuation.onTermination = { [weak self] _ in
+                task.cancel()
+                Task { @MainActor in
+                    guard let self, self.currentID == id else { return }
+                    self.current = nil
+                    self.currentID = nil
+                }
+            }
         }
     }
 
