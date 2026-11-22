@@ -160,13 +160,16 @@ public struct ChatConversation: Identifiable, Codable, Equatable, Sendable {
 }
 
 /// Continuing a conversation on a server other than the one its history was
-/// sent to. Sending requires explicit confirmation of what will be transmitted.
+/// sent to. Sending requires passing this bound token back so a destination or
+/// credential change while the confirmation is on screen cannot slip through.
 public struct ChatServerChange: Equatable, Sendable {
+    public let conversationID: UUID
     /// `nil` when the conversation predates server binding.
     public let previousServerIdentifier: String?
     public let currentServerIdentifier: String
     public let messageCount: Int
     public let imageCount: Int
+    let credentialRevision: UInt64
 }
 
 public struct ChatMemoryItem: Identifiable, Codable, Equatable, Sendable {

@@ -221,13 +221,13 @@ public final class ChatWorkspaceModel {
 
     private func deleteStoredKey(for server: CPAServer, unbindAfterSuccess: Bool) async throws {
         let previousState = credentialState
+        let previousModelListState = modelListState
         let revision: UInt64?
         if self.server == server {
             advanceCredentialRevision()
             revision = credentialRevision
             credentialState = .loading
             keyRemovalFailed = false
-            modelListState = models.isEmpty ? .idle : .loaded
         } else {
             revision = nil
         }
@@ -239,6 +239,7 @@ public final class ChatWorkspaceModel {
             if let revision, revision == credentialRevision {
                 keyRemovalFailed = true
                 credentialState = previousState == .loading ? .failed(storageError(error)) : previousState
+                modelListState = previousModelListState == .loading ? .idle : previousModelListState
             }
             throw storageError(error)
         }
@@ -432,11 +433,16 @@ public final class ChatWorkspaceModel {
         conversations.first(where: { $0.id == id })
     }
 
-    /// Reuses an existing empty conversation instead of stacking up new ones.
+    /// Reuses an existing empty conversation instead of stacking up new ones,
+    /// resetting per-conversation settings so nothing leaks across servers.
     @discardableResult
     public func createConversation() -> UUID {
         if let index = conversations.firstIndex(where: { $0.messages.isEmpty && generationTasks[$0.id] == nil }) {
             var reused = conversations.remove(at: index)
+            reused.title = ""
+            reused.systemPrompt = ""
+            reused.reasoningEffort = .automatic
+            reused.isWebSearchEnabled = false
             reused.serverIdentifier = server?.identifier
             reused.modelID = defaultModelID
             reused.updatedAt = Date()
@@ -565,10 +571,26 @@ public final class ChatWorkspaceModel {
               !conversation.messages.isEmpty,
               conversation.serverIdentifier != server.identifier else { return nil }
         return ChatServerChange(
+            conversationID: conversationID,
             previousServerIdentifier: conversation.serverIdentifier,
             currentServerIdentifier: server.identifier,
             messageCount: conversation.messages.count,
-            imageCount: conversation.messages.reduce(0) { $0 + $1.attachments.count })
+            imageCount: conversation.messages.reduce(0) { $0 + $1.attachments.count },
+            credentialRevision: credentialRevision)
+    }
+
+    private func isServerChangeAllowed(for conversationID: UUID,
+                                       confirming confirmation: ChatServerChange?) -> Bool {
+        if let confirmation {
+            guard confirmation.conversationID == conversationID,
+                  confirmation.currentServerIdentifier == server?.identifier,
+                  isCurrent(confirmation.credentialRevision) else { return false }
+            if let current = serverChange(for: conversationID) {
+                return confirmation.previousServerIdentifier == current.previousServerIdentifier
+            }
+            return true
+        }
+        return serverChange(for: conversationID) == nil
     }
 
     /// Why a rerun (regenerate / edit and resend) cannot start right now.
@@ -580,14 +602,14 @@ public final class ChatWorkspaceModel {
     }
 
     /// Returns `false` without changing anything when the conversation belongs
-    /// to another server and `confirmingServerChange` is not set.
+    /// to another server and no matching `ChatServerChange` confirmation is supplied.
     @discardableResult
     public func send(_ text: String, attachments: [ChatImageAttachment], in conversationID: UUID,
-                     confirmingServerChange: Bool = false) -> Bool {
+                     confirmingServerChange confirmation: ChatServerChange? = nil) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !attachments.isEmpty,
               generationTasks[conversationID] == nil,
-              confirmingServerChange || serverChange(for: conversationID) == nil,
+              isServerChangeAllowed(for: conversationID, confirming: confirmation),
               let conversation = self.conversation(conversationID) else { return false }
         startGeneration(text: text, attachments: attachments, conversation: conversation)
         return true
@@ -632,10 +654,11 @@ public final class ChatWorkspaceModel {
     }
 
     @discardableResult
-    public func continueReply(_ target: ChatContinuation, confirmingServerChange: Bool = false) -> Bool {
+    public func continueReply(_ target: ChatContinuation,
+                              confirmingServerChange confirmation: ChatServerChange? = nil) -> Bool {
         let id = target.conversationID
         guard continuation(for: id) == target,
-              confirmingServerChange || serverChange(for: id) == nil else { return false }
+              isServerChangeAllowed(for: id, confirming: confirmation) else { return false }
         schedule(in: id) { attemptID in
             await self.performContinuation(target, attemptID: attemptID)
         }
@@ -677,8 +700,8 @@ public final class ChatWorkspaceModel {
         if target.isRetry, sources.isEmpty, conversation.isWebSearchEnabled {
             let query = ChatPromptBuilder.applySkill(to: question.text, skills: skills).rest
             sources = await performSearch(query, enabled: true, assistantID: saved.id,
-                                          in: id, revision: target.revision)
-            guard isCurrent(target.revision) else {
+                                          in: id, revision: target.revision, attemptID: attemptID)
+            guard isCurrent(target.revision), generationTasks[id]?.id == attemptID else {
                 finishAborted(assistantID: saved.id, in: id)
                 if let updated = self.conversation(id) {
                     await persist(updated).value
@@ -713,8 +736,8 @@ public final class ChatWorkspaceModel {
     /// rerun that cannot start never deletes anything.
     @discardableResult
     public func regenerate(_ assistantMessageID: UUID, in conversationID: UUID,
-                           confirmingServerChange: Bool = false) -> Bool {
-        guard canRerun(conversationID, confirmingServerChange: confirmingServerChange),
+                           confirmingServerChange confirmation: ChatServerChange? = nil) -> Bool {
+        guard canRerun(conversationID, confirmingServerChange: confirmation),
               var conversation = self.conversation(conversationID),
               let index = conversation.messages.firstIndex(where: { $0.id == assistantMessageID }),
               conversation.messages[index].role == .assistant,
@@ -729,10 +752,10 @@ public final class ChatWorkspaceModel {
     /// Replaces the user message text, drops everything after it, then reruns.
     @discardableResult
     public func editAndResend(_ userMessageID: UUID, text: String, in conversationID: UUID,
-                              confirmingServerChange: Bool = false) -> Bool {
+                              confirmingServerChange confirmation: ChatServerChange? = nil) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
-              canRerun(conversationID, confirmingServerChange: confirmingServerChange),
+              canRerun(conversationID, confirmingServerChange: confirmation),
               var conversation = self.conversation(conversationID),
               let index = conversation.messages.firstIndex(where: { $0.id == userMessageID }),
               conversation.messages[index].role == .user else { return false }
@@ -743,10 +766,10 @@ public final class ChatWorkspaceModel {
         return true
     }
 
-    private func canRerun(_ conversationID: UUID, confirmingServerChange: Bool) -> Bool {
+    private func canRerun(_ conversationID: UUID, confirmingServerChange confirmation: ChatServerChange?) -> Bool {
         generationTasks[conversationID] == nil
             && generationBlocker(for: conversationID) == nil
-            && (confirmingServerChange || serverChange(for: conversationID) == nil)
+            && isServerChangeAllowed(for: conversationID, confirming: confirmation)
     }
 
     public func deleteMessage(_ id: UUID, in conversationID: UUID) {
@@ -839,10 +862,11 @@ public final class ChatWorkspaceModel {
         // Optional web search injection. Cancellation mid-search ends the turn
         // below without marking the message as a search failure.
         let sources = await performSearch(strippedText, enabled: conversation.isWebSearchEnabled,
-                                          assistantID: assistantID, in: conversationID, revision: revision)
+                                          assistantID: assistantID, in: conversationID,
+                                          revision: revision, attemptID: attemptID)
 
         // Cancelled during the search step: end per stop reason, no engine call.
-        if !isCurrent(revision) {
+        if !isCurrent(revision) || generationTasks[conversationID]?.id != attemptID {
             finishAborted(assistantID: assistantID, in: conversationID)
             if let updated = self.conversation(conversationID) {
                 await persist(updated).value
@@ -877,30 +901,38 @@ public final class ChatWorkspaceModel {
     }
 
     private func performSearch(_ query: String, enabled: Bool, assistantID: UUID,
-                               in conversationID: UUID, revision: UInt64) async -> [ChatSearchSource] {
+                               in conversationID: UUID, revision: UInt64,
+                               attemptID: UUID) async -> [ChatSearchSource] {
         var sources: [ChatSearchSource] = []
         var searchKey: (provider: ChatSearchProvider, key: String)?
-        if enabled, let provider = settings.searchProvider,
-           let key = try? await secrets.loadSecret(account: ChatSecrets.searchKeyAccount(for: provider)),
-           !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            searchKey = (provider, key)
-        } else if enabled, isCurrent(revision) {
+        if enabled, let provider = settings.searchProvider {
+            let loaded = try? await secrets.loadSecret(account: ChatSecrets.searchKeyAccount(for: provider))
+            guard isCurrent(revision), generationTasks[conversationID]?.id == attemptID else { return [] }
+            if let loaded, !loaded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                searchKey = (provider, loaded)
+            } else {
+                // Web search is on but cannot run: say so on the reply instead of answering silently without it.
+                mutateAssistant(assistantID, in: conversationID) { $0.failure = .searchNotConfigured }
+            }
+        } else if enabled, isCurrent(revision), generationTasks[conversationID]?.id == attemptID {
             // Web search is on but cannot run: say so on the reply instead of answering silently without it.
             mutateAssistant(assistantID, in: conversationID) { $0.failure = .searchNotConfigured }
         }
         if let provider = searchKey?.provider, let key = searchKey?.key {
+            guard isCurrent(revision), generationTasks[conversationID]?.id == attemptID else { return [] }
             do {
-                sources = try await searchClient(provider).search(query, apiKey: key)
+                let fetched = try await searchClient(provider).search(query, apiKey: key)
+                guard isCurrent(revision), generationTasks[conversationID]?.id == attemptID else { return [] }
+                sources = fetched
                 if !sources.isEmpty {
                     mutateAssistant(assistantID, in: conversationID) {
                         $0.searchSources = sources
                     }
                 }
             } catch {
-                if !Task.isCancelled {
-                    mutateAssistant(assistantID, in: conversationID) {
-                        $0.failure = .searchFailed
-                    }
+                guard isCurrent(revision), generationTasks[conversationID]?.id == attemptID else { return [] }
+                mutateAssistant(assistantID, in: conversationID) {
+                    $0.failure = .searchFailed
                 }
             }
         }

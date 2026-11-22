@@ -91,4 +91,50 @@ struct ChatSessionBindingTests {
         #expect(session.authState == .unconfigured)
         #expect(try await secrets.loadSecret(account: ChatSecrets.clientAPIKeyAccount(for: server)) == nil)
     }
+
+    @Test func failedCandidateConnectionPreservesAcceptedChatWorkspaceAndEphemeralKey() async throws {
+        let accepted = try CPAServer(baseURL: "https://accepted.example")
+        let candidate = try CPAServer(baseURL: "https://candidate.example")
+        let engine = FakeChatEngine()
+        engine.respond(with: [.snapshot(text: "streaming", reasoning: nil)])
+        engine.block()
+        let chat = ChatWorkspaceModel(
+            persistence: ChatMemoryPersistence(),
+            secrets: MemorySecretStore(),
+            engine: engine,
+            modelCatalog: { _, _ in FakeModelCatalog(result: .success([CPAModel(id: "test-model")])) })
+        let acceptedTransport = try ScenarioTransport(accounts: [FixtureAccount("a")])
+        let failingTransport = StubHTTPTransport()
+        await failingTransport.respond("/v0/management/auth-files", status: 401, body: #"{"error":"unauthorized"}"#)
+        let session = CPAQuotaSession(
+            credentialStore: MemoryCredentialStore(),
+            preferences: MemoryPreferencesStore(),
+            clientFactory: { server, key in
+                let transport: any HTTPTransport = server == accepted ? acceptedTransport : failingTransport
+                return CPAClient(server: server, managementKey: key, transport: transport)
+            },
+            chatWorkspace: chat)
+
+        await session.connect(serverAddress: accepted.identifier, managementKeyInput: "fixture-key-a",
+                              rememberInKeychain: false)
+        let bound = await waitUntil { chat.server == accepted && chat.credentialState != .loading }
+        #expect(bound)
+        #expect(await chat.useManualKey("ephemeral-client-key-0001"))
+        let conversationID = chat.createConversation()
+        #expect(chat.send("keep running", attachments: [], in: conversationID))
+        let running = await waitUntil { chat.isGenerating(conversationID) }
+        #expect(running)
+
+        // Attempting to switch to a failing candidate must not unbind or abort the accepted chat session.
+        await session.connect(serverAddress: candidate.identifier, managementKeyInput: "fixture-key-b",
+                              rememberInKeychain: true)
+        #expect(session.authState == .connected(server: accepted, isRememberedInKeychain: false))
+        #expect(chat.server == accepted)
+        #expect(chat.credentialState == .ready(hint: "••••0001", isManual: true))
+        #expect(chat.isGenerating(conversationID))
+
+        chat.stop(conversationID)
+        let stopped = await waitUntil { !chat.isGenerating(conversationID) }
+        #expect(stopped)
+    }
 }

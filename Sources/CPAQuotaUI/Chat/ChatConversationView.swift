@@ -68,7 +68,7 @@ struct ChatConversationView: View {
             presenting: pendingConfirmation
         ) { confirmation in
             Button(confirmation.confirmTitle, role: confirmation.isDestructive ? .destructive : nil) {
-                perform(confirmation.action, confirmingServerChange: true)
+                perform(confirmation.action, serverChange: confirmation.serverChange)
             }
             Button("取消", role: .cancel) {}
         } message: { confirmation in
@@ -210,7 +210,7 @@ struct ChatConversationView: View {
             parts.append("上一请求使用「\(previous)」，本次将使用「\(target.modelID)」。")
         }
         guard change != nil || removed > 0 || replacesInterrupted || !parts.isEmpty else {
-            perform(action, confirmingServerChange: false)
+            perform(action, serverChange: nil)
             return
         }
         if replacesInterrupted { parts.append("将发送一次新的生成请求并替换这条中断的回复，可能产生新的用量。") }
@@ -227,28 +227,29 @@ struct ChatConversationView: View {
         if case .continueReply = action { isContinuation = true } else { isContinuation = false }
         pendingConfirmation = PendingConfirmation(
             action: action,
+            serverChange: change,
             title: change != nil ? "在当前服务继续这段对话？" : (removed > 0 ? "删除后续消息并重新生成？" : (isContinuation ? "使用当前模型继续？" : "替换中断的回复？")),
             message: parts.joined(separator: "\n"),
             confirmTitle: change != nil ? "继续发送" : (removed > 0 ? "删除并重新生成" : (isContinuation ? "继续生成" : "确认重新生成")),
             isDestructive: removed > 0)
     }
 
-    private func perform(_ action: PendingAction, confirmingServerChange: Bool) {
+    private func perform(_ action: PendingAction, serverChange: ChatServerChange?) {
         switch action {
         case .send(let text, let images):
             guard chat.send(text, attachments: images, in: conversationID,
-                            confirmingServerChange: confirmingServerChange) else { return }
+                            confirmingServerChange: serverChange) else { return }
             draft = ""
             attachments = []
         case .edit(let messageID, let text):
             guard chat.editAndResend(messageID, text: text, in: conversationID,
-                                     confirmingServerChange: confirmingServerChange) else { return }
+                                     confirmingServerChange: serverChange) else { return }
             endEditing()
         case .continueReply(let target):
             guard draft.isEmpty, attachments.isEmpty, editingMessageID == nil else { return }
-            chat.continueReply(target, confirmingServerChange: confirmingServerChange)
+            chat.continueReply(target, confirmingServerChange: serverChange)
         case .regenerate(let messageID):
-            chat.regenerate(messageID, in: conversationID, confirmingServerChange: confirmingServerChange)
+            chat.regenerate(messageID, in: conversationID, confirmingServerChange: serverChange)
         }
     }
 
@@ -321,6 +322,7 @@ private enum PendingAction {
 
 private struct PendingConfirmation {
     let action: PendingAction
+    let serverChange: ChatServerChange?
     let title: String
     let message: String
     let confirmTitle: String

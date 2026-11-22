@@ -418,24 +418,39 @@ public final class CPAQuotaSession {
     }
 
     @ObservationIgnored private var chatBindingTask: Task<Void, Never>?
+    @ObservationIgnored private var boundChatTarget: (server: CPAServer, remembered: Bool)?
 
     public private(set) var authState: AuthState = .unconfigured {
         didSet {
-            let bound: (server: CPAServer, remembered: Bool)? =
-                if case .connected(let server, let remembered) = authState { (server, remembered) } else { nil }
-            let previous: (server: CPAServer, remembered: Bool)? =
-                if case .connected(let server, let remembered) = oldValue { (server, remembered) } else { nil }
-            guard bound?.server != previous?.server || bound?.remembered != previous?.remembered else { return }
-            chatBindingTask?.cancel()
-            chatWorkspace.unbind()
-            guard let bound else { return }
-            let boundServer = bound.server
-            let chatWorkspace = self.chatWorkspace
-            // An unremembered connection keeps its chat client key in memory only.
-            chatBindingTask = Task {
-                await chatWorkspace.bind(server: boundServer, persistsKey: bound.remembered) { [weak self] in
-                    await self?.makeAPIKeyDiscovery(for: boundServer)
-                }
+            reconcileChatWorkspaceBinding()
+        }
+    }
+
+    private func reconcileChatWorkspaceBinding() {
+        let target: (server: CPAServer, remembered: Bool)?
+        switch authState {
+        case .connecting:
+            // Preserve the accepted chat workspace, active stream, and ephemeral
+            // client key while a candidate connection is still being validated.
+            return
+        case .connected(let server, let remembered):
+            target = (server, remembered)
+        case .unconfigured:
+            target = nil
+        }
+        guard target?.server != boundChatTarget?.server || target?.remembered != boundChatTarget?.remembered else {
+            return
+        }
+        boundChatTarget = target
+        chatBindingTask?.cancel()
+        chatWorkspace.unbind()
+        guard let target else { return }
+        let boundServer = target.server
+        let chatWorkspace = self.chatWorkspace
+        // An unremembered connection keeps its chat client key in memory only.
+        chatBindingTask = Task {
+            await chatWorkspace.bind(server: boundServer, persistsKey: target.remembered) { [weak self] in
+                await self?.makeAPIKeyDiscovery(for: boundServer)
             }
         }
     }
