@@ -832,7 +832,9 @@ final class CPAQuotaAppUITests: XCTestCase {
         element("chat.send", in: app).tap()
         element("ui-test.chat.release", in: app).tap()
         expectExists(textContaining("放行后的正文", in: app), in: app)
-        app.navigationBars.buttons.element(boundBy: 0).tap()
+        let backButton = element("BackButton", in: app)
+        expectExists(backButton, in: app)
+        backButton.tap()
         element("chat.new", in: app).tap()
         XCTAssertTrue(element("chat.modelMenu", in: app).label.contains("fixture-chat-alternate"))
         app.terminate()
@@ -914,9 +916,9 @@ final class CPAQuotaAppUITests: XCTestCase {
         XCTAssertFalse(second.exists)
         first.tap()
         let web = app.webViews.firstMatch
-        let start = web.staticTexts["First fragment"]
-        let end = web.staticTexts["First fixture end"]
-        expectExists(start, in: app)
+        let start = app.webViews.staticTexts["First fragment"].firstMatch
+        let end = app.webViews.staticTexts["First fixture end"].firstMatch
+        expectExists(start, in: app, timeout: 15)
         web.swipeUp()
         let y = end.frame.midY
         XCTAssertTrue(web.frame.contains(CGPoint(x: end.frame.midX, y: y)))
@@ -924,18 +926,19 @@ final class CPAQuotaAppUITests: XCTestCase {
         let result = await XCTWaiter.fulfillment(of: [released], timeout: 10)
         XCTAssertEqual(result, .completed)
         XCTAssertEqual(end.frame.midY, y, accuracy: 5)
-        XCTAssertFalse(web.staticTexts["Second fragment"].exists)
+        XCTAssertFalse(app.webViews.staticTexts["Second fragment"].exists)
         app.buttons["源码"].tap()
         expectExists(textContaining("<p style=", in: app), in: app)
         app.buttons["刷新"].tap()
-        expectExists(start, in: app)
+        expectExists(start, in: app, timeout: 15)
         XCTAssertTrue(web.frame.contains(CGPoint(x: start.frame.midX, y: start.frame.minY + 2)))
         app.buttons["关闭"].tap()
         reveal(second, in: app)
         XCTAssertFalse(element("chat.html.snippet.3", in: app).exists)
         second.tap()
-        expectExists(web.staticTexts["Second fragment"], in: app)
-        XCTAssertFalse(web.staticTexts["First fragment"].exists)
+        let secondFragment = app.webViews.staticTexts["Second fragment"].firstMatch
+        expectExists(secondFragment, in: app, timeout: 15)
+        XCTAssertFalse(app.webViews.staticTexts["First fragment"].exists)
         app.buttons["源码"].tap()
         app.buttons["复制源码"].tap()
         app.buttons["关闭"].tap()
@@ -962,12 +965,13 @@ final class CPAQuotaAppUITests: XCTestCase {
         let second = element("chat.html.snippet.2", in: app)
         reveal(second, in: app)
         second.tap()
-        expectExists(app.webViews.staticTexts["Second fragment"], in: app)
+        let secondFragment = app.webViews.staticTexts["Second fragment"].firstMatch
+        expectExists(secondFragment, in: app, timeout: 15)
         _ = await rotateDeviceAndWaitForWindow(in: app, policy: layoutPolicy(in: app))
         app.buttons["源码"].tap()
         expectExists(textContaining("<p>Second fragment</p>", in: app), in: app)
         app.buttons["预览"].tap()
-        expectExists(app.webViews.staticTexts["Second fragment"], in: app)
+        expectExists(secondFragment, in: app, timeout: 15)
         attach(app, name: "html-preview-dark-landscape")
         app.buttons["关闭"].tap()
         expectExists(input, in: app)
@@ -1173,12 +1177,24 @@ final class CPAQuotaAppUITests: XCTestCase {
         let before = hasAnchor ? anchor.frame : .null
         let preferredX = hasAnchor ? before.minX + 4 : viewport.midX
         let x = min(max(preferredX, viewport.minX + 8), viewport.maxX - 8) - context.containerFrame.minX
-        let top = viewport.minY + viewport.height * 0.375 - context.containerFrame.minY
-        let bottom = viewport.minY + viewport.height * 0.625 - context.containerFrame.minY
+        let targetDistance = targetFrame.isEmpty || targetFrame.isNull
+            ? nil
+            : abs(targetFrame.midY - viewport.midY)
+        let usesPreciseScroll = targetDistance.map { $0 < viewport.height * 0.75 } ?? false
+        let dragDistance = usesPreciseScroll
+            ? min(viewport.height * 0.25, max(40, (targetDistance ?? 0) * 0.2))
+            : viewport.height * 0.25
+        let centerY = viewport.minY + viewport.height * 0.35
+        let top = centerY - dragDistance / 2 - context.containerFrame.minY
+        let bottom = centerY + dragDistance / 2 - context.containerFrame.minY
         let origin = container.coordinate(withNormalizedOffset: .zero)
         let start = origin.withOffset(CGVector(dx: x, dy: upward ? bottom : top))
         let end = origin.withOffset(CGVector(dx: x, dy: upward ? top : bottom))
-        start.press(forDuration: 0.05, thenDragTo: end)
+        if usesPreciseScroll {
+            start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0)
+        } else {
+            start.press(forDuration: 0.05, thenDragTo: end)
+        }
         let after = anchor.exists ? anchor.frame : .null
         let afterExists = target.exists
         let afterFrame = afterExists ? target.frame : .null
