@@ -150,6 +150,8 @@ struct ChatConversationView: View {
                         onSubmit: { submit(in: conversation) }
                     )
                 }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("chat.composer")
             }
         }
         .onChange(of: conversation.messages.last.map { "\($0.id)|\($0.status.rawValue)" }) { old, _ in
@@ -499,13 +501,18 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
                         geometry.contentSize.height + geometry.contentInsets.bottom - geometry.containerSize.height
                     )
                     let distance = max(0, maxOffsetY - geometry.contentOffset.y)
-                    return ScrollMetrics(contentHeight: geometry.contentSize.height, distanceFromBottom: distance)
+                    return ScrollMetrics(
+                        contentHeight: geometry.contentSize.height,
+                        bottomInset: geometry.contentInsets.bottom,
+                        distanceFromBottom: distance
+                    )
                 } action: { oldValue, newValue in
                     distanceFromBottom = newValue.distanceFromBottom
                     if isUserScrolling {
                         isPinnedToBottom = newValue.distanceFromBottom <= 24
-                    } else if isPinnedToBottom, isGenerating,
-                              newValue.contentHeight > oldValue.contentHeight + 1,
+                    } else if isPinnedToBottom,
+                              (newValue.contentHeight > oldValue.contentHeight + 1
+                               || newValue.bottomInset > oldValue.bottomInset + 1),
                               newValue.distanceFromBottom > 1 {
                         proxy.scrollTo(bottomAnchor, anchor: .bottom)
                     }
@@ -521,6 +528,7 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
 
     private struct ScrollMetrics: Equatable, Sendable {
         let contentHeight: CGFloat
+        let bottomInset: CGFloat
         let distanceFromBottom: CGFloat
     }
 }
