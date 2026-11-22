@@ -336,6 +336,7 @@ public final class ChatWorkspaceModel {
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     private var generationTasks: [UUID: Task<Void, Never>] = [:]
     private var stopReasons: [UUID: StopReason] = [:]
+    public private(set) var unsavedConversations = Set<UUID>()
     private var titleTasks: [UUID: Task<Void, Never>] = [:]
 
     private enum StopReason {
@@ -555,7 +556,7 @@ public final class ChatWorkspaceModel {
     }
 
     public func stop(_ conversationID: UUID) {
-        guard generationTasks[conversationID] != nil else { return }
+        guard generationTasks[conversationID] != nil, stopReasons[conversationID] == nil else { return }
         stopReasons[conversationID] = .userStopped
         generationTasks[conversationID]?.cancel()
     }
@@ -686,7 +687,9 @@ public final class ChatWorkspaceModel {
 
         let baseURL = server.baseURL.appendingPathComponent("v1")
         let token = backgroundRunner.beginTask { [weak self] in
-            guard let self else { return }
+            guard let self, self.stopReasons[conversationID] == nil,
+                  self.conversation(conversationID)?.messages.last?.id == assistantID,
+                  self.conversation(conversationID)?.messages.last?.status == .streaming else { return }
             self.stopReasons[conversationID] = .backgroundExpired
             self.generationTasks[conversationID]?.cancel()
         }
@@ -893,7 +896,7 @@ public final class ChatWorkspaceModel {
     private var persistTail: Task<Void, Never>?
 
     @discardableResult
-    private func enqueuePersist(_ work: @escaping @Sendable () async -> Void) -> Task<Void, Never> {
+    private func enqueuePersist(_ work: @escaping @MainActor @Sendable () async -> Void) -> Task<Void, Never> {
         let previous = persistTail
         let task = Task {
             await previous?.value
@@ -909,10 +912,15 @@ public final class ChatWorkspaceModel {
     private func persist(_ conversation: ChatConversation) -> Task<Void, Never> {
         let store = persistence
         return enqueuePersist {
-            if conversation.messages.isEmpty {
-                try? await store.removeConversation(conversation.id)
-            } else {
-                try? await store.saveConversation(conversation)
+            do {
+                if conversation.messages.isEmpty {
+                    try await store.removeConversation(conversation.id)
+                } else {
+                    try await store.saveConversation(conversation)
+                }
+                self.unsavedConversations.remove(conversation.id)
+            } catch {
+                self.unsavedConversations.insert(conversation.id)
             }
         }
     }

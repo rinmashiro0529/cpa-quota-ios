@@ -618,6 +618,63 @@ final class CPAQuotaAppUITests: XCTestCase {
     }
 
     @MainActor
+    private func startCheckpointScenario(_ app: XCUIApplication) {
+        selectTab("chat", title: "AI 对话", in: app)
+        element("chat.emptyNew", in: app).tap()
+        let input = element("chat.input", in: app)
+        input.tap()
+        input.typeText("B4")
+        element("chat.send", in: app).tap()
+        let checkpoint = element("ui-test.chat.checkpoint", in: app)
+        expectExists(checkpoint, in: app)
+        checkpoint.tap()
+        expectExists(app.staticTexts["生成请求 1，已写块 1"], in: app)
+    }
+
+    @MainActor
+    func testInterruptedGenerationRestoresWrittenCheckpointWithoutRequest() {
+        let arguments = ["--ui-test-chat-gate", "--ui-test-chat-store=\(UUID().uuidString)"]
+        let first = launch(connected: true, arguments: arguments)
+        startCheckpointScenario(first)
+        first.terminate()
+        let reopened = launch(connected: true, arguments: arguments)
+        defer { reopened.terminate() }
+        selectTab("chat", title: "AI 对话", in: reopened)
+        let row = reopened.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "chat.conversation.")).firstMatch
+        expectExists(row, in: reopened)
+        row.tap()
+        expectExists(textContaining("保存片段一", in: reopened), in: reopened)
+        expectExists(textContaining("生成已中断", in: reopened), in: reopened)
+        textContaining("思考过程", in: reopened).tap()
+        expectExists(reopened.staticTexts["可见推理片段"], in: reopened)
+        XCTAssertFalse(element("chat.stop", in: reopened).exists)
+        XCTAssertTrue(element("ui-test.chat.counts", in: reopened).label.contains("生成请求 0"))
+    }
+
+    @MainActor
+    func testForegroundReturnAndExplicitExpiryKeepOneGeneration() {
+        let arguments = ["--ui-test-chat-gate", "--ui-test-chat-store=\(UUID().uuidString)"]
+        let app = launch(connected: true, arguments: arguments)
+        defer { app.terminate() }
+        startCheckpointScenario(app)
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertTrue(element("chat.stop", in: app).exists)
+        element("ui-test.chat.expire", in: app).tap()
+        expectExists(textContaining("后台生成已中断", in: app), in: app)
+        expectExists(textContaining("保存片段一", in: app), in: app)
+        let regenerate = element("chat.regenerate", in: app)
+        reveal(regenerate, in: app)
+        regenerate.tap()
+        app.buttons["取消"].tap()
+        XCTAssertTrue(element("ui-test.chat.counts", in: app).label.contains("生成请求 1"))
+        regenerate.tap()
+        app.buttons["确认重新生成"].tap()
+        expectExists(element("chat.stop", in: app), in: app)
+        XCTAssertTrue(element("ui-test.chat.counts", in: app).label.contains("生成请求 2"))
+    }
+
+    @MainActor
     private func element(_ identifier: String, in app: XCUIApplication) -> XCUIElement {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
     }

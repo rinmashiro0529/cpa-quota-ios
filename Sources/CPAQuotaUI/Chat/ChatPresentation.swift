@@ -82,12 +82,12 @@ public struct ChatFailurePresentation: Equatable, Sendable {
             severity = .neutral
         case .interruptedInBackground:
             title = "后台生成已中断"
-            summary = "应用在后台的可用时间已用完，已保存中断前生成的内容。可以重新生成。"
+            summary = "系统分配的后台时间已用完。重新生成会发送新请求并替换这条回复。"
             symbolName = "moon.zzz"
             severity = .neutral
         case .generationInterrupted:
             title = "生成已中断"
-            summary = "应用在生成过程中被关闭，已保存中断前生成的内容。可以重新生成。"
+            summary = "上次生成未完成，以下为本机恢复的内容。重新生成会发送新请求并替换这条回复。"
             symbolName = "pause.circle"
             severity = .neutral
         }

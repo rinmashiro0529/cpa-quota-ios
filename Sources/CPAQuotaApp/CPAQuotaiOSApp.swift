@@ -66,6 +66,8 @@ private struct UITestWorkspace: View {
     private let usesLargeText = ProcessInfo.processInfo.arguments.contains("--ui-test-large-text")
     private let usesChatGate = ProcessInfo.processInfo.arguments.contains("--ui-test-chat-gate")
     @State private var gatedChat = GatedUITestChatEngine()
+    @State private var chatFiles: ChatFilePersistence?
+    @State private var checkpointOnDisk = false
 
     var body: some View {
         Group {
@@ -74,8 +76,33 @@ private struct UITestWorkspace: View {
                     .environment(\.dynamicTypeSize, usesLargeText ? .accessibility5 : .large)
                     .safeAreaInset(edge: .bottom) {
                         if usesChatGate, gatedChat.isWaiting {
+                            if chatFiles != nil {
+                                HStack {
+                                    Button("写入片段") { gatedChat.checkpoint() }
+                                        .accessibilityIdentifier("ui-test.chat.checkpoint")
+                                    Button("触发过期") { gatedChat.expire() }
+                                        .accessibilityIdentifier("ui-test.chat.expire")
+                                }
+                            }
                             Button("放行正文") { gatedChat.releaseAnswer() }
                                 .accessibilityIdentifier("ui-test.chat.release")
+                        }
+                        if usesChatGate, chatFiles != nil {
+                            Text("生成请求 \(gatedChat.generation)，已写块 \(checkpointOnDisk ? 1 : 0)")
+                                .accessibilityIdentifier("ui-test.chat.counts")
+                                .task(id: gatedChat.generation) {
+                                    guard gatedChat.generation > 0, let chatFiles else { return }
+                                    checkpointOnDisk = false
+                                    let deadline = ContinuousClock.now + .seconds(90)
+                                    while !Task.isCancelled && ContinuousClock.now < deadline {
+                                        if let records = try? await chatFiles.loadConversations(),
+                                           records.contains(where: { $0.messages.last?.text == "保存片段一" && $0.messages.last?.status == .streaming }) {
+                                            checkpointOnDisk = true
+                                            return
+                                        }
+                                        try? await Task.sleep(for: .milliseconds(100))
+                                    }
+                                }
                         }
                         // Do not change the presenting workspace's safe area
                         // while the real connection sheet is being dismissed.
@@ -134,6 +161,16 @@ private struct UITestWorkspace: View {
             let directory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("CPAQuotaUITest-\(UUID().uuidString)", isDirectory: true)
             let slowResponse = slowResponse
+            let storeArgument = ProcessInfo.processInfo.arguments.first { $0.hasPrefix("--ui-test-chat-store=") }
+            if let storeArgument {
+                guard let id = UUID(uuidString: String(storeArgument.dropFirst("--ui-test-chat-store=".count))) else {
+                    preparationFailed = true
+                    return
+                }
+                let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                                       appropriateFor: nil, create: true)
+                chatFiles = ChatFilePersistence(directory: base.appendingPathComponent("ChatUITests/\(id.uuidString)"))
+            }
             session = CPAQuotaSession(
                 credentialStore: credentials,
                 preferences: preferences,
@@ -144,10 +181,12 @@ private struct UITestWorkspace: View {
                                                        slowResponse: slowResponse)
                 },
                 chatWorkspace: ChatWorkspaceModel(
-                    persistence: ChatMemoryPersistence(),
+                    persistence: chatFiles.map { $0 as any ChatPersistence } ?? ChatMemoryPersistence(),
                     secrets: MemorySecretStore(),
                     engine: usesChatGate ? gatedChat as any ChatEngine : UITestChatEngine(),
-                    modelCatalog: { _, _ in UITestChatModelCatalog() })
+                    modelCatalog: { _, _ in UITestChatModelCatalog() },
+                    backgroundRunner: usesChatGate ? gatedChat as any ChatBackgroundRunner : SystemChatBackgroundRunner(),
+                    streamingPersistInterval: chatFiles == nil ? .seconds(2) : .zero)
             )
         } catch {
             preparationFailed = true
@@ -162,9 +201,10 @@ private struct UITestChatModelCatalog: ChatModelCatalog {
 }
 
 /// An optional test scenario with an observable boundary between reasoning and answer.
-@MainActor @Observable private final class GatedUITestChatEngine: ChatEngine {
+@MainActor @Observable private final class GatedUITestChatEngine: ChatEngine, ChatBackgroundRunner {
     private var current: AsyncThrowingStream<ChatEngineEvent, any Error>.Continuation?
-    private var generation = 0
+    private(set) var generation = 0
+    private var expiration: (@MainActor @Sendable () -> Void)?
     var isWaiting: Bool { current != nil }
 
     nonisolated func stream(_ request: ChatEngineRequest) -> AsyncThrowingStream<ChatEngineEvent, any Error> {
@@ -176,7 +216,7 @@ private struct UITestChatModelCatalog: ChatModelCatalog {
                 current = continuation
                 continuation.yield(.snapshot(text: "", reasoning: "可见推理片段"))
                 do {
-                    try await Task.sleep(for: .seconds(45))
+                    try await Task.sleep(for: .seconds(120))
                     continuation.finish(throwing: URLError(.timedOut))
                 } catch {
                     continuation.finish(throwing: CancellationError())
@@ -192,6 +232,21 @@ private struct UITestChatModelCatalog: ChatModelCatalog {
         current?.finish()
         current = nil
     }
+
+    func checkpoint() {
+        current?.yield(.snapshot(text: "保存片段一", reasoning: "可见推理片段"))
+    }
+
+    func expire() { expiration?() }
+    func beginTask(expiration: @escaping @MainActor @Sendable () -> Void) -> ChatBackgroundToken {
+        self.expiration = expiration
+        return ChatBackgroundToken(rawValue: 1)
+    }
+    func endTask(_ token: ChatBackgroundToken) { expiration = nil }
+    var isAppInBackground: Bool { false }
+    func notifyCompletion(conversationID: UUID) async {}
+    func requestNotificationAuthorization() async -> Bool { false }
+    func notificationAuthorizationStatus() async -> ChatNotificationAuthorization { .denied }
 
     func complete(_ request: ChatEngineRequest) async throws -> String { "夹具对话" }
 }

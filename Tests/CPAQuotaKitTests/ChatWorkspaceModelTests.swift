@@ -91,11 +91,11 @@ final class FakeChatEngine: ChatEngine, @unchecked Sendable {
         let error = _streamError
         let blocks = _blockUntilCancelled
         return AsyncThrowingStream { continuation in
+            for event in events { continuation.yield(event) }
             if blocks {
                 continuation.onTermination = { _ in }
-                return // never yields; cancellation ends the consumer's iteration
+                return // keep the stream open after the configured snapshots
             }
-            for event in events { continuation.yield(event) }
             continuation.finish(throwing: error)
         }
     }
@@ -198,6 +198,8 @@ actor RecordingPersistence: ChatPersistence {
     }
 
     private(set) var operations: [Operation] = []
+    private var failsTerminalWrites = false
+    func failTerminalWrites() { failsTerminalWrites = true }
     private var storedConversations: [ChatConversation]
 
     init(seeded: [ChatConversation] = []) {
@@ -216,6 +218,9 @@ actor RecordingPersistence: ChatPersistence {
     func stored(_ id: UUID) -> ChatConversation? { storedConversations.first { $0.id == id } }
 
     func saveConversation(_ conversation: ChatConversation) async throws {
+        if failsTerminalWrites, conversation.messages.last?.status != .streaming {
+            throw ChatPersistenceError.storageFailure
+        }
         operations.append(.saveConversation(
             conversation.id,
             ConversationWrite(messageCount: conversation.messages.count,
@@ -751,6 +756,52 @@ struct ChatWorkspaceModelTests {
             await MainActor.run { !workspace.isGenerating(backgroundID) }
         }
         #expect(fixture.runner.notificationCount == 1)
+    }
+
+    @Test @MainActor func checkpointSurvivesFailedTerminalWrite() async throws {
+        let store = RecordingPersistence()
+        await store.failTerminalWrites()
+        let fixture = makeFixture(persistence: store, streamingPersistInterval: .zero)
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        fixture.workspace.settings.generatesTitles = false
+        fixture.engine.respond(with: [.snapshot(text: "T1", reasoning: "R1")])
+        fixture.engine.block()
+        let id = fixture.workspace.createConversation()
+        fixture.workspace.send("B5", attachments: [], in: id)
+        let written = await waitUntil { await store.stored(id)?.messages.last?.text == "T1" }
+        #expect(written)
+        fixture.runner.fireExpiration()
+        fixture.workspace.stop(id)
+        let ended = await waitUntil { await !fixture.workspace.isGenerating(id) }
+        #expect(ended)
+        #expect(fixture.workspace.conversation(id)?.messages.last?.failure == .interruptedInBackground)
+        #expect(fixture.workspace.unsavedConversations.contains(id))
+        let lastWrite = try #require(await store.stored(id)?.messages.last)
+        #expect(lastWrite.status == .streaming && lastWrite.reasoning == "R1")
+        #expect(fixture.runner.endedTokens.count == 1 && fixture.runner.notifications.isEmpty)
+        #expect(fixture.engine.streamRequests.count == 1)
+    }
+
+    @Test @MainActor func expiryAfterCompletionCannotReplaceTerminalState() async {
+        let fixture = makeFixture()
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        fixture.workspace.settings.generatesTitles = false
+        fixture.runner.inBackground = true
+        let gate = HeldDiscovery()
+        fixture.runner.waitAfterNotification = { await gate.wait() }
+        fixture.engine.respond(with: [.snapshot(text: "T1", reasoning: "R1")])
+        let id = fixture.workspace.createConversation()
+        fixture.workspace.send("B5", attachments: [], in: id)
+        let notified = await waitUntil { await gate.hasStarted }
+        #expect(notified)
+        fixture.runner.fireExpiration()
+        await gate.release()
+        let ended = await waitUntil { await !fixture.workspace.isGenerating(id) }
+        #expect(ended)
+        #expect(fixture.workspace.conversation(id)?.messages.last?.status == .complete)
+        #expect(fixture.runner.endedTokens.count == 1 && fixture.runner.notifications.count == 1)
     }
 
     // MARK: - Search step

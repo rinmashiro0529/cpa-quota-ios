@@ -111,6 +111,11 @@ struct ChatConversationView: View {
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
+                    if chat.unsavedConversations.contains(conversation.id) {
+                        Label("最新内容未能保存到本机", systemImage: "exclamationmark.triangle")
+                            .font(.footnote)
+                            .foregroundStyle(palette.statusWarn)
+                    }
                     // Above the composer, so the notice is visible wherever the remembered message was.
                     if let memoryNotice {
                         Label(memoryNotice, systemImage: "checkmark.circle")
@@ -188,11 +193,18 @@ struct ChatConversationView: View {
     private func request(_ action: PendingAction, in conversation: ChatConversation) {
         let change = chat.serverChange(for: conversation.id)
         let removed = laterMessageCount(for: action, in: conversation)
-        guard change != nil || removed > 0 else {
+        let replacesInterrupted: Bool
+        if case .regenerate(let id) = action {
+            replacesInterrupted = conversation.messages.first { $0.id == id }?.status == .interrupted
+        } else {
+            replacesInterrupted = false
+        }
+        guard change != nil || removed > 0 || replacesInterrupted else {
             perform(action, confirmingServerChange: false)
             return
         }
         var parts: [String] = []
+        if replacesInterrupted { parts.append("将发送一次新的生成请求并替换这条中断的回复，可能产生新的用量。") }
         if let change {
             let images = change.imageCount > 0 ? "和 \(change.imageCount) 张图片" : ""
             let origin = change.previousServerIdentifier.map { "这段对话来自 \(ChatServerLabel.display($0))。" }
@@ -204,9 +216,9 @@ struct ChatConversationView: View {
         }
         pendingConfirmation = PendingConfirmation(
             action: action,
-            title: change != nil ? "在当前服务继续这段对话？" : "删除后续消息并重新生成？",
+            title: change != nil ? "在当前服务继续这段对话？" : (removed > 0 ? "删除后续消息并重新生成？" : "替换中断的回复？"),
             message: parts.joined(separator: "\n"),
-            confirmTitle: change != nil ? "继续发送" : "删除并重新生成",
+            confirmTitle: change != nil ? "继续发送" : (removed > 0 ? "删除并重新生成" : "确认重新生成"),
             isDestructive: removed > 0)
     }
 
