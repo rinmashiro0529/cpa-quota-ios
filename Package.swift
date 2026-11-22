@@ -15,6 +15,8 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/huggingface/AnyLanguageModel", exact: "1.3.0"),
         .package(url: "https://github.com/apple/swift-http-types", exact: "1.8.0"),
+        // Also used by the locked renderer. Inspect the same CommonMark block boundaries.
+        .package(url: "https://github.com/swiftlang/swift-markdown.git", exact: "0.7.3"),
         // Pinned to the v0.7.0 tag commit: a version pin is rejected because the
         // package itself depends on revision-pinned packages (highlightswift, iosMath).
         .package(url: "https://github.com/microsoft/SwiftStreamingMarkdown",
@@ -32,6 +34,7 @@ let package = Package(
             "CPAQuotaKit",
             "CPAQuotaActivity",
             "CPAQuotaChat",
+            .product(name: "Markdown", package: "swift-markdown"),
             .product(name: "SwiftStreamingMarkdown", package: "SwiftStreamingMarkdown",
                      condition: .when(platforms: [.iOS]))
         ]),

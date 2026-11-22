@@ -13,6 +13,7 @@ import AppKit
 
 struct ChatMessageActions {
     let copy: () -> Void
+    let previewHTML: (ChatHTMLSnippet) -> Void
     let regenerate: (() -> Void)?
     let edit: (() -> Void)?
     let remember: () -> Void
@@ -117,6 +118,12 @@ struct ChatMessageView: View {
                 ChatMarkdownText(text: message.text)
                     .accessibilityIdentifier("chat.message.assistant")
                     .foregroundStyle(palette.textPrimary)
+                #if os(iOS)
+                // Earlier WebKit versions cannot veto the system file picker.
+                if #available(iOS 18.4, *) {
+                    ChatHTMLSnippetButtons(text: message.text, open: actions.previewHTML)
+                }
+                #endif
             }
 
             if !message.searchSources.isEmpty {

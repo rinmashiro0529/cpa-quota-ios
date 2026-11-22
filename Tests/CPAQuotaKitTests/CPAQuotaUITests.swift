@@ -1,10 +1,41 @@
 import Foundation
 import Testing
 @testable import CPAQuotaKit
-import CPAQuotaUI
+@testable import CPAQuotaUI
 
 @Suite("CPAQuotaUI session, presentation, and contract fidelity tests")
 struct CPAQuotaUITests {
+    @Test func htmlPreviewRequiresACompleteLabelledCodeBlock() {
+        let text = """
+            <p>inline only</p>
+
+            ~~~~markdown
+            ~~~html
+            example inside ordinary code
+            ~~~
+            ~~~~
+
+            > ~~~HTML
+            > <p>one</p>
+            > ~~~
+
+            - ```html
+              <p>two</p>
+              ```
+
+            ~~~~html
+            shortened delimiter
+            ~~~
+            """
+        let snippets = ChatHTMLSnippet.extract(from: text.replacingOccurrences(of: "\n", with: "\r\n"))
+        #expect(snippets.map(\.id) == [1, 2])
+        #expect(snippets.map(\.source) == ["<p>one</p>\n", "<p>two</p>\n"])
+        #expect(ChatHTMLSnippet.extract(from: "> ~~~html\n> fragment\n~~~").isEmpty)
+        #expect(ChatHTMLSnippet.extract(from: "~~~html\nfragment\n    ~~~\n").isEmpty)
+        #expect(ChatHTMLSnippet.extract(from: "    ~~~html\n    ordinary indented code\n    ~~~").isEmpty)
+        #expect(ChatHTMLSnippet.extract(from: "~~~html\n~~~").map(\.source) == [""])
+    }
+
     @Test @MainActor
     func sessionConnectSavesCredentialsOnlyAfterSuccessfulLoadAndRestoresCleanly() async throws {
         let transport = try ScenarioTransport(accounts: [

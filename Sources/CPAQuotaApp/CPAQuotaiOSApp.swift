@@ -1,5 +1,6 @@
 import Foundation
 #if DEBUG
+import notify
 @_spi(Testing) import CPAQuotaKit
 #else
 import CPAQuotaKit
@@ -70,7 +71,7 @@ private struct UITestWorkspace: View {
     @State private var checkpointOnDisk = false
     @State private var modelPreferenceOnDisk = false
     #if os(iOS)
-    @State private var copiedFixtureMatches = false
+    @State private var copyCheck = "校验合成消息"
     #endif
 
     var body: some View {
@@ -83,8 +84,12 @@ private struct UITestWorkspace: View {
                             #if os(iOS)
                             if ProcessInfo.processInfo.arguments.contains("--ui-test-chat-html"), gatedChat.generation > 0,
                                !gatedChat.isWaiting {
-                                Button(copiedFixtureMatches ? "完整源码一致" : "校验合成消息") {
-                                    copiedFixtureMatches = UIPasteboard.general.string == GatedUITestChatEngine.htmlFixture
+                                Button(copyCheck) {
+                                    switch UIPasteboard.general.string {
+                                    case GatedUITestChatEngine.htmlFixture: copyCheck = "完整源码一致"
+                                    case "<p>Second fragment</p>\n": copyCheck = "片段源码一致"
+                                    default: copyCheck = "源码不符"
+                                    }
                                 }
                                 .accessibilityIdentifier("ui-test.chat.checkCopy")
                             }
@@ -258,6 +263,7 @@ private struct UITestChatModelCatalog: ChatModelCatalog {
 @MainActor @Observable private final class GatedUITestChatEngine: ChatEngine, ChatBackgroundRunner {
     private var current: AsyncThrowingStream<ChatEngineEvent, any Error>.Continuation?
     private var currentID: UUID?
+    private var releaseToken: Int32?
     private(set) var generation = 0
     private var paragraphs: [String] = []
     private var expiration: (@MainActor @Sendable () -> Void)?
@@ -272,12 +278,27 @@ private struct UITestChatModelCatalog: ChatModelCatalog {
                 currentID = id
                 current = continuation
                 paragraphs = []
-                continuation.yield(.snapshot(text: "", reasoning: "可见推理片段"))
+                let html = ProcessInfo.processInfo.arguments.contains("--ui-test-chat-html")
+                continuation.yield(.snapshot(text: html ? Self.firstHTMLChunk : "", reasoning: "可见推理片段"))
+                // The UI test can release the next chunk while a modal preview
+                // covers the in-app fixture buttons. Only this debug engine listens.
+                if html, let gate = ProcessInfo.processInfo.environment["CPA_UI_HTML_GATE"],
+                   let uuid = UUID(uuidString: gate) {
+                    var token: Int32 = 0
+                    let name = "icu.nahida.cpaquota.html." + uuid.uuidString
+                    if notify_register_dispatch(name, &token, .main, { [weak self] _ in
+                        Task { @MainActor in
+                            self?.releaseAnswer()
+                            notify_post(name + ".released")
+                        }
+                    }) == NOTIFY_STATUS_OK { releaseToken = token }
+                }
             }
             continuation.onTermination = { [weak self] _ in
                 task.cancel()
                 Task { @MainActor in
                     guard let self, self.currentID == id else { return }
+                    if let token = self.releaseToken { notify_cancel(token); self.releaseToken = nil }
                     self.current = nil
                     self.currentID = nil
                 }
@@ -292,15 +313,17 @@ private struct UITestChatModelCatalog: ChatModelCatalog {
         current = nil
     }
 
-    static let htmlFixture = """
+    static let firstHTMLChunk = """
         Complete snippets
         ~~~html
-        <p>First fragment</p>
+        <p style="min-height:150vh">First fragment</p><p>First fixture end
         ~~~
         ~~~text
         ordinary code
         ~~~
         ~~~html
+        """
+    static let htmlFixture = firstHTMLChunk + "\n" + """
         <p>Second fragment</p>
         ~~~
         ~~~html

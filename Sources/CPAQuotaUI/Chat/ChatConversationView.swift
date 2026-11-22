@@ -16,6 +16,7 @@ struct ChatConversationView: View {
     /// The draft and images set aside while a sent message is being edited.
     @State private var stashedDraft: (text: String, attachments: [ChatImageAttachment])?
     @State private var pendingConfirmation: PendingConfirmation?
+    @State private var htmlPreview: ChatHTMLSnippet?
     @State private var isPresentingOptions = false
     @State private var isPresentingSettings = false
     @State private var memoryNotice: String?
@@ -37,6 +38,9 @@ struct ChatConversationView: View {
             }
         }
         .background(BrandCanvasBackground())
+        #if os(iOS)
+        .sheet(item: $htmlPreview) { ChatHTMLPreview(snippet: $0) }
+        #endif
         .tint(palette.actionTint)
         .onChange(of: chat.conversation(conversationID) == nil) { _, deleted in
             // Deleting from the options sheet returns to the list instead of an empty page.
@@ -277,6 +281,7 @@ struct ChatConversationView: View {
     private func actions(for message: ChatMessage, in conversation: ChatConversation) -> ChatMessageActions {
         ChatMessageActions(
             copy: { ChatClipboard.copy(message.text) },
+            previewHTML: { htmlPreview = $0 },
             regenerate: message.role == .assistant
                 ? { request(.regenerate(message.id), in: conversation) } : nil,
             edit: message.role == .user ? { beginEditing(message) } : nil,

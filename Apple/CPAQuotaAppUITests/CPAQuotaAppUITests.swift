@@ -1,5 +1,6 @@
 import XCTest
 import UIKit
+import notify
 
 /// Runs against the real app UI and production parsers using Debug-only local
 /// transport fixtures. Screenshots accompany assertions; they are not treated
@@ -573,10 +574,12 @@ final class CPAQuotaAppUITests: XCTestCase {
     }
 
     @MainActor
-    private func launch(connected: Bool, largeText: Bool = false, arguments: [String] = []) -> XCUIApplication {
+    private func launch(connected: Bool, largeText: Bool = false, arguments: [String] = [],
+                        environment: [String: String] = [:]) -> XCUIApplication {
         XCUIDevice.shared.orientation = .portrait
         let app = XCUIApplication()
         app.launchArguments += ["--ui-testing", connected ? "--fixture=connected" : "--fixture=unconfigured"]
+        app.launchEnvironment.merge(environment) { _, value in value }
         app.launchArguments += arguments
         if largeText { app.launchArguments.append("--ui-test-large-text") }
         app.launch()
@@ -843,6 +846,89 @@ final class CPAQuotaAppUITests: XCTestCase {
         check.tap()
         XCTAssertEqual(check.label, "完整源码一致")
         XCTAssertFalse(app.webViews.firstMatch.exists)
+    }
+
+    @MainActor
+    func testHTMLPreviewKeepsSnapshotWhileConversationStreams() async throws {
+        guard #available(iOS 18.4, *) else { throw XCTSkip("The static HTML preview requires WebKit file-panel cancellation.") }
+        let gate = UUID().uuidString
+        let name = "icu.nahida.cpaquota.html." + gate
+        let released = expectation(description: "The fixture delivered the next chunk while the preview was open")
+        var token: Int32 = 0
+        XCTAssertEqual(notify_register_dispatch(name + ".released", &token, .main) { _ in released.fulfill() }, UInt32(NOTIFY_STATUS_OK))
+        defer { notify_cancel(token) }
+        let app = launch(connected: true, arguments: ["--ui-test-chat-gate", "--ui-test-chat-html", "--ui-test-theme=light"],
+                         environment: ["CPA_UI_HTML_GATE": gate])
+        defer { app.terminate() }
+        selectTab("chat", title: "AI 对话", in: app)
+        element("chat.emptyNew", in: app).tap()
+        let input = element("chat.input", in: app)
+        input.tap()
+        input.typeText("HTML")
+        element("chat.send", in: app).tap()
+        let first = element("chat.html.snippet.1", in: app)
+        let second = element("chat.html.snippet.2", in: app)
+        reveal(first, in: app)
+        XCTAssertFalse(second.exists)
+        first.tap()
+        let web = app.webViews.firstMatch
+        let start = web.staticTexts["First fragment"]
+        let end = web.staticTexts["First fixture end"]
+        expectExists(start, in: app)
+        web.swipeUp()
+        let y = end.frame.midY
+        XCTAssertTrue(web.frame.contains(CGPoint(x: end.frame.midX, y: y)))
+        XCTAssertEqual(notify_post(name), UInt32(NOTIFY_STATUS_OK))
+        let result = await XCTWaiter.fulfillment(of: [released], timeout: 10)
+        XCTAssertEqual(result, .completed)
+        XCTAssertEqual(end.frame.midY, y, accuracy: 5)
+        XCTAssertFalse(web.staticTexts["Second fragment"].exists)
+        app.buttons["源码"].tap()
+        expectExists(textContaining("<p style=", in: app), in: app)
+        app.buttons["刷新"].tap()
+        expectExists(start, in: app)
+        XCTAssertTrue(web.frame.contains(CGPoint(x: start.frame.midX, y: start.frame.minY + 2)))
+        app.buttons["关闭"].tap()
+        reveal(second, in: app)
+        XCTAssertFalse(element("chat.html.snippet.3", in: app).exists)
+        second.tap()
+        expectExists(web.staticTexts["Second fragment"], in: app)
+        XCTAssertFalse(web.staticTexts["First fragment"].exists)
+        app.buttons["源码"].tap()
+        app.buttons["复制源码"].tap()
+        app.buttons["关闭"].tap()
+        let check = element("ui-test.chat.checkCopy", in: app)
+        check.tap()
+        XCTAssertEqual(check.label, "片段源码一致")
+        expectExists(input, in: app)
+        XCTAssertFalse(element("chat.stop", in: app).exists)
+    }
+
+    @MainActor
+    func testHTMLPreviewRotatesWithLargeTextInDarkAppearance() async throws {
+        guard #available(iOS 18.4, *) else { throw XCTSkip("The static HTML preview requires WebKit file-panel cancellation.") }
+        let app = launch(connected: true, largeText: true,
+                         arguments: ["--ui-test-chat-gate", "--ui-test-chat-html", "--ui-test-theme=dark"])
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        selectTab("chat", title: "AI 对话", in: app)
+        element("chat.new", in: app).tap()
+        let input = element("chat.input", in: app)
+        input.tap()
+        input.typeText("HTML")
+        element("chat.send", in: app).tap()
+        element("ui-test.chat.release", in: app).tap()
+        let second = element("chat.html.snippet.2", in: app)
+        reveal(second, in: app)
+        second.tap()
+        expectExists(app.webViews.staticTexts["Second fragment"], in: app)
+        _ = await rotateDeviceAndWaitForWindow(in: app, policy: layoutPolicy(in: app))
+        app.buttons["源码"].tap()
+        expectExists(textContaining("<p>Second fragment</p>", in: app), in: app)
+        app.buttons["预览"].tap()
+        expectExists(app.webViews.staticTexts["Second fragment"], in: app)
+        attach(app, name: "html-preview-dark-landscape")
+        app.buttons["关闭"].tap()
+        expectExists(input, in: app)
     }
 
     @MainActor
