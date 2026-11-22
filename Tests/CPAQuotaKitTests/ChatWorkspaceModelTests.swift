@@ -1360,6 +1360,157 @@ struct ChatWorkspaceModelTests {
         #expect(await (try? persistence.loadConversations())?.isEmpty == true)
     }
 
+    @Test @MainActor func failedMetadataLoadsWithholdMemoriesAndNeverOverwriteSkills() async throws {
+        actor FailingMetadataPersistence: ChatPersistence {
+            var failSettingsLoad = true
+            var failSkillsLoad = true
+            var failSettingsSave = false
+            var failMemoriesSave = false
+            var failSingleDelete = false
+            var failAllDeleteAndReload = false
+            var savedSkillsCount = 0
+            var storedMemories: [ChatMemoryItem] = [ChatMemoryItem(text: "敏感记忆")]
+            var storedConversations: [ChatConversation] = []
+
+            func loadConversations() async throws -> [ChatConversation] {
+                if failAllDeleteAndReload { throw ChatPersistenceError.storageFailure }
+                return storedConversations
+            }
+            func saveConversation(_ conversation: ChatConversation) async throws {
+                storedConversations.removeAll { $0.id == conversation.id }
+                storedConversations.append(conversation)
+            }
+            func removeConversation(_ id: UUID) async throws {
+                if failSingleDelete { throw ChatPersistenceError.storageFailure }
+                storedConversations.removeAll { $0.id == id }
+            }
+            func removeAllConversations() async throws {
+                if failAllDeleteAndReload { throw ChatPersistenceError.storageFailure }
+                storedConversations.removeAll()
+            }
+            func loadSettings() async throws -> ChatSettings? {
+                if failSettingsLoad { throw ChatPersistenceError.storageFailure }
+                return ChatSettings(isMemoryEnabled: false)
+            }
+            func saveSettings(_ settings: ChatSettings) async throws {
+                if failSettingsSave { throw ChatPersistenceError.storageFailure }
+            }
+            func loadMemories() async throws -> [ChatMemoryItem]? { storedMemories }
+            func saveMemories(_ items: [ChatMemoryItem]) async throws {
+                if failMemoriesSave { throw ChatPersistenceError.storageFailure }
+                storedMemories = items
+            }
+            func loadSkills() async throws -> [ChatSkill]? {
+                if failSkillsLoad { throw ChatPersistenceError.storageFailure }
+                return [ChatSkill(command: "custom", title: "自定义", prompt: "保持原样")]
+            }
+            func saveSkills(_ skills: [ChatSkill]) async throws { savedSkillsCount += 1 }
+            func setFailures(settingsSave: Bool, memoriesSave: Bool, singleDelete: Bool, allDelete: Bool) {
+                failSettingsSave = settingsSave
+                failMemoriesSave = memoriesSave
+                failSingleDelete = singleDelete
+                failAllDeleteAndReload = allDelete
+            }
+            func recoverReads() {
+                failSettingsLoad = false
+                failSkillsLoad = false
+            }
+        }
+
+        let store = FailingMetadataPersistence()
+        let fixture = makeFixture(persistence: store)
+        fixture.engine.respond(with: [.snapshot(text: "ok", reasoning: nil)])
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+
+        // B04 & B23: settings read error withholds stored memories; skills read error never overwrites disk.
+        #expect(fixture.workspace.settingsLoadFailed)
+        #expect(fixture.workspace.skillsLoadFailed)
+        #expect(await store.savedSkillsCount == 0)
+        let id = fixture.workspace.createConversation()
+        await completeTurn(fixture, "你好", in: id)
+        #expect(fixture.engine.streamRequests.last?.instructions.contains("敏感记忆") == false)
+
+        await store.recoverReads()
+        await fixture.workspace.retryLoadMetadata()
+        #expect(!fixture.workspace.settingsLoadFailed)
+        #expect(!fixture.workspace.skillsLoadFailed)
+        #expect(fixture.workspace.settings.isMemoryEnabled == false)
+        #expect(fixture.workspace.skills.map(\.command) == ["custom"])
+
+        // B05: failed memory/settings saves stay marked unsaved until retry succeeds.
+        await store.setFailures(settingsSave: true, memoriesSave: true, singleDelete: true, allDelete: false)
+        fixture.workspace.settings.generatesTitles = false
+        let memID = try #require(fixture.workspace.memories.first?.id)
+        fixture.workspace.deleteMemory(memID)
+        #expect(await fixture.workspace.retrySaveSettings() == false)
+        #expect(await fixture.workspace.retrySaveMemories() == false)
+        #expect(fixture.workspace.unsavedSettings)
+        #expect(fixture.workspace.unsavedMemories)
+
+        // B21: failed single-conversation delete keeps conversation visible and retryable.
+        #expect(await fixture.workspace.deleteConversation(id) == false)
+        #expect(fixture.workspace.conversation(id) != nil)
+        #expect(fixture.workspace.failedConversationDeletions.contains(id))
+
+        await store.setFailures(settingsSave: false, memoriesSave: false, singleDelete: false, allDelete: true)
+        #expect(await fixture.workspace.retrySaveSettings())
+        #expect(await fixture.workspace.retrySaveMemories())
+        #expect(!fixture.workspace.unsavedSettings && !fixture.workspace.unsavedMemories)
+
+        // B22: failed deleteAll + failed reload reports unknown remainder instead of empty success.
+        #expect(await fixture.workspace.deleteAllConversations() == false)
+        #expect(fixture.workspace.deleteAllStateUnknown)
+
+        await store.setFailures(settingsSave: false, memoriesSave: false, singleDelete: false, allDelete: false)
+        #expect(await fixture.workspace.deleteAllConversations())
+        #expect(!fixture.workspace.deleteAllStateUnknown)
+    }
+
+    @Test @MainActor func regenerateRejectsUnrelatedParentAfterQuestionDeletion() async throws {
+        let fixture = makeFixture()
+        fixture.engine.respond(with: [.snapshot(text: "回复一", reasoning: nil)])
+        fixture.workspace.settings.generatesTitles = false
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let id = fixture.workspace.createConversation()
+        await completeTurn(fixture, "第一问", in: id)
+        fixture.engine.respond(with: [.snapshot(text: "回复二", reasoning: nil)])
+        await completeTurn(fixture, "第二问", in: id)
+        let messages = try #require(fixture.workspace.conversation(id)?.messages)
+        #expect(messages.count == 4)
+
+        // Remove the second question and the first reply so the first question sits right before the second reply.
+        fixture.workspace.deleteMessage(messages[2].id, in: id)
+        fixture.workspace.deleteMessage(messages[1].id, in: id)
+        let remaining = try #require(fixture.workspace.conversation(id)?.messages)
+        #expect(remaining.map(\.id) == [messages[0].id, messages[3].id])
+        #expect(!fixture.workspace.regenerate(messages[3].id, in: id))
+        #expect(fixture.engine.streamRequests.count == 2)
+    }
+
+    @Test @MainActor func searchKeyStatusDistinguishesUnknownFromAbsentOnKeychainError() async {
+        actor FailingSearchSecretStore: ChatSecretStore {
+            var failAll = true
+            func loadSecret(account: String) async throws -> String? {
+                if failAll { throw CPAError(.secureStorageFailure) }
+                return nil
+            }
+            func saveSecret(_ value: String, account: String) async throws {}
+            func removeSecret(account: String) async throws {
+                if failAll { throw CPAError(.secureStorageFailure) }
+            }
+            func recover() { failAll = false }
+        }
+        let store = FailingSearchSecretStore()
+        let workspace = ChatWorkspaceModel(persistence: ChatMemoryPersistence(), secrets: store)
+        #expect(await workspace.removeSearchKey(for: .tavily) == false)
+        #expect(await workspace.searchKeyStatus(for: .tavily) == .unknown)
+        await store.recover()
+        #expect(await workspace.removeSearchKey(for: .tavily) == true)
+        #expect(await workspace.searchKeyStatus(for: .tavily) == .absent)
+    }
+
     @Test @MainActor func streamingRepliesArePersistedBeforeTheyFinish() async {
         let persistence = RecordingPersistence()
         let fixture = makeFixture(persistence: persistence, streamingPersistInterval: .zero)

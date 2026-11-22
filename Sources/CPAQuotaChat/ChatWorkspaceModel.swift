@@ -350,6 +350,15 @@ public final class ChatWorkspaceModel {
     private var generationTasks: [UUID: Generation] = [:]
     private var stopReasons: [UUID: StopReason] = [:]
     public private(set) var unsavedConversations = Set<UUID>()
+    public private(set) var failedConversationDeletions = Set<UUID>()
+    public private(set) var deleteAllStateUnknown = false
+    public private(set) var settingsLoadFailed = false
+    public private(set) var memoriesLoadFailed = false
+    public private(set) var skillsLoadFailed = false
+    public private(set) var unsavedSettings = false
+    public private(set) var unsavedMemories = false
+    public private(set) var unsavedSkills = false
+    @ObservationIgnored private var isApplyingLoadedSettings = false
     private var titleTasks: [UUID: Task<Void, Never>] = [:]
 
     private enum StopReason {
@@ -378,18 +387,61 @@ public final class ChatWorkspaceModel {
         let created = conversations.filter { local in !stored.contains { $0.id == local.id } }
         conversations = (stored + created).sorted { $0.updatedAt > $1.updatedAt }
         recoverOrphanedReplies()
-        if let stored = try? await persistence.loadSettings() {
-            settings = stored
+        await loadSettingsFromDisk()
+        await loadMemoriesFromDisk()
+        await loadSkillsFromDisk()
+    }
+
+    /// Retries loading any workspace metadata whose initial read failed.
+    public func retryLoadMetadata() async {
+        if settingsLoadFailed { await loadSettingsFromDisk() }
+        if memoriesLoadFailed { await loadMemoriesFromDisk() }
+        if skillsLoadFailed { await loadSkillsFromDisk() }
+    }
+
+    private func loadSettingsFromDisk() async {
+        do {
+            if let stored = try await persistence.loadSettings() {
+                isApplyingLoadedSettings = true
+                settings = stored
+                isApplyingLoadedSettings = false
+            }
+            settingsLoadFailed = false
+        } catch {
+            settingsLoadFailed = true
         }
-        memories = (try? await persistence.loadMemories()) ?? []
-        if let stored = try? await persistence.loadSkills() {
-            skills = stored
-        } else {
-            skills = Self.defaultSkills
-            let value = skills
-            let store = persistence
-            enqueuePersist { try? await store.saveSkills(value) }
+    }
+
+    private func loadMemoriesFromDisk() async {
+        do {
+            memories = (try await persistence.loadMemories()) ?? []
+            memoriesLoadFailed = false
+        } catch {
+            memories = []
+            memoriesLoadFailed = true
         }
+    }
+
+    private func loadSkillsFromDisk() async {
+        do {
+            if let stored = try await persistence.loadSkills() {
+                skills = stored
+            } else {
+                skills = Self.defaultSkills
+                persistSkills(skills)
+            }
+            skillsLoadFailed = false
+        } catch {
+            // Never overwrite an unreadable skills file with defaults.
+            skills = []
+            skillsLoadFailed = true
+        }
+    }
+
+    /// Stored memories are withheld whenever preferences could not be restored,
+    /// so a failed settings read can never override a user's disabled setting.
+    private var effectiveMemoriesForPrompt: [ChatMemoryItem] {
+        (settingsLoadFailed || memoriesLoadFailed) ? [] : memories
     }
 
     /// A reply still marked `.streaming` with no running task was cut off when
@@ -494,22 +546,42 @@ public final class ChatWorkspaceModel {
     public func selectModel(_ id: String, in conversationID: UUID) {
         guard let server, isAvailableModel(id), conversation(conversationID) != nil else { return }
         updateConversation(conversationID) { $0.modelID = id }
-        if persistsKey {
+        if persistsKey, !settingsLoadFailed {
             settings.rememberModel(id, for: server.identifier)
         } else {
             temporaryRecentModelID = id
         }
     }
 
-    public func deleteConversation(_ id: UUID) {
+    /// Removes a conversation only after its backing file is removed (or absent).
+    /// Returns `false` and keeps the conversation visible for retry on failure.
+    @discardableResult
+    public func deleteConversation(_ id: UUID) async -> Bool {
         generationTasks[id]?.task.cancel()
         generationTasks[id] = nil
         stopReasons[id] = nil
         titleTasks[id]?.cancel()
         titleTasks[id] = nil
-        conversations.removeAll { $0.id == id }
         let store = persistence
-        enqueuePersist { try? await store.removeConversation(id) }
+        let previous = persistTail
+        let removal = Task { () -> Bool in
+            await previous?.value
+            do {
+                try await store.removeConversation(id)
+                return true
+            } catch {
+                return false
+            }
+        }
+        persistTail = Task { _ = await removal.value }
+        guard await removal.value else {
+            failedConversationDeletions.insert(id)
+            return false
+        }
+        conversations.removeAll { $0.id == id }
+        unsavedConversations.remove(id)
+        failedConversationDeletions.remove(id)
+        return true
     }
 
     /// Returns `false` when some records could not be removed; those are read
@@ -536,13 +608,21 @@ public final class ChatWorkspaceModel {
         }
         persistTail = Task { _ = await removal.value }
         guard await removal.value else {
-            let remaining = ((try? await persistence.loadConversations()) ?? [])
-                .filter { stored in !stored.messages.isEmpty && !conversations.contains { $0.id == stored.id } }
-            conversations.append(contentsOf: remaining)
-            conversations.sort { $0.updatedAt > $1.updatedAt }
-            recoverOrphanedReplies()
+            do {
+                let remaining = try await persistence.loadConversations()
+                    .filter { stored in !stored.messages.isEmpty && !conversations.contains { $0.id == stored.id } }
+                conversations.append(contentsOf: remaining)
+                conversations.sort { $0.updatedAt > $1.updatedAt }
+                recoverOrphanedReplies()
+                deleteAllStateUnknown = false
+            } catch {
+                deleteAllStateUnknown = true
+            }
             return false
         }
+        deleteAllStateUnknown = false
+        failedConversationDeletions.removeAll()
+        unsavedConversations.removeAll()
         return true
     }
 
@@ -718,7 +798,8 @@ public final class ChatWorkspaceModel {
         mutateAssistant(saved.id, in: id) { $0.omittedHistoryCount = reply.omittedHistoryCount }
         let request = ChatEngineRequest(baseURL: server.baseURL.appendingPathComponent("v1"), apiKey: apiKey,
                                        modelID: target.modelID,
-                                       instructions: ChatPromptBuilder.instructions(settings: settings, memories: memories,
+                                       instructions: ChatPromptBuilder.instructions(settings: settings,
+                                                                                    memories: effectiveMemoriesForPrompt,
                                                                                     conversation: conversation),
                                        history: context.history, prompt: context.prompt, images: context.images,
                                        reasoningEffort: conversation.reasoningEffort)
@@ -740,8 +821,11 @@ public final class ChatWorkspaceModel {
         guard canRerun(conversationID, confirmingServerChange: confirmation),
               var conversation = self.conversation(conversationID),
               let index = conversation.messages.firstIndex(where: { $0.id == assistantMessageID }),
-              conversation.messages[index].role == .assistant,
-              index > 0, conversation.messages[index - 1].role == .user else { return false }
+              index > 0 else { return false }
+        let reply = conversation.messages[index]
+        let question = conversation.messages[index - 1]
+        guard reply.role == .assistant, question.role == .user,
+              reply.replyToID == nil || reply.replyToID == question.id else { return false }
         conversation.messages.removeSubrange(index...)
         // The triggering user message is now the last one.
         updateConversationSilently(conversation)
@@ -849,7 +933,7 @@ public final class ChatWorkspaceModel {
         // Instructions + history: prior complete/stopped messages only —
         // exclude the placeholder and the triggering user message (sent as `prompt`).
         let instructions = ChatPromptBuilder.instructions(
-            settings: settings, memories: memories, conversation: conversation)
+            settings: settings, memories: effectiveMemoriesForPrompt, conversation: conversation)
         let (history, omittedCount) = ChatPromptBuilder.boundedHistory(eligibleHistory(conversation))
         if omittedCount > 0 {
             mutateAssistant(assistantID, in: conversationID) { $0.omittedHistoryCount = omittedCount }
@@ -1162,39 +1246,105 @@ public final class ChatWorkspaceModel {
 
     public var settings = ChatSettings() {
         didSet {
-            let value = settings
-            let store = persistence
-            enqueuePersist { try? await store.saveSettings(value) }
+            guard !isApplyingLoadedSettings else { return }
+            persistSettings(settings)
         }
     }
 
+    @discardableResult
+    private func persistSettings(_ value: ChatSettings) -> Task<Bool, Never> {
+        let store = persistence
+        let previous = persistTail
+        let write = Task { @MainActor () -> Bool in
+            await previous?.value
+            do {
+                try await store.saveSettings(value)
+                self.unsavedSettings = false
+                self.settingsLoadFailed = false
+                return true
+            } catch {
+                self.unsavedSettings = true
+                return false
+            }
+        }
+        persistTail = Task { _ = await write.value }
+        return write
+    }
+
+    @discardableResult
+    public func retrySaveSettings() async -> Bool {
+        await persistSettings(settings).value
+    }
+
     public private(set) var memories: [ChatMemoryItem] = []
+
+    @discardableResult
+    private func persistMemories(_ value: [ChatMemoryItem]) -> Task<Bool, Never> {
+        let store = persistence
+        let previous = persistTail
+        let write = Task { @MainActor () -> Bool in
+            await previous?.value
+            do {
+                try await store.saveMemories(value)
+                self.unsavedMemories = false
+                return true
+            } catch {
+                self.unsavedMemories = true
+                return false
+            }
+        }
+        persistTail = Task { _ = await write.value }
+        return write
+    }
+
+    @discardableResult
+    public func retrySaveMemories() async -> Bool {
+        await persistMemories(memories).value
+    }
 
     public func addMemory(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         memories.append(ChatMemoryItem(text: trimmed))
-        let value = memories
-        let store = persistence
-        enqueuePersist { try? await store.saveMemories(value) }
+        persistMemories(memories)
     }
 
     public func updateMemory(_ item: ChatMemoryItem) {
         guard let index = memories.firstIndex(where: { $0.id == item.id }) else { return }
         memories[index] = item
-        let value = memories
-        let store = persistence
-        enqueuePersist { try? await store.saveMemories(value) }
+        persistMemories(memories)
     }
 
     public func deleteMemory(_ id: UUID) {
         memories.removeAll { $0.id == id }
-        let value = memories
-        let store = persistence
-        enqueuePersist { try? await store.saveMemories(value) }
+        persistMemories(memories)
     }
 
     public private(set) var skills: [ChatSkill] = []
+
+    @discardableResult
+    private func persistSkills(_ value: [ChatSkill]) -> Task<Bool, Never> {
+        let store = persistence
+        let previous = persistTail
+        let write = Task { @MainActor () -> Bool in
+            await previous?.value
+            do {
+                try await store.saveSkills(value)
+                self.unsavedSkills = false
+                return true
+            } catch {
+                self.unsavedSkills = true
+                return false
+            }
+        }
+        persistTail = Task { _ = await write.value }
+        return write
+    }
+
+    @discardableResult
+    public func retrySaveSkills() async -> Bool {
+        await persistSkills(skills).value
+    }
 
     public func saveSkill(_ skill: ChatSkill) {
         var normalized = skill
@@ -1205,16 +1355,12 @@ public final class ChatWorkspaceModel {
         } else {
             skills.append(normalized)
         }
-        let value = skills
-        let store = persistence
-        enqueuePersist { try? await store.saveSkills(value) }
+        persistSkills(skills)
     }
 
     public func deleteSkill(_ id: UUID) {
         skills.removeAll { $0.id == id }
-        let value = skills
-        let store = persistence
-        enqueuePersist { try? await store.saveSkills(value) }
+        persistSkills(skills)
     }
 
     /// `/partial` (no whitespace yet) → prefix matches on normalized commands;
@@ -1229,10 +1375,18 @@ public final class ChatWorkspaceModel {
         }
     }
 
+    public func searchKeyStatus(for provider: ChatSearchProvider) async -> ChatSearchKeyStatus {
+        do {
+            guard let value = try await secrets.loadSecret(
+                account: ChatSecrets.searchKeyAccount(for: provider)) else { return .absent }
+            return value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .absent : .present
+        } catch {
+            return .unknown
+        }
+    }
+
     public func hasSearchKey(for provider: ChatSearchProvider) async -> Bool {
-        guard let value = try? await secrets.loadSecret(
-            account: ChatSecrets.searchKeyAccount(for: provider)) else { return false }
-        return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        await searchKeyStatus(for: provider) == .present
     }
 
     @discardableResult
@@ -1247,8 +1401,14 @@ public final class ChatWorkspaceModel {
         }
     }
 
-    public func removeSearchKey(for provider: ChatSearchProvider) async {
-        try? await secrets.removeSecret(account: ChatSecrets.searchKeyAccount(for: provider))
+    @discardableResult
+    public func removeSearchKey(for provider: ChatSearchProvider) async -> Bool {
+        do {
+            try await secrets.removeSecret(account: ChatSecrets.searchKeyAccount(for: provider))
+            return true
+        } catch {
+            return false
+        }
     }
 
     public func requestNotificationAuthorization() async -> Bool {

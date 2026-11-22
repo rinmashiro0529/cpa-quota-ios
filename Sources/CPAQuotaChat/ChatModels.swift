@@ -282,3 +282,9 @@ public enum ChatModelListState: Equatable, Sendable {
     case loaded
     case failed(ChatFailure)
 }
+
+public enum ChatSearchKeyStatus: Equatable, Sendable {
+    case present
+    case absent
+    case unknown
+}
