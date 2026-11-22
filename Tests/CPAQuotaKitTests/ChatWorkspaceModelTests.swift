@@ -161,6 +161,8 @@ final class FakeBackgroundRunner: ChatBackgroundRunner, @unchecked Sendable {
 
     @MainActor var isAppInBackground: Bool { inBackground }
 
+    @MainActor var currentExpiration: (@MainActor @Sendable () -> Void)? { expirations.values.first }
+
     @MainActor func fireExpiration() {
         for callback in expirations.values { callback() }
     }
@@ -1278,6 +1280,174 @@ struct ChatWorkspaceModelTests {
             await MainActor.run { workspace.conversation(id)?.modelID == "test-model" }
         }
         #expect(assigned)
+    }
+
+    @Test @MainActor func continueAfterNetworkLossAndAgainAfterColdStart() async throws {
+        let persistence = ChatMemoryPersistence()
+        let first = makeFixture(persistence: persistence)
+        let chat = first.workspace
+        await chat.loadIfNeeded()
+        await bind(first, apiKeys: ["test-client-key-0001"])
+        let id = chat.createConversation()
+        let image = ChatImageAttachment(mimeType: "image/png", data: Data([1, 2]))
+        let original = "```swift\nlet resultingValue"
+        first.engine.respond(with: [.snapshot(text: original, reasoning: "r1"), .usage(.init(inputTokens: 100))])
+        first.engine.fail(with: URLError(.networkConnectionLost))
+        #expect(chat.send("Finish this", attachments: [image], in: id))
+        try await waitForGeneration(chat, id: id)
+        let reply = try #require(chat.conversation(id)?.messages.last)
+        #expect(reply.failure == .network)
+        let target = try #require(chat.continuation(for: id))
+        #expect(!target.isRetry)
+
+        first.engine.respond(with: [.snapshot(text: "let res", reasoning: nil),
+                                    .snapshot(text: "let resultingValue = ", reasoning: "r2"),
+                                    .usage(.init(inputTokens: 8)), .usage(.init(inputTokens: 12))])
+        first.engine.fail(with: URLError(.timedOut))
+        #expect(chat.continueReply(target))
+        #expect(!chat.continueReply(target))
+        try await waitForGeneration(chat, id: id)
+        #expect(!chat.continueReply(target))
+        let req = try #require(first.engine.streamRequests.last)
+        #expect(req.history.map(\.text) == ["Finish this", original])
+        #expect(req.history.first?.attachments == [image])
+        #expect(req.images.isEmpty)
+        #expect(req.prompt.contains("直接接写"))
+        #expect(first.engine.streamRequests.count == 2)
+
+        let reopened = makeFixture(persistence: persistence)
+        await reopened.workspace.loadIfNeeded()
+        await bind(reopened, apiKeys: ["test-client-key-0001"])
+        #expect(reopened.engine.streamRequests.isEmpty)
+        let saved = try #require(reopened.workspace.conversation(id)?.messages.last)
+        #expect(saved.id == reply.id)
+        #expect(saved.text == original + " = ")
+        #expect(saved.usage?.inputTokens == 112)
+        #expect(saved.reasoning == "r1\n\nr2")
+        reopened.engine.respond(with: [.snapshot(text: "42\n```", reasoning: nil)])
+        let again = try #require(reopened.workspace.continuation(for: id))
+        #expect(reopened.workspace.continueReply(again))
+        try await waitForGeneration(reopened.workspace, id: id)
+        let final = try #require(reopened.workspace.conversation(id)?.messages)
+        #expect(final.map(\.id) == [req.history[0].id, reply.id])
+        #expect(final.last?.text == original + " = 42\n```")
+        #expect(final.last?.attempts?.map(\.status) == [.failed, .failed, .complete])
+        #expect(final.last?.attempts?.compactMap(\.usage).count == 2)
+        #expect(final.last?.reasoning == saved.reasoning)
+        #expect(final.last?.createdAt == reply.createdAt)
+        #expect(reopened.workspace.continuation(for: id) == nil)
+    }
+
+    @MainActor
+    private func waitForGeneration(_ chat: ChatWorkspaceModel, id: UUID) async throws {
+        let finished = await waitUntil { await !chat.isGenerating(id) }
+        try #require(finished)
+    }
+
+    @Test @MainActor func retryReasoningOnlyLegacyReplyRequiresCurrentDestinationAndParent() async throws {
+        let question = ChatMessage(role: .user, text: "original")
+        let reply = ChatMessage(role: .assistant, text: "", reasoning: "saved", modelID: "test-model", status: .interrupted)
+        let seeded = ChatConversation(modelID: "test-model", messages: [question, reply], serverIdentifier: "other")
+        let fixture = makeFixture(persistence: RecordingPersistence(seeded: [seeded]))
+        let chat = fixture.workspace
+        let id = seeded.id
+        await chat.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let target = try #require(chat.continuation(for: id))
+        #expect(target.isRetry)
+        #expect(!chat.continueReply(target))
+        chat.updateConversation(id) { $0.modelID = "removed" }
+        #expect(chat.continuation(for: id) == nil)
+        chat.updateConversation(id) { $0.modelID = "test-model" }
+        await chat.removeStoredKey()
+        #expect(chat.continuation(for: id) == nil)
+        #expect(await chat.useManualKey("test-client-key-0002"))
+        #expect(!chat.continueReply(target, confirmingServerChange: true))
+        chat.updateConversation(id) { $0.messages.append(ChatMessage(role: .user, text: "later")) }
+        #expect(chat.continuation(for: id) == nil)
+        chat.updateConversation(id) { $0.messages.removeLast() }
+        #expect(fixture.engine.streamRequests.isEmpty)
+        let current = try #require(chat.continuation(for: id))
+        fixture.engine.respond(with: [.snapshot(text: "answer", reasoning: nil)])
+        #expect(chat.continueReply(current, confirmingServerChange: true))
+        try await waitForGeneration(chat, id: id)
+        let request = try #require(fixture.engine.streamRequests.last)
+        #expect(request.prompt == question.text)
+        #expect(request.history.isEmpty)
+        let messages = try #require(chat.conversation(id)?.messages)
+        #expect(messages.map(\.id) == seeded.messages.map(\.id))
+        #expect(messages.last?.reasoning == "saved")
+        #expect(messages.last?.text == "answer")
+    }
+
+    @Test func continuationBoundariesKeepLiteralWhitespaceFencesAndWordFragments() {
+        for (base, new, expected) in [
+            ("inter", "national", "national"),
+            ("```swift\n", "    let", "    let"),
+            ("Hello ", " world", " world"),
+            ("a\n", "\n", "\n"),
+            ("foo", "foo", "foo"),
+            ("👩‍💻", "✅", "✅"),
+            ("上一次输出的这一行文字", "输出的这一行文字。", "。")
+        ] {
+            var boundary = ChatContinuationBoundary(base: base)
+            var visible = ""
+            for i in 1...new.count {
+                let result = boundary.suffix(for: String(new.prefix(i)))
+                visible = result.visible + (result.pending ?? "")
+            }
+            #expect(visible == expected)
+        }
+        let long = String(repeating: "A long complete paragraph. ", count: 150)
+        var replay = ChatContinuationBoundary(base: long)
+        #expect(replay.suffix(for: String(long.prefix(1200))).visible.isEmpty)
+        #expect(replay.suffix(for: long + "next").visible == "next")
+        var boundary = ChatContinuationBoundary(base: "line with enough distinct letters")
+        let undecided = boundary.suffix(for: "distinct")
+        #expect(undecided.visible == "")
+        #expect(undecided.pending == "distinct")
+    }
+
+    @Test @MainActor func staleExpirationCannotCancelTheNextAttemptOnTheSameReply() async throws {
+        let fixture = makeFixture()
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+        let chat = fixture.workspace
+        let id = chat.createConversation()
+        fixture.engine.respond(with: [.snapshot(text: "partial", reasoning: nil)])
+        fixture.engine.block()
+        #expect(chat.send("question", attachments: [], in: id))
+        let emitted = await waitUntil { await chat.conversation(id)?.messages.last?.text == "partial" }
+        try #require(emitted)
+        let expired = try #require(fixture.runner.currentExpiration)
+        expired()
+        try await waitForGeneration(chat, id: id)
+        fixture.engine.respond(with: [.snapshot(text: " plus", reasoning: nil)])
+        fixture.engine.block()
+        #expect(chat.continueReply(try #require(chat.continuation(for: id))))
+        let appended = await waitUntil { await chat.conversation(id)?.messages.last?.text == "partial plus" }
+        try #require(appended)
+        expired()
+        chat.stop(id)
+        try await waitForGeneration(chat, id: id)
+        #expect(chat.conversation(id)?.messages.last?.text == "partial plus")
+        #expect(chat.conversation(id)?.messages.last?.status == .stopped)
+        #expect(fixture.runner.endedTokens.count == 2)
+        #expect(chat.continuation(for: id) != nil)
+    }
+
+    @Test func longContinuationPinsCurrentTurnAndDropsOlderHistory() {
+        let question = ChatMessage(role: .user, text: "q")
+        let reply = ChatMessage(role: .assistant, text: String(repeating: "long ", count: 500) + "\n```swift\n"
+                                + String(repeating: "code ", count: 1500) + "last-tail")
+        let context = ChatPromptBuilder.continuationContext(
+            earlier: [question], question: question, reply: reply, effectivePrompt: "expanded original", budget: 1800)
+        #expect(context.omitted == 1)
+        #expect(context.history.map(\.id) == [question.id, reply.id])
+        #expect(context.history[0].text == "expanded original")
+        #expect(context.history[1].text.hasSuffix("last-tail"))
+        #expect(context.history[1].text.count < 1800)
+        #expect(context.prompt.contains("swift"))
     }
 
     @Test @MainActor func newConversationReusesAnEmptyOne() async {

@@ -133,7 +133,10 @@ public final class ChatWorkspaceModel {
         credentialRevision &+= 1
         isDiscoveringKeys = false
         keyDiscoveryError = nil
-        for task in generationTasks.values { task.cancel() }
+        for (id, generation) in generationTasks {
+            if stopReasons[id] == nil { stopReasons[id] = .connectionChanged }
+            generation.task.cancel()
+        }
         for task in titleTasks.values { task.cancel() }
     }
 
@@ -339,13 +342,18 @@ public final class ChatWorkspaceModel {
     /// `true` only after history, settings, memories and skills are restored.
     public private(set) var isLoaded = false
     @ObservationIgnored private var loadTask: Task<Void, Never>?
-    private var generationTasks: [UUID: Task<Void, Never>] = [:]
+    private struct Generation {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
+    private var generationTasks: [UUID: Generation] = [:]
     private var stopReasons: [UUID: StopReason] = [:]
     public private(set) var unsavedConversations = Set<UUID>()
     private var titleTasks: [UUID: Task<Void, Never>] = [:]
 
     private enum StopReason {
         case userStopped
+        case connectionChanged
         case backgroundExpired
     }
 
@@ -392,6 +400,7 @@ public final class ChatWorkspaceModel {
             where conversations[index].messages[messageIndex].status == .streaming {
                 conversations[index].messages[messageIndex].status = .interrupted
                 conversations[index].messages[messageIndex].failure = .generationInterrupted
+                conversations[index].messages[messageIndex].finishAttempt()
                 changed = true
             }
             if changed { persist(conversations[index]) }
@@ -487,7 +496,7 @@ public final class ChatWorkspaceModel {
     }
 
     public func deleteConversation(_ id: UUID) {
-        generationTasks[id]?.cancel()
+        generationTasks[id]?.task.cancel()
         generationTasks[id] = nil
         stopReasons[id] = nil
         titleTasks[id]?.cancel()
@@ -501,7 +510,7 @@ public final class ChatWorkspaceModel {
     /// back from disk so the list shows what is still stored and the user can retry.
     @discardableResult
     public func deleteAllConversations() async -> Bool {
-        for task in generationTasks.values { task.cancel() }
+        for generation in generationTasks.values { generation.task.cancel() }
         for task in titleTasks.values { task.cancel() }
         generationTasks.removeAll()
         stopReasons.removeAll()
@@ -586,15 +595,91 @@ public final class ChatWorkspaceModel {
 
     private func startGeneration(text: String?, attachments: [ChatImageAttachment], conversation: ChatConversation) {
         let revision = credentialRevision
-        generationTasks[conversation.id] = Task {
-            await self.performSend(text: text, attachments: attachments, conversation: conversation, revision: revision)
+        schedule(in: conversation.id) { attemptID in
+            await self.performSend(text: text, attachments: attachments, conversation: conversation,
+                                   revision: revision, attemptID: attemptID)
         }
+    }
+
+    private func schedule(in conversationID: UUID, operation: @escaping @MainActor (UUID) async -> Void) {
+        let id = UUID()
+        let task = Task {
+            await operation(id)
+            if generationTasks[conversationID]?.id == id {
+                generationTasks[conversationID] = nil
+                stopReasons[conversationID] = nil
+            }
+        }
+        generationTasks[conversationID] = Generation(id: id, task: task)
+    }
+
+    public func continuation(for conversationID: UUID) -> ChatContinuation? {
+        guard !isGenerating(conversationID) else { return nil }
+        return continuationTarget(for: conversationID)
+    }
+
+    private func continuationTarget(for conversationID: UUID) -> ChatContinuation? {
+        guard generationBlocker(for: conversationID) == nil,
+              let conversation = conversation(conversationID), let server, let modelID = conversation.modelID,
+              let reply = conversation.messages.last, reply.permitsContinuation,
+              let question = conversation.messages.dropLast().last, question.role == .user,
+              reply.replyToID == nil || reply.replyToID == question.id else { return nil }
+        return ChatContinuation(conversationID: conversationID, questionID: question.id, replyID: reply.id,
+                                serverID: server.identifier, previousServerID: conversation.serverIdentifier,
+                                attemptCount: reply.attempts?.count ?? 0, revision: credentialRevision, modelID: modelID,
+                                previousModelID: reply.attempts?.last?.modelID ?? reply.modelID,
+                                isRetry: reply.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    @discardableResult
+    public func continueReply(_ target: ChatContinuation, confirmingServerChange: Bool = false) -> Bool {
+        let id = target.conversationID
+        guard continuation(for: id) == target,
+              confirmingServerChange || serverChange(for: id) == nil else { return false }
+        schedule(in: id) { attemptID in
+            await self.performContinuation(target, attemptID: attemptID)
+        }
+        return true
+    }
+
+    private func performContinuation(_ target: ChatContinuation, attemptID: UUID) async {
+        let id = target.conversationID
+        guard isCurrent(target.revision), generationTasks[id]?.id == attemptID,
+              continuationTarget(for: id) == target,
+              let server, let apiKey = activeKey, var conversation = conversation(id),
+              let saved = conversation.messages.last, let question = conversation.messages.dropLast().last else { return }
+        let original = saved.expandedPrompt ?? question.text
+        let effectivePrompt = ChatPromptBuilder.searchInjectedPrompt(original, sources: saved.searchSources)
+        let context = ChatPromptBuilder.continuationContext(
+            earlier: eligibleHistory(conversation), question: question, reply: saved, effectivePrompt: effectivePrompt)
+        let request = ChatEngineRequest(baseURL: server.baseURL.appendingPathComponent("v1"), apiKey: apiKey,
+                                       modelID: target.modelID,
+                                       instructions: ChatPromptBuilder.instructions(settings: settings, memories: memories,
+                                                                                    conversation: conversation),
+                                       history: context.history, prompt: context.prompt, images: context.images,
+                                       reasoningEffort: conversation.reasoningEffort)
+        var reply = saved
+        if reply.attempts == nil {
+            reply.attempts = [ChatReplyAttempt(modelID: saved.modelID, status: saved.status,
+                                               failure: saved.failure, usage: saved.usage)]
+        }
+        reply.replyToID = question.id
+        reply.status = .streaming
+        reply.failure = nil
+        reply.omittedHistoryCount = context.omitted > 0 ? context.omitted : nil
+        conversation.messages[conversation.messages.count - 1] = reply
+        conversation.serverIdentifier = server.identifier
+        conversation.updatedAt = Date()
+        applyConversation(conversation)
+        let token = beginBackgroundTask(in: id, assistantID: saved.id, attemptID: attemptID)
+        defer { backgroundRunner.endTask(token) }
+        _ = await consume(request, in: id, assistant: reply, revision: target.revision, attemptID: attemptID)
     }
 
     public func stop(_ conversationID: UUID) {
         guard generationTasks[conversationID] != nil, stopReasons[conversationID] == nil else { return }
         stopReasons[conversationID] = .userStopped
-        generationTasks[conversationID]?.cancel()
+        generationTasks[conversationID]?.task.cancel()
     }
 
     /// Drops the assistant message and everything after it, then reruns from
@@ -640,6 +725,12 @@ public final class ChatWorkspaceModel {
 
     public func deleteMessage(_ id: UUID, in conversationID: UUID) {
         guard var conversation = self.conversation(conversationID) else { return }
+        // A legacy reply might not have a parent ID yet. Removing its question
+        // must not make an earlier, unrelated question eligible for continuation.
+        if let index = conversation.messages.firstIndex(where: { $0.id == id && $0.role == .user }),
+           index + 1 < conversation.messages.count, conversation.messages[index + 1].role == .assistant {
+            conversation.messages[index + 1].replyToID = id
+        }
         conversation.messages.removeAll { $0.id == id }
         updateConversationSilently(conversation)
     }
@@ -656,12 +747,8 @@ public final class ChatWorkspaceModel {
     /// `text` nil means the triggering user message is already the last
     /// message (regenerate / editAndResend); otherwise it is appended.
     private func performSend(text: String?, attachments: [ChatImageAttachment],
-                             conversation snapshot: ChatConversation, revision: UInt64) async {
+                             conversation snapshot: ChatConversation, revision: UInt64, attemptID: UUID) async {
         let conversationID = snapshot.id
-        defer {
-            generationTasks[conversationID] = nil
-            stopReasons[conversationID] = nil
-        }
         // A cancelled or superseded task must not change the next connection's state.
         guard isCurrent(revision), conversations.contains(where: { $0.id == conversationID }) else { return }
         var conversation = snapshot
@@ -699,8 +786,11 @@ public final class ChatWorkspaceModel {
 
         // Assistant placeholder: applied and persisted before any async work so
         // the user message is visible immediately.
-        let assistant = ChatMessage(role: .assistant, text: "", modelID: modelID,
+        var assistant = ChatMessage(role: .assistant, text: "", modelID: modelID,
                                     status: .streaming)
+        assistant.replyToID = userMessage.id
+        assistant.attempts = []
+        assistant.expandedPrompt = modelPrompt == userMessage.text ? nil : modelPrompt
         let assistantID = assistant.id
         conversation.messages.append(assistant)
         conversation.updatedAt = Date()
@@ -711,24 +801,13 @@ public final class ChatWorkspaceModel {
         // exclude the placeholder and the triggering user message (sent as `prompt`).
         let instructions = ChatPromptBuilder.instructions(
             settings: settings, memories: memories, conversation: conversation)
-        let candidates = conversation.messages.dropLast(2).filter {
-            // An image-only question stays part of the history.
-            (!$0.text.isEmpty || ($0.role == .user && !$0.attachments.isEmpty))
-                && ($0.status == .complete || $0.status == .stopped)
-        }
-        let (history, omittedCount) = ChatPromptBuilder.boundedHistory(Array(candidates))
+        let (history, omittedCount) = ChatPromptBuilder.boundedHistory(eligibleHistory(conversation))
         if omittedCount > 0 {
             mutateAssistant(assistantID, in: conversationID) { $0.omittedHistoryCount = omittedCount }
         }
 
         let baseURL = server.baseURL.appendingPathComponent("v1")
-        let token = backgroundRunner.beginTask { [weak self] in
-            guard let self, self.stopReasons[conversationID] == nil,
-                  self.conversation(conversationID)?.messages.last?.id == assistantID,
-                  self.conversation(conversationID)?.messages.last?.status == .streaming else { return }
-            self.stopReasons[conversationID] = .backgroundExpired
-            self.generationTasks[conversationID]?.cancel()
-        }
+        let token = beginBackgroundTask(in: conversationID, assistantID: assistantID, attemptID: attemptID)
         defer { backgroundRunner.endTask(token) }
 
         // Optional web search injection. Cancellation mid-search ends the turn
@@ -782,16 +861,61 @@ public final class ChatWorkspaceModel {
             images: userMessage.attachments,
             reasoningEffort: conversation.reasoningEffort)
 
+        let succeeded = await consume(request, in: conversationID, assistant: assistant,
+                                      revision: revision, attemptID: attemptID)
+        if succeeded, isCurrent(revision), settings.generatesTitles,
+           let current = self.conversation(conversationID),
+           current.messages.filter({ $0.role == .assistant && $0.status == .complete }).count == 1,
+           let replaceableTitle, current.title == replaceableTitle,
+           let reply = current.messages.last(where: { $0.id == assistantID })?.text {
+            generateTitle(conversationID: conversationID, userText: userMessage.text,
+                          reply: reply, request: request, revision: revision,
+                          replacing: replaceableTitle)
+        }
+    }
+
+    private func eligibleHistory(_ conversation: ChatConversation) -> [ChatMessage] {
+        conversation.messages.dropLast(2).filter {
+            (!$0.text.isEmpty || ($0.role == .user && !$0.attachments.isEmpty))
+                && ($0.status == .complete || $0.status == .stopped)
+        }
+    }
+
+    private func beginBackgroundTask(in conversationID: UUID, assistantID: UUID, attemptID: UUID) -> ChatBackgroundToken {
+        backgroundRunner.beginTask { [weak self] in
+            guard let self, self.generationTasks[conversationID]?.id == attemptID, self.stopReasons[conversationID] == nil,
+                  self.conversation(conversationID)?.messages.last?.id == assistantID,
+                  self.conversation(conversationID)?.messages.last?.status == .streaming else { return }
+            self.stopReasons[conversationID] = .backgroundExpired
+            self.generationTasks[conversationID]?.task.cancel()
+        }
+    }
+
+    private func consume(_ request: ChatEngineRequest, in conversationID: UUID, assistant: ChatMessage,
+                         revision: UInt64, attemptID: UUID) async -> Bool {
+        let assistantID = assistant.id
+        var boundary = ChatContinuationBoundary(base: assistant.text)
+        let previousUsage = assistant.usage ?? ChatTokenUsage()
+        mutateAssistant(assistantID, in: conversationID) {
+            $0.attempts?.append(ChatReplyAttempt(modelID: request.modelID, status: .streaming))
+        }
+        if let current = conversation(conversationID) { persist(current) }
         var succeeded = false
         var lastPartialWrite = ContinuousClock.now
         do {
             for try await event in engine.stream(request) {
                 try Task.checkCancellation()
+                guard generationTasks[conversationID]?.id == attemptID, isCurrent(revision) else { return false }
                 switch event {
                 case .snapshot(let text, let reasoning):
+                    let suffix = boundary.suffix(for: text)
                     mutateAssistant(assistantID, in: conversationID) {
-                        $0.text = text
-                        $0.reasoning = reasoning
+                        $0.text = assistant.text + suffix.visible
+                        $0.pendingContinuation = suffix.pending
+                        if let reasoning, !reasoning.isEmpty {
+                            let previous = assistant.reasoning ?? ""
+                            $0.reasoning = previous.isEmpty ? reasoning : previous + "\n\n" + reasoning
+                        }
                     }
                     // Throttled partial writes keep displayed text if the app is terminated mid-stream.
                     let now = ContinuousClock.now
@@ -802,7 +926,10 @@ public final class ChatWorkspaceModel {
                     }
                 case .usage(let usage):
                     mutateAssistant(assistantID, in: conversationID) {
-                        $0.usage = usage
+                        if let last = $0.attempts?.indices.last { $0.attempts?[last].usage = usage }
+                        $0.usage = ChatTokenUsage(inputTokens: previousUsage.inputTokens + usage.inputTokens,
+                                                 outputTokens: previousUsage.outputTokens + usage.outputTokens,
+                                                 reasoningTokens: previousUsage.reasoningTokens + usage.reasoningTokens)
                     }
                 }
             }
@@ -811,6 +938,7 @@ public final class ChatWorkspaceModel {
             mutateAssistant(assistantID, in: conversationID) { $0.status = .complete }
             succeeded = true
         } catch {
+            guard generationTasks[conversationID]?.id == attemptID else { return false }
             if !isCurrent(revision) || AnyLanguageModelChatEngine.failure(for: error) == nil {
                 // Cancellation: user stop or background expiration.
                 finishAborted(assistantID: assistantID, in: conversationID)
@@ -822,26 +950,17 @@ public final class ChatWorkspaceModel {
             }
         }
 
+        mutateAssistant(assistantID, in: conversationID) { $0.finishAttempt() }
         // Await the final write so an interrupted reply is on disk before iOS
         // can suspend the app when endTask runs.
         if let updated = self.conversation(conversationID) {
             await persist(updated).value
         }
 
-        if succeeded, isCurrent(revision) {
-            if backgroundRunner.isAppInBackground, settings.notifiesOnBackgroundCompletion {
-                await backgroundRunner.notifyCompletion(conversationID: conversationID)
-            }
-            if isCurrent(revision), settings.generatesTitles,
-               let current = self.conversation(conversationID),
-               current.messages.filter({ $0.role == .assistant && $0.status == .complete }).count == 1,
-               let replaceableTitle, current.title == replaceableTitle,
-               let reply = current.messages.last(where: { $0.id == assistantID })?.text {
-                generateTitle(conversationID: conversationID, userText: userMessage.text,
-                              reply: reply, request: request, revision: revision,
-                              replacing: replaceableTitle)
-            }
+        if succeeded, isCurrent(revision), backgroundRunner.isAppInBackground, settings.notifiesOnBackgroundCompletion {
+            await backgroundRunner.notifyCompletion(conversationID: conversationID)
         }
+        return succeeded
     }
 
     private func failFast(_ conversation: inout ChatConversation, with failure: ChatFailure,
@@ -918,6 +1037,9 @@ public final class ChatWorkspaceModel {
             switch reason {
             case .userStopped:
                 $0.status = .stopped
+            case .connectionChanged:
+                $0.status = .interrupted
+                $0.failure = .connectionChanged
             case .backgroundExpired:
                 $0.status = .interrupted
                 $0.failure = .interruptedInBackground
