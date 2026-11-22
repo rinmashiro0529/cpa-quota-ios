@@ -51,6 +51,7 @@ public enum ChatFailure: Equatable, Sendable, Codable {
     case invalidResponse
     case connectionChanged
     case streamInterrupted
+    case continuationAddedNothing
     case searchFailed
     /// Web search was on but no search service or key was usable; the reply was generated without it.
     case searchNotConfigured

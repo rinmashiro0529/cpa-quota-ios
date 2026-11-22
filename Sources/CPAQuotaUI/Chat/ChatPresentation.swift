@@ -75,6 +75,11 @@ public struct ChatFailurePresentation: Equatable, Sendable {
             summary = "服务在生成结束前断开了连接，已收到的内容保留在对话中。"
             symbolName = "wifi.exclamationmark"
             severity = .warning
+        case .continuationAddedNothing:
+            title = "续写没有产生新内容"
+            summary = "续写没有产生新内容，可再次续写。"
+            symbolName = "text.badge.plus"
+            severity = .neutral
         case .invalidResponse:
             title = "回复格式无法识别"
             summary = "CPA 返回的数据不是可识别的对话格式。可以换用其他模型重试。"

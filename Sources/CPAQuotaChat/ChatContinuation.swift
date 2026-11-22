@@ -29,7 +29,7 @@ extension ChatMessage {
         case .interrupted, .stopped: return true
         case .failed:
             switch failure {
-            case .network, .timeout, .streamInterrupted: return true
+            case .network, .timeout, .streamInterrupted, .continuationAddedNothing: return true
             case .unauthorized, .forbidden, .modelUnavailable, .rateLimited, .upstream:
                 // Retain the ability to continue the original partial reply
                 // after fixing a later attempt's credential or model.

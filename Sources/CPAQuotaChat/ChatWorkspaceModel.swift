@@ -935,8 +935,18 @@ public final class ChatWorkspaceModel {
             }
             // A cancelled consumer may see the stream end normally.
             try Task.checkCancellation()
-            mutateAssistant(assistantID, in: conversationID) { $0.status = .complete }
-            succeeded = true
+            let addedAnswerText = self.conversation(conversationID)?.messages
+                .first(where: { $0.id == assistantID })
+                .map { $0.text != assistant.text || !($0.pendingContinuation ?? "").isEmpty } ?? false
+            if assistant.attempts?.isEmpty == false, !addedAnswerText {
+                mutateAssistant(assistantID, in: conversationID) {
+                    $0.status = .failed
+                    $0.failure = .continuationAddedNothing
+                }
+            } else {
+                mutateAssistant(assistantID, in: conversationID) { $0.status = .complete }
+                succeeded = true
+            }
         } catch {
             guard generationTasks[conversationID]?.id == attemptID else { return false }
             if !isCurrent(revision) || AnyLanguageModelChatEngine.failure(for: error) == nil {
