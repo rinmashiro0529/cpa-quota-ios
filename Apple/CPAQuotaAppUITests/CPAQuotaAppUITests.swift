@@ -825,6 +825,7 @@ final class CPAQuotaAppUITests: XCTestCase {
             _ = await rotateDeviceAndWaitForWindow(in: app, policy: layoutPolicy(in: app))
             XCTAssertTrue(menu.isHittable)
             XCTAssertTrue(element("chat.attach", in: app).isHittable)
+            XCTAssertTrue(element("chat.reasoningTrigger", in: app).isHittable)
             XCTAssertTrue(app.frame.contains(CGPoint(x: send.frame.midX, y: send.frame.midY)))
             attach(app, name: "chat-large-landscape-" + appearance)
         }
@@ -883,6 +884,88 @@ final class CPAQuotaAppUITests: XCTestCase {
         selectTab("chat", title: "AI 对话", in: app)
         element("chat.emptyNew", in: app).tap()
         XCTAssertTrue(element("chat.modelMenu", in: app).label.contains("fixture-chat-alternate"))
+    }
+
+    @MainActor
+    func testChatReasoningPickerSelectsPersistsAndShowsFallbackNotice() {
+        let args = [
+            "--ui-test-chat-store=\(UUID().uuidString)",
+            "--ui-test-chat-reasoning",
+            "--ui-test-chat-reasoning-fallback",
+            "--ui-test-theme=dark",
+        ]
+        let app = launch(connected: true, arguments: args)
+        defer { app.terminate() }
+        selectTab("chat", title: "AI 对话", in: app)
+        element("chat.emptyNew", in: app).tap()
+
+        let trigger = element("chat.reasoningTrigger", in: app)
+        expectExists(trigger, in: app)
+        XCTAssertEqual(trigger.value as? String, "自动")
+
+        trigger.tap()
+        let slider = element("chat.reasoningSlider", in: app)
+        expectExists(slider, in: app)
+        let xhighOption = element("chat.reasoningOption.xhigh", in: app)
+        expectExists(xhighOption, in: app)
+        xhighOption.tap()
+        let activeTitle = element("chat.reasoningActiveTitle", in: app)
+        expectExists(activeTitle, in: app)
+        expectPredicate(NSPredicate(format: "label == %@", "极高"), on: activeTitle, in: app,
+                        message: "Selecting xhigh must update the popover header.",
+                        finalCheck: { activeTitle.label == "极高" })
+        attach(app, name: "chat-reasoning-popover-dark")
+
+        element("chat.reasoningOption.max", in: app).tap()
+        expectPredicate(NSPredicate(format: "label == %@", "最大"), on: activeTitle, in: app,
+                        message: "Selecting max must update the popover header.",
+                        finalCheck: { activeTitle.label == "最大" })
+        if slider.exists {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2)).tap()
+            expectPredicate(NSPredicate(format: "exists == false"), on: slider, in: app,
+                            message: "Tapping outside must dismiss the reasoning popover.",
+                            finalCheck: { !slider.exists })
+        }
+        expectPredicate(NSPredicate(format: "value == %@", "最大"), on: trigger, in: app,
+                        message: "Composer trigger must display the chosen max reasoning level.",
+                        finalCheck: { trigger.value as? String == "最大" })
+
+        let input = element("chat.input", in: app)
+        input.tap()
+        input.typeText("测试思考等级")
+        element("chat.send", in: app).tap()
+        expectExists(textContaining("已按思考等级「max」回复", in: app), in: app)
+        let notice = element("chat.message.reasoningNotice", in: app)
+        expectExists(notice, in: app)
+        XCTAssertTrue(notice.label.contains("已按「高」发送"))
+
+        // New conversation remembers `.max` for `fixture-chat-default`.
+        let backButton = element("BackButton", in: app)
+        expectExists(backButton, in: app)
+        backButton.tap()
+        element("chat.new", in: app).tap()
+        expectExists(trigger, in: app)
+        expectPredicate(NSPredicate(format: "value == %@", "最大"), on: trigger, in: app,
+                        message: "A new conversation must recall the model's last reasoning effort.",
+                        finalCheck: { trigger.value as? String == "最大" })
+
+        // Switching to another model in an empty conversation adopts its own preference (`.automatic`).
+        element("chat.modelMenu", in: app).tap()
+        textContaining("fixture-chat-alternate", in: app).tap()
+        expectPredicate(NSPredicate(format: "value == %@", "自动"), on: trigger, in: app,
+                        message: "Switching to an unconfigured model in an empty conversation must default to automatic.",
+                        finalCheck: { trigger.value as? String == "自动" })
+
+        // Conversation options sync with the composer trigger.
+        element("chat.options", in: app).tap()
+        let offOption = element("chat.reasoningOption.off", in: app)
+        if !offOption.isHittable { reveal(offOption, in: app) }
+        offOption.tap()
+        app.buttons["完成"].tap()
+        expectExists(trigger, in: app)
+        expectPredicate(NSPredicate(format: "value == %@", "关闭"), on: trigger, in: app,
+                        message: "Changing reasoning effort in conversation options must sync to the composer trigger.",
+                        finalCheck: { trigger.value as? String == "关闭" })
     }
 
     @MainActor

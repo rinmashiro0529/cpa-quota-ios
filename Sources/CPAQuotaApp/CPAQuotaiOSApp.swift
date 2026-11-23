@@ -381,6 +381,19 @@ private actor UITestChatEngine: ChatEngine {
     nonisolated func stream(_ request: ChatEngineRequest) -> AsyncThrowingStream<ChatEngineEvent, any Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
+                if ProcessInfo.processInfo.arguments.contains("--ui-test-chat-reasoning") {
+                    continuation.yield(.snapshot(text: "已按思考等级「\(request.reasoningEffort.rawValue)」回复", reasoning: nil))
+                    if ProcessInfo.processInfo.arguments.contains("--ui-test-chat-reasoning-fallback"),
+                       request.reasoningEffort == .max {
+                        continuation.yield(.reasoningResolution(ChatReasoningResolution(
+                            requested: .max,
+                            applied: .high,
+                            outcome: .downgraded
+                        )))
+                    }
+                    continuation.finish()
+                    return
+                }
                 let attempt = await self.nextAttempt()
                 if attempt == 1 {
                     continuation.yield(.snapshot(text: "第一段夹具回复", reasoning: nil))
