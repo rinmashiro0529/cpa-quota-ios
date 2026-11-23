@@ -37,7 +37,7 @@ struct ChatMessageView: View {
             case .user:
                 VStack(alignment: .trailing, spacing: 0) {
                     userBody(palette)
-                    if let edit = actions.edit, !isConversationGenerating {
+                    if let edit = actions.edit {
                         Button(action: edit) {
                             Label("编辑并重新发送", systemImage: "pencil")
                                 .labelStyle(.iconOnly)
@@ -45,6 +45,7 @@ struct ChatMessageView: View {
                         }
                         .buttonStyle(.borderless)
                         .foregroundStyle(palette.textSecondary)
+                        .disabled(isConversationGenerating)
                         .accessibilityIdentifier("chat.edit")
                     }
                 }

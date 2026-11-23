@@ -321,7 +321,14 @@ private struct UITestChatModelCatalog: ChatModelCatalog {
     }
 
     func releaseAnswer() {
-        let answer = ProcessInfo.processInfo.arguments.contains("--ui-test-chat-html") ? Self.htmlFixture : "放行后的正文"
+        let answer: String
+        if ProcessInfo.processInfo.arguments.contains("--ui-test-chat-html") {
+            answer = Self.htmlFixture
+        } else if !paragraphs.isEmpty {
+            answer = paragraphs.joined(separator: "\n\n")
+        } else {
+            answer = "放行后的正文"
+        }
         current?.yield(.snapshot(text: answer, reasoning: "可见推理片段"))
         current?.finish()
         current = nil

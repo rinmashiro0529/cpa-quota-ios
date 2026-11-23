@@ -100,20 +100,18 @@ struct ChatConversationView: View {
                     }
                     Color.clear
                         .frame(height: 1)
+                        .padding(.bottom, 12)
                         .id(Self.bottomAnchor)
                 }
                 .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.top, 12)
             }
-            .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
             .modifier(ChatScrollEdgeModifier())
             .modifier(ChatStreamingAutoScrollModifier(
                 proxy: proxy,
                 bottomAnchor: Self.bottomAnchor,
-                isGenerating: isGenerating,
-                messageCount: conversation.messages.count,
-                latestTextLength: conversation.messages.last?.text.count ?? 0
+                messageCount: conversation.messages.count
             ))
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
@@ -468,68 +466,69 @@ private struct ChatScrollEdgeModifier: ViewModifier {
 private struct ChatStreamingAutoScrollModifier: ViewModifier {
     let proxy: ScrollViewProxy
     let bottomAnchor: String
-    let isGenerating: Bool
     let messageCount: Int
-    let latestTextLength: Int
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isPinnedToBottom = true
     @State private var isUserScrolling = false
-    @State private var distanceFromBottom: CGFloat = 0
+    @State private var isAnimating = false
 
     @ViewBuilder
     func body(content: Content) -> some View {
         let base = content
             .onChange(of: messageCount) { oldCount, newCount in
-                guard newCount > oldCount else { return }
+                guard newCount > oldCount, !isUserScrolling else { return }
                 isPinnedToBottom = true
-                withAnimation(.easeOut(duration: 0.2)) {
-                    proxy.scrollTo(bottomAnchor, anchor: .bottom)
-                }
+                scrollToBottom()
             }
         if #available(iOS 18.0, macOS 15.0, *) {
             base
-                .onScrollPhaseChange { oldPhase, newPhase in
-                    let wasUser = oldPhase == .interacting || oldPhase == .decelerating
-                    let isUser = newPhase == .interacting || newPhase == .decelerating
-                    isUserScrolling = isUser
-                    if isUser || wasUser {
-                        isPinnedToBottom = distanceFromBottom <= 24
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
+                .defaultScrollAnchor(.bottom, for: .alignment)
+                .onScrollPhaseChange { oldPhase, newPhase, context in
+                    let didScroll = oldPhase == .interacting || oldPhase == .decelerating
+                    let isScrolling = newPhase == .interacting || newPhase == .decelerating
+                    let metrics = ScrollMetrics(context.geometry)
+                    isUserScrolling = newPhase == .tracking || isScrolling
+                    isAnimating = newPhase == .animating
+                    if didScroll || isScrolling {
+                        isPinnedToBottom = metrics.distanceFromBottom <= 24
+                    }
+                    if newPhase == .idle {
+                        followBottomIfNeeded(metrics)
                     }
                 }
-                .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
-                    let maxOffsetY = max(
-                        -geometry.contentInsets.top,
-                        geometry.contentSize.height + geometry.contentInsets.bottom - geometry.containerSize.height
-                    )
-                    let distance = max(0, maxOffsetY - geometry.contentOffset.y)
-                    return ScrollMetrics(
-                        contentHeight: geometry.contentSize.height,
-                        bottomInset: geometry.contentInsets.bottom,
-                        distanceFromBottom: distance
-                    )
-                } action: { oldValue, newValue in
-                    distanceFromBottom = newValue.distanceFromBottom
-                    if isUserScrolling {
-                        isPinnedToBottom = newValue.distanceFromBottom <= 24
-                    } else if isPinnedToBottom,
-                              (newValue.contentHeight > oldValue.contentHeight + 1
-                               || newValue.bottomInset > oldValue.bottomInset + 1),
-                              newValue.distanceFromBottom > 1 {
-                        proxy.scrollTo(bottomAnchor, anchor: .bottom)
-                    }
-                }
-                .onChange(of: latestTextLength) { oldLength, newLength in
-                    guard isGenerating, isPinnedToBottom, !isUserScrolling, newLength > oldLength else { return }
-                    proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                .onScrollGeometryChange(for: ScrollMetrics.self) { ScrollMetrics($0) } action: { oldValue, newValue in
+                    guard oldValue.bottomOffset != newValue.bottomOffset else { return }
+                    followBottomIfNeeded(newValue)
                 }
         } else {
-            base
+            base.defaultScrollAnchor(.bottom)
+        }
+    }
+
+    private func followBottomIfNeeded(_ metrics: ScrollMetrics) {
+        guard isPinnedToBottom, !isUserScrolling, !isAnimating, metrics.distanceFromBottom > 1 else { return }
+        scrollToBottom()
+    }
+
+    private func scrollToBottom() {
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
+            proxy.scrollTo(bottomAnchor, anchor: .bottom)
         }
     }
 
     private struct ScrollMetrics: Equatable, Sendable {
-        let contentHeight: CGFloat
-        let bottomInset: CGFloat
+        let bottomOffset: CGFloat
         let distanceFromBottom: CGFloat
+
+        @available(iOS 18.0, macOS 15.0, *)
+        init(_ geometry: ScrollGeometry) {
+            bottomOffset = max(
+                -geometry.contentInsets.top,
+                geometry.contentSize.height + geometry.contentInsets.bottom - geometry.containerSize.height
+            )
+            distanceFromBottom = max(0, bottomOffset - geometry.contentOffset.y)
+        }
     }
 }
 #endif

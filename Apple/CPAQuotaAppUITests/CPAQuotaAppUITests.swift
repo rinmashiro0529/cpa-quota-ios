@@ -757,6 +757,17 @@ final class CPAQuotaAppUITests: XCTestCase {
         expectExists(textContaining("阅读段落 36", in: app), in: app)
         XCTAssertTrue(viewport.contains(CGPoint(x: first.frame.midX, y: first.frame.midY)))
         XCTAssertEqual(first.frame.midY, originalY, accuracy: 30)
+
+        let firstParagraph = textContaining("阅读段落 1", in: app)
+        let edit = element("chat.edit", in: app)
+        expectExists(firstParagraph, in: app)
+        XCTAssertFalse(edit.isEnabled)
+        let replyOffset = firstParagraph.frame.minY - first.frame.minY
+        element("ui-test.chat.release", in: app).tap()
+        expectExists(edit, in: app)
+        XCTAssertTrue(edit.isEnabled)
+        XCTAssertTrue(viewport.contains(CGPoint(x: first.frame.midX, y: first.frame.midY)))
+        XCTAssertEqual(firstParagraph.frame.minY - first.frame.minY, replyOffset, accuracy: 2)
     }
 
     @MainActor
