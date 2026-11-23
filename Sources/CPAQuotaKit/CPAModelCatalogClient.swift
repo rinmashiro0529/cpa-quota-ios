@@ -67,10 +67,10 @@ public actor CPAModelCatalogClient {
         var seen = Set<String>()
         var models: [CPAModel] = []
         for item in items {
-            guard let id = nonEmptyWireString(item.stringAt("id")), seen.insert(id).inserted else {
+            guard let id = nonEmptyWireString(item.strictStringAt("id")), seen.insert(id).inserted else {
                 continue
             }
-            models.append(CPAModel(id: id, ownedBy: nonEmptyWireString(item.stringAt("owned_by"))))
+            models.append(CPAModel(id: id, ownedBy: nonEmptyWireString(item.strictStringAt("owned_by"))))
         }
         return models.sorted { $0.id < $1.id }
     }

@@ -33,22 +33,38 @@ struct ChatHTMLSnippetButtons: View {
 struct ChatHTMLPreview: View {
     let snippet: ChatHTMLSnippet
     @Environment(\.dismiss) private var dismiss
-    @State private var showsSource = false
+    @State private var showsSource: Bool
     @State private var loadFailed = false
     @State private var revision = 0
+
+    private static var supportsStaticPreview: Bool {
+        if #available(iOS 18.4, *) { return true }
+        return false
+    }
+
+    init(snippet: ChatHTMLSnippet) {
+        self.snippet = snippet
+        _showsSource = State(initialValue: !Self.supportsStaticPreview)
+    }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 8) {
-                Picker("显示方式", selection: $showsSource) {
-                    Text("预览").tag(false)
-                    Text("源码").tag(true)
+                if Self.supportsStaticPreview {
+                    Picker("显示方式", selection: $showsSource) {
+                        Text("预览").tag(false)
+                        Text("源码").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal)
                 }
-                .pickerStyle(.segmented)
-                .padding(.horizontal)
 
-                if showsSource {
-                    if loadFailed {
+                if showsSource || !Self.supportsStaticPreview {
+                    if !Self.supportsStaticPreview {
+                        Text("静态预览需要 iOS 18.4 及以上系统，当前仅展示源码，可复制使用。")
+                            .font(.footnote)
+                            .padding(.horizontal)
+                    } else if loadFailed {
                         Text("预览载入失败，可复制源码或刷新重试。").font(.footnote)
                     }
                     ScrollView {
@@ -73,12 +89,14 @@ struct ChatHTMLPreview: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("关闭") { dismiss() }
                 }
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        loadFailed = false
-                        showsSource = false
-                        revision += 1
-                    } label: { Label("刷新", systemImage: "arrow.clockwise") }
+                if Self.supportsStaticPreview {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            loadFailed = false
+                            showsSource = false
+                            revision += 1
+                        } label: { Label("刷新", systemImage: "arrow.clockwise") }
+                    }
                 }
             }
         }

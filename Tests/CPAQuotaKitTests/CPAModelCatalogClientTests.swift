@@ -109,4 +109,18 @@ struct CPAModelCatalogClientTests {
             #expect(error.kind == .invalidResponse)
         }
     }
+
+    @Test func nonStringModelIDsAreIgnored() async throws {
+        let transport = StubHTTPTransport()
+        await transport.respond("/v1/models", status: 200, body: """
+            {"data":[
+                {"id":123,"owned_by":"num"},
+                {"id":true,"owned_by":"bool"},
+                {"id":false,"owned_by":42},
+                {"id":"valid-model","owned_by":999}
+            ]}
+            """)
+        let models = try await makeClient(transport).models()
+        #expect(models == [CPAModel(id: "valid-model", ownedBy: nil)])
+    }
 }

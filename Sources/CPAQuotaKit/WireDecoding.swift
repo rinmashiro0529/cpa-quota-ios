@@ -113,6 +113,11 @@ enum WireJSON: Sendable, Equatable {
         WireJSON.scalarString(lookup(keys))
     }
 
+    func strictStringAt(_ keys: String...) -> String? {
+        guard let value = lookup(keys), case .string(let text) = value else { return nil }
+        return text
+    }
+
     /// Identity fields use the preserved integral representation, never Double.
     /// Larger or floating-point identifiers must be supplied as strings.
     func identityAt(_ keys: String...) throws -> String? {

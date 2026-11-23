@@ -12,8 +12,9 @@ struct ChatSettingsView: View {
     @State private var manualKeyDraft = ""
     @State private var manualKeyRejected = false
     @State private var searchKeyDraft = ""
-    @State private var searchKeySaved: Bool?
+    @State private var searchKeyStatus: ChatSearchKeyStatus?
     @State private var searchKeyRejected = false
+    @State private var searchKeyRemovalFailed = false
     @State private var notificationStatus: ChatNotificationAuthorization?
     @State private var isConfirmingDeleteAll = false
     @State private var isDeletingAll = false
@@ -26,6 +27,28 @@ struct ChatSettingsView: View {
             modelSection(palette)
 
             Section {
+                if chat.settingsLoadFailed {
+                    Label("偏好设置读取失败，已暂时停用记忆附加，请重试读取。", systemImage: "exclamationmark.triangle")
+                        .font(.footnote)
+                        .foregroundStyle(palette.statusWarn)
+                    Button {
+                        Task { await chat.retryLoadMetadata() }
+                    } label: {
+                        Label("重试读取设置", systemImage: "arrow.clockwise")
+                            .frame(minHeight: 44)
+                    }
+                }
+                if chat.unsavedSettings {
+                    Label("偏好设置未能保存到本机，重启后可能恢复旧状态。", systemImage: "exclamationmark.triangle")
+                        .font(.footnote)
+                        .foregroundStyle(palette.statusWarn)
+                    Button {
+                        Task { _ = await chat.retrySaveSettings() }
+                    } label: {
+                        Label("重试保存设置", systemImage: "arrow.clockwise")
+                            .frame(minHeight: 44)
+                    }
+                }
                 NavigationLink {
                     ChatTextEditorView(
                         title: "全局规则",
@@ -90,8 +113,11 @@ struct ChatSettingsView: View {
             .listRowBackground(palette.contentSurface)
 
             Section {
-                if deleteAllFailed {
-                    Label("部分对话未能从本机删除，列表中保留的就是仍然存在的记录。可以重试。", systemImage: "exclamationmark.triangle")
+                if deleteAllFailed || chat.deleteAllStateUnknown {
+                    Label(chat.deleteAllStateUnknown
+                          ? "删除全部对话失败，且未能确认本机是否仍有剩余记录。请重试。"
+                          : "部分对话未能从本机删除，列表中保留的就是仍然存在的记录。可以重试。",
+                          systemImage: "exclamationmark.triangle")
                         .font(.footnote)
                         .foregroundStyle(palette.statusWarn)
                         .accessibilityIdentifier("chat.deleteAll.failed")
@@ -99,10 +125,10 @@ struct ChatSettingsView: View {
                 Button(role: .destructive) {
                     isConfirmingDeleteAll = true
                 } label: {
-                    Label(deleteAllFailed ? "重试删除全部对话" : "删除全部对话", systemImage: "trash")
+                    Label((deleteAllFailed || chat.deleteAllStateUnknown) ? "重试删除全部对话" : "删除全部对话", systemImage: "trash")
                         .frame(minHeight: 44)
                 }
-                .disabled(chat.conversations.isEmpty || isDeletingAll)
+                .disabled((chat.conversations.isEmpty && !deleteAllFailed && !chat.deleteAllStateUnknown) || isDeletingAll)
             } footer: {
                 Text("对话、记忆与技能只保存在本机，不会上传到 CPA 以外的服务。")
             }
@@ -138,6 +164,7 @@ struct ChatSettingsView: View {
             // A draft typed for one service must never be saved under another.
             searchKeyDraft = ""
             searchKeyRejected = false
+            searchKeyRemovalFailed = false
         }
         .onChange(of: chat.server) { _, _ in
             manualKeyDraft = ""
@@ -306,9 +333,18 @@ struct ChatSettingsView: View {
             if let provider = chat.settings.searchProvider {
                 QuotaLabeledValue(
                     title: "\(provider.displayName) Key",
-                    value: searchKeySaved == nil ? "检查中" : (searchKeySaved == true ? "已保存" : "未设置"),
+                    value: searchKeyStatusLabel,
                     monospaced: false
                 )
+                if searchKeyRemovalFailed {
+                    Label("未能移除保存的搜索 Key，旧 Key 可能仍然生效，请重试。", systemImage: "exclamationmark.triangle")
+                        .font(.footnote)
+                        .foregroundStyle(palette.statusWarn)
+                } else if searchKeyStatus == .unknown {
+                    Label("无法核实搜索 Key 的钥匙串状态，请稍后重试。", systemImage: "exclamationmark.triangle")
+                        .font(.footnote)
+                        .foregroundStyle(palette.statusWarn)
+                }
                 SecureField("填写 \(provider.displayName) API Key", text: $searchKeyDraft)
                     #if os(iOS)
                     .textInputAutocapitalization(.never)
@@ -327,7 +363,10 @@ struct ChatSettingsView: View {
                         let saved = await chat.saveSearchKey(draft, for: provider)
                         guard chat.settings.searchProvider == provider else { return }
                         searchKeyRejected = !saved
-                        if saved, searchKeyDraft == draft { searchKeyDraft = "" }
+                        if saved {
+                            searchKeyRemovalFailed = false
+                            if searchKeyDraft == draft { searchKeyDraft = "" }
+                        }
                         await refreshSearchKeyState()
                     }
                 } label: {
@@ -335,14 +374,17 @@ struct ChatSettingsView: View {
                         .frame(minHeight: 44)
                 }
                 .disabled(searchKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                if searchKeySaved == true {
+                if searchKeyStatus == .present || searchKeyStatus == .unknown || searchKeyRemovalFailed {
                     Button(role: .destructive) {
                         Task {
-                            await chat.removeSearchKey(for: provider)
+                            guard chat.settings.searchProvider == provider else { return }
+                            let removed = await chat.removeSearchKey(for: provider)
+                            guard chat.settings.searchProvider == provider else { return }
+                            searchKeyRemovalFailed = !removed
                             await refreshSearchKeyState()
                         }
                     } label: {
-                        Label("移除搜索 Key", systemImage: "trash")
+                        Label(searchKeyRemovalFailed ? "重试移除搜索 Key" : "移除搜索 Key", systemImage: "trash")
                             .frame(minHeight: 44)
                     }
                 }
@@ -363,13 +405,24 @@ struct ChatSettingsView: View {
         }
     }
 
+    private var searchKeyStatusLabel: String {
+        switch searchKeyStatus {
+        case nil: "检查中"
+        case .present: "已保存"
+        case .absent: "未设置"
+        case .unknown: "无法核实"
+        }
+    }
+
     private func refreshSearchKeyState() async {
         guard let provider = chat.settings.searchProvider else {
-            searchKeySaved = nil
+            searchKeyStatus = nil
             return
         }
-        searchKeySaved = nil
-        searchKeySaved = await chat.hasSearchKey(for: provider)
+        searchKeyStatus = nil
+        let status = await chat.searchKeyStatus(for: provider)
+        guard chat.settings.searchProvider == provider else { return }
+        searchKeyStatus = status
     }
 }
 

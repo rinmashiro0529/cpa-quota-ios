@@ -29,6 +29,8 @@ struct ChatComposerView: View {
     #endif
     @State private var isLoadingAttachments = false
     @State private var isSearchKeyMissing = false
+    @State private var continuationCooldown = false
+    @State private var cooldownTask: Task<Void, Never>?
 
     private var isGenerating: Bool { chat.isGenerating(conversation.id) }
 
@@ -138,6 +140,25 @@ struct ChatComposerView: View {
         .onChange(of: editingMessageID) { _, id in
             if id != nil { isFocused = true }
         }
+        .onChange(of: isGenerating) { wasGenerating, nowGenerating in
+            cooldownTask?.cancel()
+            if wasGenerating, !nowGenerating {
+                // Brief lockout after stop/completion prevents an accidental double-tap
+                // on the stop button slot from immediately firing a billable continuation.
+                continuationCooldown = true
+                cooldownTask = Task {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    guard !Task.isCancelled else { return }
+                    continuationCooldown = false
+                }
+            } else {
+                continuationCooldown = false
+            }
+        }
+        .onDisappear {
+            cooldownTask?.cancel()
+            continuationCooldown = false
+        }
         .task(id: "\(chat.settings.searchProvider?.rawValue ?? "-")|\(conversation.isWebSearchEnabled)") {
             guard conversation.isWebSearchEnabled, let provider = chat.settings.searchProvider else {
                 isSearchKeyMissing = false
@@ -239,7 +260,7 @@ struct ChatComposerView: View {
             .accessibilityIdentifier("chat.stop")
         } else if let target = continuation {
             Button {
-                guard continuation == target else { return }
+                guard !continuationCooldown, continuation == target else { return }
                 onContinue(target)
             } label: {
                 Image(systemName: target.isRetry ? "arrow.clockwise" : "arrow.up.right")
@@ -247,7 +268,7 @@ struct ChatComposerView: View {
                     .frame(width: 44, height: 44)
             }
             .modifier(ChatRoundButtonStyle(prominent: true))
-            .keyboardShortcut(.return, modifiers: .command)
+            .disabled(continuationCooldown)
             .accessibilityLabel(target.isRetry ? "重试生成回复" : "续写上一条回复")
             .accessibilityHint("发起一次新的生成请求，可能产生额外用量")
             .accessibilityIdentifier(target.isRetry ? "chat.retry" : "chat.continue")

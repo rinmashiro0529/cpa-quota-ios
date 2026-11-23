@@ -88,6 +88,10 @@ public struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     var pendingContinuation: String?
     /// Preserve the original expansion when a slash skill changes later.
     var expandedPrompt: String?
+    /// Records whether web search finished for this turn (distinguishes zero results from an aborted search).
+    var searchCompleted: Bool?
+    /// Preserves the resolved web-search query so skill edits cannot alter a retried search boundary.
+    var searchQuery: String?
     public var searchSources: [ChatSearchSource]
     public var status: Status
     public var failure: ChatFailure?
@@ -160,13 +164,16 @@ public struct ChatConversation: Identifiable, Codable, Equatable, Sendable {
 }
 
 /// Continuing a conversation on a server other than the one its history was
-/// sent to. Sending requires explicit confirmation of what will be transmitted.
+/// sent to. Sending requires passing this bound token back so a destination or
+/// credential change while the confirmation is on screen cannot slip through.
 public struct ChatServerChange: Equatable, Sendable {
+    public let conversationID: UUID
     /// `nil` when the conversation predates server binding.
     public let previousServerIdentifier: String?
     public let currentServerIdentifier: String
     public let messageCount: Int
     public let imageCount: Int
+    let credentialRevision: UInt64
 }
 
 public struct ChatMemoryItem: Identifiable, Codable, Equatable, Sendable {
@@ -278,4 +285,10 @@ public enum ChatModelListState: Equatable, Sendable {
     case loading
     case loaded
     case failed(ChatFailure)
+}
+
+public enum ChatSearchKeyStatus: Equatable, Sendable {
+    case present
+    case absent
+    case unknown
 }

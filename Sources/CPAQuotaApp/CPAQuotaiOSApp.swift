@@ -1,6 +1,8 @@
 import Foundation
 #if DEBUG
+#if canImport(notify)
 import notify
+#endif
 @_spi(Testing) import CPAQuotaKit
 #else
 import CPAQuotaKit
