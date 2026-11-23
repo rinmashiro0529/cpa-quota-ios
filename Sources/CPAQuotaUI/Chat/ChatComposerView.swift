@@ -445,22 +445,25 @@ private struct ChatRoundButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         let isProminent = prominent && isEnabled
-        let label = configuration.label
+        configuration.label
             .foregroundStyle(isProminent ? palette.textOnAccent : palette.textPrimary)
             .frame(width: 36, height: 36)
-
-        Group {
-            if #available(iOS 26.0, macOS 26.0, *) {
-                let glass = isProminent ? Glass.regular.tint(palette.accent) : Glass.regular
-                label.glassEffect(glass.interactive(isEnabled), in: Circle())
-            } else {
-                label.background(isProminent ? palette.accent : palette.insetSurface, in: Circle())
+            .background {
+                if #available(iOS 26.0, macOS 26.0, *) {
+                    let glass = isProminent ? Glass.regular.tint(palette.accent) : Glass.regular
+                    // Keep the glass decorative so the button owns the press as its enabled state changes.
+                    Circle().fill(.clear)
+                        .glassEffect(glass, in: Circle())
+                        .allowsHitTesting(false)
+                } else {
+                    Circle().fill(isProminent ? palette.accent : palette.insetSurface)
+                        .allowsHitTesting(false)
+                }
             }
-        }
-        .opacity(isEnabled ? (configuration.isPressed ? 0.75 : 1) : 0.55)
-        // Match the composer row's hit area without increasing the visible circle.
-        .frame(width: 44, height: 44)
-        .contentShape(Rectangle())
+            .opacity(isEnabled ? (configuration.isPressed ? 0.75 : 1) : 0.55)
+            // Match the composer row's hit area without increasing the visible circle.
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
     }
 }
 #endif
