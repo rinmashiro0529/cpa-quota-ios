@@ -77,7 +77,9 @@ jobs:
             layout: duo-adaptive
             evidence: xcode27-duo
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 75
+    # A cold hosted runner reached the 75-minute limit with UI tests still
+    # passing. Allow time for the remaining tests, Release build and evidence.
+    timeout-minutes: 105
     env:
       DEVELOPER_DIR: /Applications/Xcode_${{ matrix.xcode }}.app/Contents/Developer
     steps:
