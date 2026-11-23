@@ -106,7 +106,6 @@ struct ChatConversationView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
             }
-            .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
             .modifier(ChatScrollEdgeModifier())
             .modifier(ChatStreamingAutoScrollModifier(
@@ -486,6 +485,9 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
         }
         if #available(iOS 18.0, macOS 15.0, *) {
             base
+                // Explicit follow requests own size changes, including when the keyboard is open.
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
+                .defaultScrollAnchor(.bottom, for: .alignment)
                 .onScrollPhaseChange { oldPhase, newPhase, context in
                     let wasScrolling = oldPhase == .interacting || oldPhase == .decelerating
                     let isScrolling = newPhase == .interacting || newPhase == .decelerating
@@ -509,7 +511,9 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
                 }
                 .onDisappear(perform: cancelFollow)
         } else {
-            base.onDisappear(perform: cancelFollow)
+            base
+                .defaultScrollAnchor(.bottom)
+                .onDisappear(perform: cancelFollow)
         }
     }
 

@@ -978,6 +978,68 @@ final class CPAQuotaAppUITests: XCTestCase {
     }
 
     @MainActor
+    func testChatTranscriptStaysVisibleWhenSendingAgainWithKeyboardOpen() throws {
+        guard #available(iOS 18.4, *) else { throw XCTSkip("The HTML preview buttons require WebKit file-panel cancellation.") }
+        let app = launch(connected: true, arguments: [
+            "--ui-test-chat-gate", "--ui-test-chat-html", "--ui-test-theme=dark",
+            "--ui-test-chat-store=\(UUID().uuidString)"
+        ])
+        defer { app.terminate() }
+        selectTab("chat", title: "AI 对话", in: app)
+        element("chat.emptyNew", in: app).tap()
+
+        let input = element("chat.input", in: app)
+        let keyboard = app.keyboards.firstMatch
+        let release = element("ui-test.chat.release", in: app)
+        let reasoning = element("chat.reasoningTrigger", in: app)
+        reasoning.tap()
+        element("chat.reasoningOption.high", in: app).tap()
+        if element("chat.reasoningSlider", in: app).exists {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2)).tap()
+        }
+        XCTAssertEqual(reasoning.value as? String, "高")
+        input.tap()
+        expectExists(keyboard, in: app)
+        input.typeText("Marc")
+        tapChatSend(in: app)
+        expectExists(release, in: app)
+        let reasoningHeader = textContaining("思考过程", in: app)
+        expectExists(reasoningHeader, in: app)
+        if reasoningHeader.isHittable {
+            reasoningHeader.tap()
+            expectExists(app.staticTexts["可见推理片段"], in: app)
+        }
+        release.tap()
+        expectExists(element("chat.html.snippet.2", in: app), in: app)
+        let copy = app.buttons.matching(identifier: "doc.on.doc").firstMatch
+        expectExists(copy, in: app)
+        copy.tap()
+
+        let model = element("chat.modelMenu", in: app)
+        model.tap()
+        textContaining("fixture-chat-alternate", in: app).tap()
+        XCTAssertTrue(model.label.contains("fixture-chat-alternate"))
+        expectExists(keyboard, in: app)
+        input.typeText("Eir")
+        tapChatSend(in: app)
+        expectExists(release, in: app)
+        let code = textContaining("ordinary code", in: app)
+        expectExists(code, in: app)
+        let top = app.navigationBars.firstMatch.frame.maxY
+        let viewport = CGRect(x: 0, y: top, width: app.frame.width, height: input.frame.minY - top)
+        let codeBlocks = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "ordinary code"))
+        verify(codeBlocks.allElementsBoundByIndex.contains { viewport.intersects($0.frame) }, in: app,
+               "A reply code block must be visible while the second request streams.")
+        release.tap()
+        expectExists(element("chat.send", in: app), in: app)
+        expectExists(keyboard, in: app)
+        let previews = app.descendants(matching: .any).matching(identifier: "chat.html.snippet.2")
+        let latestPreview = previews.allElementsBoundByIndex.last
+        verify(latestPreview.map { viewport.contains(CGPoint(x: $0.frame.midX, y: $0.frame.midY)) } ?? false,
+               in: app, "A completed reply must remain in the transcript viewport.")
+    }
+
+    @MainActor
     func testHTMLFallbackCopiesOriginalMixedFences() {
         let app = launch(connected: true, arguments: ["--ui-test-chat-gate", "--ui-test-chat-html"])
         defer { app.terminate() }
