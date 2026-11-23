@@ -845,8 +845,10 @@ final class CPAQuotaAppUITests: XCTestCase {
         let input = element("chat.input", in: app)
         input.tap()
         input.typeText("M1")
-        element("chat.send", in: app).tap()
-        element("ui-test.chat.release", in: app).tap()
+        sendAfterModelSelection(in: app)
+        let release = element("ui-test.chat.release", in: app)
+        expectExists(release, in: app)
+        release.tap()
         expectExists(textContaining("放行后的正文", in: app), in: app)
         let backButton = element("BackButton", in: app)
         expectExists(backButton, in: app)
@@ -874,8 +876,18 @@ final class CPAQuotaAppUITests: XCTestCase {
         let next = element("chat.input", in: removed)
         next.tap()
         next.typeText("M4")
-        element("chat.send", in: removed).tap()
-        expectExists(element("chat.stop", in: removed), in: removed)
+        sendAfterModelSelection(in: removed)
+    }
+
+    @MainActor
+    private func sendAfterModelSelection(in app: XCUIApplication) {
+        // Wait for the keyboard and composer to expose an enabled Send after typing.
+        let send = app.buttons["chat.send"]
+        expectPredicate(NSPredicate(format: "exists == true AND enabled == true AND hittable == true"),
+                        on: send, in: app, message: "Send must be enabled and hittable after selecting a model.",
+                        finalCheck: { send.exists && send.isEnabled && send.isHittable })
+        send.tap()
+        expectExists(element("chat.stop", in: app), in: app)
     }
 
     @MainActor
