@@ -2361,6 +2361,7 @@ extension CPAChatSSETests {
                 lastText = text
                 #expect(reasoning == nil)
             case .usage(let usage): lastUsage = usage
+            case .reasoningResolution: break
             }
         }
         #expect(lastText == "partial")

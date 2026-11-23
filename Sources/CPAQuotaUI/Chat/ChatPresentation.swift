@@ -123,9 +123,61 @@ extension ChatReasoningEffort {
     var title: String {
         switch self {
         case .automatic: "自动"
+        case .off: "关闭"
         case .low: "低"
         case .medium: "中"
         case .high: "高"
+        case .xhigh: "极高"
+        case .max: "最大"
+        }
+    }
+
+    /// Compact tick label shown beneath the discrete slider stops.
+    var compactTickTitle: String {
+        switch self {
+        case .automatic: "自动"
+        case .off: "关"
+        case .low: "低"
+        case .medium: "中"
+        case .high: "高"
+        case .xhigh: "极高"
+        case .max: "最大"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .automatic: "跟随模型默认策略，不附加思考参数"
+        case .off: "关闭额外思考，优先最快响应"
+        case .low: "轻度思考，适合简单问答"
+        case .medium: "均衡思考深度与响应速度"
+        case .high: "深度推理，适合复杂问题"
+        case .xhigh: "极高推理强度，适合高难分析"
+        case .max: "最大思考预算，追求最高质量"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .automatic: "sparkles"
+        case .off: "bolt.slash"
+        case .low, .medium, .high, .xhigh, .max: "brain"
+        }
+    }
+}
+
+extension ChatReasoningResolution {
+    var noticeText: String? {
+        switch outcome {
+        case .applied:
+            return nil
+        case .downgraded:
+            if let applied {
+                return "当前模型不支持「\(requested.title)」，本次已按「\(applied.title)」发送"
+            }
+            return "当前模型不支持「\(requested.title)」，本次已降级发送"
+        case .omitted:
+            return "当前模型不支持思考等级，本次已按默认发送"
         }
     }
 }
