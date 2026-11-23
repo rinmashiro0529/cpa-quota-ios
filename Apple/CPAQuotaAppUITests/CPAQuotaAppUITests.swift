@@ -907,10 +907,17 @@ final class CPAQuotaAppUITests: XCTestCase {
         expectExists(trigger, in: app)
         expectExists(input, in: app)
         XCTAssertEqual(trigger.value as? String, "自动")
-        if app.frame.width >= 390 {
-            let send = element("chat.send", in: app)
+        let attachment = element("chat.attach", in: app)
+        let send = element("chat.send", in: app)
+        // A side tab bar can reduce the space available to the composer.
+        // The accessory group and Send keep the same horizontal placement in both layouts.
+        let availableFieldWidth = send.frame.minX - trigger.frame.maxX - 8
+        XCTAssertEqual(attachment.frame.midY, trigger.frame.midY, accuracy: 4)
+        XCTAssertEqual(send.frame.midY, trigger.frame.midY, accuracy: 4)
+        if availableFieldWidth >= 142 {
             XCTAssertEqual(trigger.frame.midY, input.frame.midY, accuracy: 4)
-            XCTAssertEqual(send.frame.midY, input.frame.midY, accuracy: 4)
+        } else if availableFieldWidth < 138 {
+            XCTAssertLessThan(input.frame.maxY, trigger.frame.minY)
         }
 
         trigger.tap()
@@ -1023,25 +1030,29 @@ final class CPAQuotaAppUITests: XCTestCase {
         input.typeText("Eir")
         tapChatSend(in: app)
         expectExists(release, in: app)
-        let code = textContaining("ordinary code", in: app)
-        expectExists(code, in: app)
-        let top = app.navigationBars.firstMatch.frame.maxY
-        let viewport = CGRect(x: 0, y: top, width: app.frame.width, height: input.frame.minY - top)
-        let codeBlocks = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "ordinary code"))
-        verify(codeBlocks.allElementsBoundByIndex.contains { viewport.intersects($0.frame) }, in: app,
-               "A reply code block must be visible while the second request streams.")
+        let streamedCode = app.staticTexts["<p>Second fragment"].firstMatch
+        expectExists(streamedCode, in: app)
+        let composer = element("chat.composer", in: app)
+        func transcriptViewport() -> CGRect {
+            let top = app.navigationBars.firstMatch.frame.maxY
+            return CGRect(x: composer.frame.minX, y: top, width: composer.frame.width,
+                          height: max(0, composer.frame.minY - top))
+        }
+        verify(transcriptViewport().contains(CGPoint(x: streamedCode.frame.midX, y: streamedCode.frame.midY)), in: app,
+               "The incomplete HTML source must be visible while the second reply streams.")
         release.tap()
         expectExists(element("chat.send", in: app), in: app)
         expectExists(keyboard, in: app)
-        let previews = app.descendants(matching: .any).matching(identifier: "chat.html.snippet.2")
+        let previews = app.buttons.matching(identifier: "chat.html.snippet.2")
         let latestPreview = previews.allElementsBoundByIndex.last
+        let viewport = transcriptViewport()
         verify(latestPreview.map { viewport.contains(CGPoint(x: $0.frame.midX, y: $0.frame.midY)) } ?? false,
                in: app, "A completed reply must remain in the transcript viewport.")
     }
 
     @MainActor
     func testHTMLFallbackCopiesOriginalMixedFences() {
-        let app = launch(connected: true, arguments: ["--ui-test-chat-gate", "--ui-test-chat-html"])
+        let app = launch(connected: true, arguments: ["--ui-test-chat-gate", "--ui-test-chat-html", "--ui-test-chat-html-copy-check"])
         defer { app.terminate() }
         selectTab("chat", title: "AI 对话", in: app)
         element("chat.emptyNew", in: app).tap()
@@ -1068,7 +1079,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         var token: Int32 = 0
         XCTAssertEqual(notify_register_dispatch(name + ".released", &token, .main) { _ in released.fulfill() }, UInt32(NOTIFY_STATUS_OK))
         defer { notify_cancel(token) }
-        let app = launch(connected: true, arguments: ["--ui-test-chat-gate", "--ui-test-chat-html", "--ui-test-theme=light"],
+        let app = launch(connected: true, arguments: ["--ui-test-chat-gate", "--ui-test-chat-html", "--ui-test-chat-html-copy-check", "--ui-test-theme=light"],
                          environment: ["CPA_UI_HTML_GATE": gate])
         defer { app.terminate() }
         selectTab("chat", title: "AI 对话", in: app)

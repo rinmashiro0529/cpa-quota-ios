@@ -84,7 +84,7 @@ private struct UITestWorkspace: View {
                     .safeAreaInset(edge: .top) {
                         VStack(spacing: 2) {
                             #if os(iOS)
-                            if ProcessInfo.processInfo.arguments.contains("--ui-test-chat-html"), gatedChat.generation > 0,
+                            if ProcessInfo.processInfo.arguments.contains("--ui-test-chat-html-copy-check"), gatedChat.generation > 0,
                                !gatedChat.isWaiting {
                                 Button(copyCheck) {
                                     switch UIPasteboard.general.string {
@@ -343,9 +343,10 @@ private struct UITestChatModelCatalog: ChatModelCatalog {
         ordinary code
         ~~~
         ~~~html
+        <p>Second fragment
         """
-    static let htmlFixture = firstHTMLChunk + "\n" + """
-        <p>Second fragment</p>
+    static let htmlFixture = firstHTMLChunk + """
+        </p>
         ~~~
         ~~~html
         <p>incomplete
