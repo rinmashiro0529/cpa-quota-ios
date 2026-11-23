@@ -378,9 +378,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         expectExists(input, in: app)
         input.tap()
         input.typeText("Fixture question")
-        let send = element("chat.send", in: app)
-        expectExists(send, in: app)
-        send.tap()
+        tapChatSend(in: app)
         let partial = textContaining("第一段夹具回复", in: app)
         expectExists(partial, in: app)
         let stop = element("chat.stop", in: app)
@@ -608,7 +606,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         let input = element("chat.input", in: app)
         input.tap()
         input.typeText("S1")
-        element("chat.send", in: app).tap()
+        tapChatSend(in: app)
         let reasoning = app.staticTexts["可见推理片段"]
         expectExists(reasoning, in: app)
         XCTAssertTrue(reasoning.isHittable)
@@ -627,7 +625,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         let input = element("chat.input", in: app)
         input.tap()
         input.typeText("B4")
-        element("chat.send", in: app).tap()
+        tapChatSend(in: app)
         let checkpoint = element("ui-test.chat.checkpoint", in: app)
         expectExists(checkpoint, in: app)
         checkpoint.tap()
@@ -741,7 +739,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         let input = element("chat.input", in: app)
         input.tap()
         input.typeText("Reading anchor")
-        element("chat.send", in: app).tap()
+        tapChatSend(in: app)
         let extend = element("ui-test.chat.extend", in: app)
         extend.tap()
         let last = textContaining("阅读段落 18", in: app)
@@ -779,7 +777,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         let input = element("chat.input", in: app)
         input.tap()
         input.typeText("Earlier")
-        element("chat.send", in: app).tap()
+        tapChatSend(in: app)
         element("ui-test.chat.release", in: app).tap()
         expectExists(textContaining("放行后的正文", in: app), in: app)
         input.tap()
@@ -845,7 +843,8 @@ final class CPAQuotaAppUITests: XCTestCase {
         let input = element("chat.input", in: app)
         input.tap()
         input.typeText("M1")
-        sendAfterModelSelection(in: app)
+        tapChatSend(in: app)
+        expectExists(element("chat.stop", in: app), in: app)
         let release = element("ui-test.chat.release", in: app)
         expectExists(release, in: app)
         release.tap()
@@ -876,18 +875,8 @@ final class CPAQuotaAppUITests: XCTestCase {
         let next = element("chat.input", in: removed)
         next.tap()
         next.typeText("M4")
-        sendAfterModelSelection(in: removed)
-    }
-
-    @MainActor
-    private func sendAfterModelSelection(in app: XCUIApplication) {
-        // Wait for the keyboard and composer to expose an enabled Send after typing.
-        let send = app.buttons["chat.send"]
-        expectPredicate(NSPredicate(format: "exists == true AND enabled == true AND hittable == true"),
-                        on: send, in: app, message: "Send must be enabled and hittable after selecting a model.",
-                        finalCheck: { send.exists && send.isEnabled && send.isHittable })
-        send.tap()
-        expectExists(element("chat.stop", in: app), in: app)
+        tapChatSend(in: removed)
+        expectExists(element("chat.stop", in: removed), in: removed)
     }
 
     @MainActor
@@ -953,7 +942,7 @@ final class CPAQuotaAppUITests: XCTestCase {
 
         input.tap()
         input.typeText("测试思考等级")
-        element("chat.send", in: app).tap()
+        tapChatSend(in: app)
         expectExists(textContaining("已按思考等级「max」回复", in: app), in: app)
         let notice = element("chat.message.reasoningNotice", in: app)
         expectExists(notice, in: app)
@@ -997,7 +986,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         let input = element("chat.input", in: app)
         input.tap()
         input.typeText("HTML")
-        element("chat.send", in: app).tap()
+        tapChatSend(in: app)
         element("ui-test.chat.release", in: app).tap()
         let copy = app.buttons.matching(identifier: "doc.on.doc").firstMatch
         reveal(copy, in: app)
@@ -1025,7 +1014,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         let input = element("chat.input", in: app)
         input.tap()
         input.typeText("HTML")
-        element("chat.send", in: app).tap()
+        tapChatSend(in: app)
         let first = element("chat.html.snippet.1", in: app)
         let second = element("chat.html.snippet.2", in: app)
         reveal(first, in: app)
@@ -1078,7 +1067,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         let input = element("chat.input", in: app)
         input.tap()
         input.typeText("HTML")
-        element("chat.send", in: app).tap()
+        tapChatSend(in: app)
         element("ui-test.chat.release", in: app).tap()
         let second = element("chat.html.snippet.2", in: app)
         reveal(second, in: app, upward: false)
@@ -1340,6 +1329,16 @@ final class CPAQuotaAppUITests: XCTestCase {
         let afterFrame = afterExists ? target.frame : .null
         let afterHittable = afterExists && target.isHittable
         print("FRONTEND_SCROLL line=\(line) upward=\(upward) viewport=\(viewport) anchorBefore=\(before) anchorAfter=\(after) targetBefore=\(targetFrame) hittableBefore=\(targetHittable) targetAfter=\(afterFrame) hittableAfter=\(afterHittable)")
+    }
+
+    @MainActor
+    private func tapChatSend(in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        // Wait for the composer to enable Send after the keyboard delivers the draft.
+        let send = app.buttons["chat.send"]
+        expectPredicate(NSPredicate(format: "exists == true AND enabled == true AND hittable == true"),
+                        on: send, in: app, message: "Send must be enabled and hittable after typing.",
+                        finalCheck: { send.exists && send.isEnabled && send.isHittable }, file: file, line: line)
+        send.tap()
     }
 
     @MainActor
