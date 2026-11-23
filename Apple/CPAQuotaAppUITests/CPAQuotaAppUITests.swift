@@ -825,7 +825,9 @@ final class CPAQuotaAppUITests: XCTestCase {
             _ = await rotateDeviceAndWaitForWindow(in: app, policy: layoutPolicy(in: app))
             XCTAssertTrue(menu.isHittable)
             XCTAssertTrue(element("chat.attach", in: app).isHittable)
-            XCTAssertTrue(element("chat.reasoningTrigger", in: app).isHittable)
+            let reasoning = element("chat.reasoningTrigger", in: app)
+            XCTAssertTrue(reasoning.isHittable)
+            XCTAssertLessThanOrEqual(element("chat.input", in: app).frame.maxY, reasoning.frame.minY + 2)
             XCTAssertTrue(app.frame.contains(CGPoint(x: send.frame.midX, y: send.frame.midY)))
             attach(app, name: "chat-large-landscape-" + appearance)
         }
@@ -900,8 +902,15 @@ final class CPAQuotaAppUITests: XCTestCase {
         element("chat.emptyNew", in: app).tap()
 
         let trigger = element("chat.reasoningTrigger", in: app)
+        let input = element("chat.input", in: app)
         expectExists(trigger, in: app)
+        expectExists(input, in: app)
         XCTAssertEqual(trigger.value as? String, "自动")
+        if app.frame.width >= 390 {
+            let send = element("chat.send", in: app)
+            XCTAssertEqual(trigger.frame.midY, input.frame.midY, accuracy: 4)
+            XCTAssertEqual(send.frame.midY, input.frame.midY, accuracy: 4)
+        }
 
         trigger.tap()
         let slider = element("chat.reasoningSlider", in: app)
@@ -930,7 +939,6 @@ final class CPAQuotaAppUITests: XCTestCase {
                         message: "Composer trigger must display the chosen max reasoning level.",
                         finalCheck: { trigger.value as? String == "最大" })
 
-        let input = element("chat.input", in: app)
         input.tap()
         input.typeText("测试思考等级")
         element("chat.send", in: app).tap()

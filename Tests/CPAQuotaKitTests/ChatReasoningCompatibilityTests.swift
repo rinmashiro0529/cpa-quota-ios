@@ -276,6 +276,35 @@ struct ChatReasoningCompatibilityTests {
         #expect(recorded[1].bodyJSON?["reasoning_effort"] == nil)
     }
 
+    @Test func maxFallsBackToProviderDefaultAfterProtocolAndEffortRejections() async throws {
+        let efforts = ["max", "xhigh", "high", "medium"]
+        let effortRejections = efforts.map { value in
+            ScriptedReasoningTransport.Step(status: .badRequest, chunks: [
+                #"{"error":{"message":"Invalid value: '\#(value)'","param":"reasoning_effort"}}"#,
+            ])
+        }
+        let transport = ScriptedReasoningTransport(steps:
+            [.init(status: .notFound, chunks: [#"{"error":"not found"}"#])]
+            + effortRejections
+            + [.init(chunks: openAISuccessChunks)]
+        )
+        let engine = AnyLanguageModelChatEngine(transport: transport)
+        let request = try makeRequest(modelID: "claude-relay", effort: .max)
+        var text = ""
+        var resolution: ChatReasoningResolution?
+        for try await event in engine.stream(request) {
+            if case .snapshot(let value, _) = event { text = value }
+            if case .reasoningResolution(let value) = event { resolution = value }
+        }
+        let recorded = transport.snapshot()
+        #expect(recorded.map(\.path) == ["/v1/messages"] + Array(repeating: "/v1/chat/completions", count: 5))
+        #expect(recorded.dropFirst().map { $0.bodyJSON?["reasoning_effort"] as? String } == efforts.map(Optional.some) + [nil])
+        #expect(text == "ok")
+        #expect(resolution == ChatReasoningResolution(
+            requested: .max, applied: nil, outcome: .omitted, usedFallbackProtocol: true
+        ))
+    }
+
     @Test func nonReasoningErrorsAreNeverRetried() async throws {
         let contextError = #"{"error":{"message":"This model's maximum context length is 128000 tokens.","code":"context_length_exceeded"}}"#
         let transport = ScriptedReasoningTransport(steps: [
@@ -411,14 +440,19 @@ struct ChatReasoningCompatibilityTests {
         #expect(resolution?.outcome == .downgraded)
     }
 
-    @Test func anthropicEndpoint404FallsBackToOpenAIChatCompletionsAndCachesServer() async throws {
+    @Test func anthropicModel404FallsBackWithoutDisablingNativeMessagesForOtherModels() async throws {
         let transport = ScriptedReasoningTransport(steps: [
-            .init(status: .notFound, chunks: [#"{"error":"not found"}"#]),
+            .init(status: .notFound, chunks: [
+                #"{"type":"error","error":{"type":"not_found_error","message":"Model claude-relay was not found"}}"#,
+            ]),
             .init(chunks: openAISuccessChunks),
             .init(chunks: openAISuccessChunks),
+            .init(chunks: anthropicSuccessChunks),
+            .init(chunks: anthropicSuccessChunks),
         ])
         let engine = AnyLanguageModelChatEngine(transport: transport)
-        let req = try makeRequest(modelID: "claude-opus-4-6", ownedBy: "anthropic", effort: .high)
+        let req = try makeRequest(modelID: "claude-relay", effort: .high)
+        let native = try makeRequest(modelID: "claude-opus-4-6", effort: .high)
 
         var firstResolution: ChatReasoningResolution?
         for try await event in engine.stream(req) {
@@ -427,21 +461,21 @@ struct ChatReasoningCompatibilityTests {
         #expect(firstResolution?.usedFallbackProtocol == true)
         #expect(firstResolution?.outcome == .applied)
 
-        // Second request skips /v1/messages directly.
+        // Reuse the learned route for the relay model while preserving the native model's route.
         for try await _ in engine.stream(req) {}
-        let recorded = transport.snapshot()
-        #expect(recorded.count == 3)
-        #expect(recorded[0].path == "/v1/messages")
-        #expect(recorded[1].path == "/v1/chat/completions")
-        #expect(recorded[1].bodyJSON?["reasoning_effort"] as? String == "high")
-        #expect(recorded[2].path == "/v1/chat/completions")
-
-        // Reset clears cached fallback.
+        for try await _ in engine.stream(native) {}
         engine.resetReasoningCapabilities()
-        let freshTransport = ScriptedReasoningTransport(steps: [.init(chunks: anthropicSuccessChunks)])
-        let freshEngine = AnyLanguageModelChatEngine(transport: freshTransport)
-        for try await _ in freshEngine.stream(req) {}
-        #expect((freshTransport.snapshot()).first?.path == "/v1/messages")
+        for try await _ in engine.stream(req) {}
+
+        let recorded = transport.snapshot()
+        #expect(recorded.map(\.path) == [
+            "/v1/messages",
+            "/v1/chat/completions",
+            "/v1/chat/completions",
+            "/v1/messages",
+            "/v1/messages",
+        ])
+        #expect(recorded.dropFirst().first?.bodyJSON?["reasoning_effort"] as? String == "high")
     }
 
     // MARK: - Workspace Per-Model Memory, Title Isolation & Resolution Recording

@@ -76,7 +76,7 @@ public struct ChatReasoningWirePlan: Equatable, Sendable {
 /// Classified upstream rejection that can safely trigger deterministic fallback
 /// when zero response output has been streamed yet.
 public enum ChatReasoningRejection: Equatable, Sendable {
-    /// Target server does not expose or accept Anthropic `/v1/messages`.
+    /// Anthropic `/v1/messages` cannot serve the current model on this server.
     case anthropicEndpointUnsupported
     /// Model or upstream does not accept reasoning/thinking configuration at all.
     case parameterUnsupported
@@ -94,6 +94,7 @@ public enum ChatReasoningRejection: Equatable, Sendable {
 /// Kept in memory only so server/model upgrades are picked up cleanly on refresh or relaunch.
 public final class ChatReasoningCapabilityCache: @unchecked Sendable {
     public struct ModelProfile: Equatable, Sendable {
+        fileprivate var anthropicEndpointUnsupported = false
         public var reasoningUnsupported = false
         public var unsupportedOpenAIValues = Set<String>()
         public var allowedOpenAIValues: Set<String>?
@@ -111,18 +112,9 @@ public final class ChatReasoningCapabilityCache: @unchecked Sendable {
     }
 
     private let lock = NSLock()
-    private var anthropicUnsupportedServers = Set<String>()
     private var profiles: [ModelKey: ModelProfile] = [:]
 
     public init() {}
-
-    public func isAnthropicEndpointUnsupported(for server: String) -> Bool {
-        lock.withLock { anthropicUnsupportedServers.contains(server) }
-    }
-
-    public func markAnthropicEndpointUnsupported(for server: String) {
-        lock.withLock { _ = anthropicUnsupportedServers.insert(server) }
-    }
 
     public func profile(for server: String, modelID: String) -> ModelProfile {
         lock.withLock { profiles[ModelKey(server: server, modelID: modelID)] ?? ModelProfile() }
@@ -139,7 +131,6 @@ public final class ChatReasoningCapabilityCache: @unchecked Sendable {
 
     public func reset() {
         lock.withLock {
-            anthropicUnsupportedServers.removeAll()
             profiles.removeAll()
         }
     }
@@ -237,7 +228,7 @@ public enum ChatReasoningPolicy {
     public static func initialProtocol(for request: ChatEngineRequest, cache: ChatReasoningCapabilityCache) -> ChatAPIProtocol {
         let key = serverKey(for: request.baseURL)
         if isAnthropicModel(modelID: request.modelID, ownedBy: request.modelOwnedBy),
-           !cache.isAnthropicEndpointUnsupported(for: key) {
+           !cache.profile(for: key, modelID: request.modelID).anthropicEndpointUnsupported {
             return .anthropicMessages
         }
         return .openAIChatCompletions
@@ -471,7 +462,7 @@ public enum ChatReasoningPolicy {
     ) {
         switch rejection {
         case .anthropicEndpointUnsupported:
-            cache.markAnthropicEndpointUnsupported(for: server)
+            cache.updateProfile(for: server, modelID: modelID) { $0.anthropicEndpointUnsupported = true }
         case .parameterUnsupported:
             cache.updateProfile(for: server, modelID: modelID) { $0.reasoningUnsupported = true }
         case .effortValueUnsupported(let allowed):

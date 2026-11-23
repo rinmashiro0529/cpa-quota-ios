@@ -22,6 +22,7 @@ struct ChatComposerView: View {
     let onSubmit: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @FocusState private var isFocused: Bool
     #if canImport(PhotosUI)
     @State private var pickerItems: [PhotosPickerItem] = []
@@ -109,14 +110,13 @@ struct ChatComposerView: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 6) {
+            ChatComposerLayout(prefersStackedRows: dynamicTypeSize.isAccessibilitySize) {
                 field(palette)
                 HStack(spacing: 4) {
                     accessoryButtons(palette)
                     reasoningButton
-                    Spacer(minLength: 4)
-                    sendButton
                 }
+                sendButton
             }
         }
         .padding(.horizontal, 12)
@@ -179,8 +179,8 @@ struct ChatComposerView: View {
             .foregroundStyle(palette.textPrimary)
             .focused($isFocused)
             .padding(.horizontal, 4)
-            .padding(.vertical, 6)
-            .frame(minHeight: 38)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .accessibilityIdentifier("chat.input")
     }
 
@@ -348,6 +348,46 @@ struct ChatComposerView: View {
         }
     }
     #endif
+}
+
+/// Keep the field and buttons mounted when the keyboard or available width changes.
+private struct ChatComposerLayout: Layout {
+    let prefersStackedRows: Bool
+
+    private let spacing: CGFloat = 4
+    private let minimumFieldWidth: CGFloat = 140
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        metrics(width: proposal.width, subviews: subviews).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let row = metrics(width: bounds.width, subviews: subviews)
+        let fieldX = bounds.minX + (row.stacked ? 0 : row.controls.width + spacing)
+        let fieldY = row.stacked ? bounds.minY : bounds.maxY - row.fieldHeight
+        subviews[0].place(at: CGPoint(x: fieldX, y: fieldY), anchor: .topLeading,
+                          proposal: ProposedViewSize(width: row.fieldWidth, height: nil))
+        let controlsCenterY = bounds.maxY - max(row.controls.height, row.send.height) / 2
+        subviews[1].place(at: CGPoint(x: bounds.minX, y: controlsCenterY),
+                          anchor: .leading, proposal: .unspecified)
+        subviews[2].place(at: CGPoint(x: bounds.maxX, y: controlsCenterY),
+                          anchor: .trailing, proposal: .unspecified)
+    }
+
+    private func metrics(width: CGFloat?, subviews: Subviews) -> (
+        size: CGSize, fieldWidth: CGFloat, fieldHeight: CGFloat, controls: CGSize, send: CGSize, stacked: Bool
+    ) {
+        let controls = subviews[1].sizeThatFits(.unspecified)
+        let send = subviews[2].sizeThatFits(.unspecified)
+        let buttonsWidth = controls.width + send.width + 2 * spacing
+        let width = width ?? buttonsWidth + minimumFieldWidth
+        let stacked = prefersStackedRows || width - buttonsWidth < minimumFieldWidth
+        let fieldWidth = stacked ? width : width - buttonsWidth
+        let fieldHeight = subviews[0].sizeThatFits(ProposedViewSize(width: fieldWidth, height: nil)).height
+        let buttonsHeight = max(controls.height, send.height)
+        let height = stacked ? fieldHeight + spacing + buttonsHeight : max(fieldHeight, buttonsHeight)
+        return (CGSize(width: width, height: height), fieldWidth, fieldHeight, controls, send, stacked)
+    }
 }
 
 /// Images are downscaled and re-encoded before they are stored or sent.

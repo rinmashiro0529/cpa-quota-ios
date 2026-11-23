@@ -10,6 +10,8 @@ import CPAQuotaKit
 /// Messages clients, with cross-provider reasoning effort mapping, zero-output
 /// compatibility fallback, and session-scoped capability caching.
 public struct AnyLanguageModelChatEngine: ChatEngine {
+    // Budget for one protocol change, four explicit efforts, and a final request at the provider default.
+    private static let maximumAttempts = 6
     private let transport: any AnyLanguageModel.HTTPTransport
     private let capabilityCache: ChatReasoningCapabilityCache
 
@@ -63,18 +65,10 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
 
     public func complete(_ request: ChatEngineRequest) async throws -> String {
         let serverKey = ChatReasoningPolicy.serverKey(for: request.baseURL)
-        var protocolKind = ChatReasoningPolicy.initialProtocol(for: request, cache: capabilityCache)
-        let maxAttempts = 4
+        var plan = initialPlan(for: request, serverKey: serverKey)
 
-        for attempt in 0..<maxAttempts {
+        for attempt in 0..<Self.maximumAttempts {
             try Task.checkCancellation()
-            let profile = capabilityCache.profile(for: serverKey, modelID: request.modelID)
-            let plan = ChatReasoningPolicy.makePlan(
-                requested: request.reasoningEffort,
-                protocolKind: protocolKind,
-                modelID: request.modelID,
-                profile: profile
-            )
             do {
                 let session = makeSession(for: request, plan: plan, live: nil)
                 let response = try await session.respond(
@@ -83,11 +77,12 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
                 )
                 return response.content
             } catch {
-                guard attempt + 1 < maxAttempts,
-                      let nextProtocol = resolveFallback(for: error, plan: plan, serverKey: serverKey, modelID: request.modelID) else {
+                guard let nextPlan = resolveFallback(
+                    for: error, from: plan, serverKey: serverKey, modelID: request.modelID, attempt: attempt
+                ) else {
                     throw error
                 }
-                protocolKind = nextProtocol
+                plan = nextPlan
             }
         }
         preconditionFailure("Fallback loop must return or throw before exit")
@@ -98,19 +93,11 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
         continuation: AsyncThrowingStream<ChatEngineEvent, any Error>.Continuation
     ) async throws {
         let serverKey = ChatReasoningPolicy.serverKey(for: request.baseURL)
-        var protocolKind = ChatReasoningPolicy.initialProtocol(for: request, cache: capabilityCache)
+        var plan = initialPlan(for: request, serverKey: serverKey)
         var usedFallbackProtocol = false
-        let maxAttempts = 4
 
-        for attempt in 0..<maxAttempts {
+        for attempt in 0..<Self.maximumAttempts {
             try Task.checkCancellation()
-            let profile = capabilityCache.profile(for: serverKey, modelID: request.modelID)
-            let plan = ChatReasoningPolicy.makePlan(
-                requested: request.reasoningEffort,
-                protocolKind: protocolKind,
-                modelID: request.modelID,
-                profile: profile
-            )
             let live = LiveChatSnapshots(continuation)
             do {
                 let session = makeSession(for: request, plan: plan, live: live)
@@ -136,27 +123,39 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
             } catch {
                 // Never retry after any output reached the caller: avoids duplicate billing or spliced text.
                 guard !live.hasEmitted,
-                      attempt + 1 < maxAttempts,
-                      let nextProtocol = resolveFallback(for: error, plan: plan, serverKey: serverKey, modelID: request.modelID) else {
+                      let nextPlan = resolveFallback(
+                        for: error, from: plan, serverKey: serverKey, modelID: request.modelID, attempt: attempt
+                      ) else {
                     throw error
                 }
-                if nextProtocol != protocolKind {
+                if nextPlan.protocolKind != plan.protocolKind {
                     usedFallbackProtocol = true
                 }
-                protocolKind = nextProtocol
+                plan = nextPlan
             }
         }
     }
 
-    /// Updates capability cache for a zero-output rejection and returns the next protocol
+    private func initialPlan(for request: ChatEngineRequest, serverKey: String) -> ChatReasoningWirePlan {
+        ChatReasoningPolicy.makePlan(
+            requested: request.reasoningEffort,
+            protocolKind: ChatReasoningPolicy.initialProtocol(for: request, cache: capabilityCache),
+            modelID: request.modelID,
+            profile: capabilityCache.profile(for: serverKey, modelID: request.modelID)
+        )
+    }
+
+    /// Updates capability cache for a zero-output rejection and returns the next plan
     /// when a strictly different retry plan is available; otherwise returns `nil`.
     private func resolveFallback(
         for error: any Error,
-        plan: ChatReasoningWirePlan,
+        from plan: ChatReasoningWirePlan,
         serverKey: String,
-        modelID: String
-    ) -> ChatAPIProtocol? {
-        guard let rejection = ChatReasoningPolicy.classifyError(error, plan: plan) else {
+        modelID: String,
+        attempt: Int
+    ) -> ChatReasoningWirePlan? {
+        guard attempt + 1 < Self.maximumAttempts,
+              let rejection = ChatReasoningPolicy.classifyError(error, plan: plan) else {
             return nil
         }
         ChatReasoningPolicy.recordRejection(
@@ -169,14 +168,18 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
         let nextProtocol: ChatAPIProtocol = rejection == .anthropicEndpointUnsupported
             ? .openAIChatCompletions
             : plan.protocolKind
-        let nextProfile = capabilityCache.profile(for: serverKey, modelID: modelID)
+        var nextProfile = capabilityCache.profile(for: serverKey, modelID: modelID)
+        if attempt + 2 == Self.maximumAttempts {
+            // Reserve the last attempt for the provider default without caching untested restrictions.
+            nextProfile.reasoningUnsupported = true
+        }
         let nextPlan = ChatReasoningPolicy.makePlan(
             requested: plan.requested,
             protocolKind: nextProtocol,
             modelID: modelID,
             profile: nextProfile
         )
-        return nextPlan != plan ? nextProtocol : nil
+        return nextPlan != plan ? nextPlan : nil
     }
 
     private func makeSession(
