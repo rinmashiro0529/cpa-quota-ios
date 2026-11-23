@@ -22,7 +22,6 @@ struct ChatComposerView: View {
     let onSubmit: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @FocusState private var isFocused: Bool
     #if canImport(PhotosUI)
     @State private var pickerItems: [PhotosPickerItem] = []
@@ -110,19 +109,12 @@ struct ChatComposerView: View {
                 }
             }
 
-            if dynamicTypeSize.isAccessibilitySize {
-                VStack(alignment: .leading, spacing: 8) {
-                    field(palette)
-                    HStack(spacing: 8) {
-                        accessoryButtons(palette)
-                        Spacer(minLength: 0)
-                        sendButton
-                    }
-                }
-            } else {
-                HStack(alignment: .bottom, spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
+                field(palette)
+                HStack(spacing: 4) {
                     accessoryButtons(palette)
-                    field(palette)
+                    reasoningButton
+                    Spacer(minLength: 4)
                     sendButton
                 }
             }
@@ -186,8 +178,9 @@ struct ChatComposerView: View {
             .font(.body)
             .foregroundStyle(palette.textPrimary)
             .focused($isFocused)
-            .padding(.vertical, 8)
-            .frame(minHeight: 44)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 6)
+            .frame(minHeight: 38)
             .accessibilityIdentifier("chat.input")
     }
 
@@ -244,6 +237,12 @@ struct ChatComposerView: View {
         .accessibilityLabel(chat.settings.searchProvider == nil ? "联网搜索（未设置搜索服务）" : "联网搜索")
         .accessibilityValue(conversation.isWebSearchEnabled ? "已开启" : "已关闭")
         .accessibilityIdentifier("chat.webSearch")
+    }
+
+    private var reasoningButton: some View {
+        ChatReasoningTriggerButton(effort: conversation.reasoningEffort) { effort in
+            chat.selectReasoningEffort(effort, in: conversation.id)
+        }
     }
 
     @ViewBuilder

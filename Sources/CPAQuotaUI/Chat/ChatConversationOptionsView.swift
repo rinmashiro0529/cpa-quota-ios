@@ -61,20 +61,19 @@ struct ChatConversationOptionsView: View {
                 #else
                 .pickerStyle(.menu)
                 #endif
-                Picker("推理强度", selection: binding(\.reasoningEffort, in: conversation)) {
-                    ForEach(ChatReasoningEffort.allCases) { effort in
-                        Text(effort.title).tag(effort)
-                    }
+                ChatReasoningInlineSelector(
+                    effort: chat.conversation(conversationID)?.reasoningEffort ?? conversation.reasoningEffort
+                ) { effort in
+                    chat.selectReasoningEffort(effort, in: conversationID)
                 }
-                .pickerStyle(.segmented)
                 Toggle("联网搜索", isOn: binding(\.isWebSearchEnabled, in: conversation))
                     .disabled(chat.settings.searchProvider == nil && !conversation.isWebSearchEnabled)
             } header: {
                 Text("模型与能力")
             } footer: {
                 Text(chat.settings.searchProvider == nil
-                     ? "推理强度仅对支持该参数的模型生效。联网搜索需要先在对话设置中选择搜索服务。"
-                     : "推理强度仅对支持该参数的模型生效。开启联网搜索后，每次发送会先检索，再把结果交给模型。")
+                     ? "思考等级会自动适配 OpenAI / Anthropic 等模型协议；若模型不支持所选等级，将自动降级或按默认发送。联网搜索需要先在对话设置中选择搜索服务。"
+                     : "思考等级会自动适配 OpenAI / Anthropic 等模型协议；若模型不支持所选等级，将自动降级或按默认发送。开启联网搜索后，每次发送会先检索，再把结果交给模型。")
             }
             .listRowBackground(palette.contentSurface)
 

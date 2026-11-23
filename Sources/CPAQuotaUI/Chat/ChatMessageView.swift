@@ -155,6 +155,12 @@ struct ChatMessageView: View {
                 .font(.footnote)
                 .foregroundStyle(palette.textSecondary)
         }
+        if let reasoningNotice = message.reasoningResolution?.noticeText {
+            Label(reasoningNotice, systemImage: "slider.horizontal.3")
+                .font(.footnote)
+                .foregroundStyle(palette.textSecondary)
+                .accessibilityIdentifier("chat.message.reasoningNotice")
+        }
         if let attempts = message.attempts, attempts.count > 1 {
             let unknown = attempts.contains { $0.usage == nil }
             Text("共 \(attempts.count) 次请求" + (unknown ? " · 含用量未返回的请求" : ""))
