@@ -49,6 +49,9 @@ public enum ChatFailure: Equatable, Sendable, Codable {
     case network
     case timeout
     case invalidResponse
+    case connectionChanged
+    case streamInterrupted
+    case continuationAddedNothing
     case searchFailed
     /// Web search was on but no search service or key was usable; the reply was generated without it.
     case searchNotConfigured
@@ -78,6 +81,17 @@ public struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     public var attachments: [ChatImageAttachment]
     public var modelID: String?
     public var usage: ChatTokenUsage?
+    /// Optional for conversations saved before continuation was introduced.
+    public internal(set) var replyToID: UUID?
+    public internal(set) var attempts: [ChatReplyAttempt]?
+    /// Undecided opening bytes of a continuation, retained across process death.
+    var pendingContinuation: String?
+    /// Preserve the original expansion when a slash skill changes later.
+    var expandedPrompt: String?
+    /// Records whether web search finished for this turn (distinguishes zero results from an aborted search).
+    var searchCompleted: Bool?
+    /// Preserves the resolved web-search query so skill edits cannot alter a retried search boundary.
+    var searchQuery: String?
     public var searchSources: [ChatSearchSource]
     public var status: Status
     public var failure: ChatFailure?
@@ -150,13 +164,16 @@ public struct ChatConversation: Identifiable, Codable, Equatable, Sendable {
 }
 
 /// Continuing a conversation on a server other than the one its history was
-/// sent to. Sending requires explicit confirmation of what will be transmitted.
+/// sent to. Sending requires passing this bound token back so a destination or
+/// credential change while the confirmation is on screen cannot slip through.
 public struct ChatServerChange: Equatable, Sendable {
+    public let conversationID: UUID
     /// `nil` when the conversation predates server binding.
     public let previousServerIdentifier: String?
     public let currentServerIdentifier: String
     public let messageCount: Int
     public let imageCount: Int
+    let credentialRevision: UInt64
 }
 
 public struct ChatMemoryItem: Identifiable, Codable, Equatable, Sendable {
@@ -268,4 +285,10 @@ public enum ChatModelListState: Equatable, Sendable {
     case loading
     case loaded
     case failed(ChatFailure)
+}
+
+public enum ChatSearchKeyStatus: Equatable, Sendable {
+    case present
+    case absent
+    case unknown
 }

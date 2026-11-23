@@ -46,13 +46,25 @@ public enum ChatSearch {
 
 private let maximumResults = 5
 
+private final class SearchRedirectRefusingDelegate: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+}
+
 private func makeSearchSession() -> URLSession {
     let configuration = URLSessionConfiguration.ephemeral
+    configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
     configuration.urlCache = nil
     configuration.httpCookieStorage = nil
     configuration.httpShouldSetCookies = false
+    configuration.httpCookieAcceptPolicy = .never
     configuration.urlCredentialStorage = nil
-    return URLSession(configuration: configuration)
+    return URLSession(configuration: configuration,
+                      delegate: SearchRedirectRefusingDelegate(), delegateQueue: nil)
 }
 
 private func requireQuery(_ query: String) throws -> String {

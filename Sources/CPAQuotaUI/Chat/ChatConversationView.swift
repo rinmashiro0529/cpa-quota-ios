@@ -68,7 +68,7 @@ struct ChatConversationView: View {
             presenting: pendingConfirmation
         ) { confirmation in
             Button(confirmation.confirmTitle, role: confirmation.isDestructive ? .destructive : nil) {
-                perform(confirmation.action, confirmingServerChange: true)
+                perform(confirmation.action, serverChange: confirmation.serverChange)
             }
             Button("取消", role: .cancel) {}
         } message: { confirmation in
@@ -108,11 +108,13 @@ struct ChatConversationView: View {
             .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
             .modifier(ChatScrollEdgeModifier())
-            .onChange(of: conversation.messages.count) { _, _ in
-                withAnimation(.easeOut(duration: 0.2)) {
-                    proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
-                }
-            }
+            .modifier(ChatStreamingAutoScrollModifier(
+                proxy: proxy,
+                bottomAnchor: Self.bottomAnchor,
+                isGenerating: isGenerating,
+                messageCount: conversation.messages.count,
+                latestTextLength: conversation.messages.last?.text.count ?? 0
+            ))
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
                     if chat.unsavedConversations.contains(conversation.id) {
@@ -144,9 +146,12 @@ struct ChatConversationView: View {
                         editingMessageID: $editingMessageID,
                         onOpenSettings: { isPresentingSettings = true },
                         onCancelEdit: endEditing,
+                        onContinue: { request(.continueReply($0), in: conversation) },
                         onSubmit: { submit(in: conversation) }
                     )
                 }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("chat.composer")
             }
         }
         .onChange(of: conversation.messages.last.map { "\($0.id)|\($0.status.rawValue)" }) { old, _ in
@@ -203,11 +208,15 @@ struct ChatConversationView: View {
         } else {
             replacesInterrupted = false
         }
-        guard change != nil || removed > 0 || replacesInterrupted else {
-            perform(action, confirmingServerChange: false)
+        var parts: [String] = []
+        if case .continueReply(let target) = action, target.previousModelID != target.modelID {
+            let previous = target.previousModelID ?? "未知模型"
+            parts.append("上一请求使用「\(previous)」，本次将使用「\(target.modelID)」。")
+        }
+        guard change != nil || removed > 0 || replacesInterrupted || !parts.isEmpty else {
+            perform(action, serverChange: nil)
             return
         }
-        var parts: [String] = []
         if replacesInterrupted { parts.append("将发送一次新的生成请求并替换这条中断的回复，可能产生新的用量。") }
         if let change {
             let images = change.imageCount > 0 ? "和 \(change.imageCount) 张图片" : ""
@@ -218,27 +227,33 @@ struct ChatConversationView: View {
         if removed > 0 {
             parts.append("此后的 \(removed) 条消息将被删除，无法恢复。")
         }
+        let isContinuation: Bool
+        if case .continueReply = action { isContinuation = true } else { isContinuation = false }
         pendingConfirmation = PendingConfirmation(
             action: action,
-            title: change != nil ? "在当前服务继续这段对话？" : (removed > 0 ? "删除后续消息并重新生成？" : "替换中断的回复？"),
+            serverChange: change,
+            title: change != nil ? "在当前服务继续这段对话？" : (removed > 0 ? "删除后续消息并重新生成？" : (isContinuation ? "使用当前模型继续？" : "替换中断的回复？")),
             message: parts.joined(separator: "\n"),
-            confirmTitle: change != nil ? "继续发送" : (removed > 0 ? "删除并重新生成" : "确认重新生成"),
+            confirmTitle: change != nil ? "继续发送" : (removed > 0 ? "删除并重新生成" : (isContinuation ? "继续生成" : "确认重新生成")),
             isDestructive: removed > 0)
     }
 
-    private func perform(_ action: PendingAction, confirmingServerChange: Bool) {
+    private func perform(_ action: PendingAction, serverChange: ChatServerChange?) {
         switch action {
         case .send(let text, let images):
             guard chat.send(text, attachments: images, in: conversationID,
-                            confirmingServerChange: confirmingServerChange) else { return }
+                            confirmingServerChange: serverChange) else { return }
             draft = ""
             attachments = []
         case .edit(let messageID, let text):
             guard chat.editAndResend(messageID, text: text, in: conversationID,
-                                     confirmingServerChange: confirmingServerChange) else { return }
+                                     confirmingServerChange: serverChange) else { return }
             endEditing()
+        case .continueReply(let target):
+            guard draft.isEmpty, attachments.isEmpty, editingMessageID == nil else { return }
+            chat.continueReply(target, confirmingServerChange: serverChange)
         case .regenerate(let messageID):
-            chat.regenerate(messageID, in: conversationID, confirmingServerChange: confirmingServerChange)
+            chat.regenerate(messageID, in: conversationID, confirmingServerChange: serverChange)
         }
     }
 
@@ -246,7 +261,7 @@ struct ChatConversationView: View {
     private func laterMessageCount(for action: PendingAction, in conversation: ChatConversation) -> Int {
         let messages = conversation.messages
         switch action {
-        case .send:
+        case .send, .continueReply:
             return 0
         case .regenerate(let id):
             guard let index = messages.firstIndex(where: { $0.id == id }) else { return 0 }
@@ -303,6 +318,7 @@ struct ChatConversationView: View {
 }
 
 private enum PendingAction {
+    case continueReply(ChatContinuation)
     case send(String, [ChatImageAttachment])
     case edit(UUID, String)
     case regenerate(UUID)
@@ -310,6 +326,7 @@ private enum PendingAction {
 
 private struct PendingConfirmation {
     let action: PendingAction
+    let serverChange: ChatServerChange?
     let title: String
     let message: String
     let confirmTitle: String
@@ -444,6 +461,75 @@ private struct ChatScrollEdgeModifier: ViewModifier {
         } else {
             content
         }
+    }
+}
+
+/// Follows streaming growth while the reader stays at the bottom without yanking them back once they scroll up.
+private struct ChatStreamingAutoScrollModifier: ViewModifier {
+    let proxy: ScrollViewProxy
+    let bottomAnchor: String
+    let isGenerating: Bool
+    let messageCount: Int
+    let latestTextLength: Int
+    @State private var isPinnedToBottom = true
+    @State private var isUserScrolling = false
+    @State private var distanceFromBottom: CGFloat = 0
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        let base = content
+            .onChange(of: messageCount) { oldCount, newCount in
+                guard newCount > oldCount else { return }
+                isPinnedToBottom = true
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                }
+            }
+        if #available(iOS 18.0, macOS 15.0, *) {
+            base
+                .onScrollPhaseChange { oldPhase, newPhase in
+                    let wasUser = oldPhase == .interacting || oldPhase == .decelerating
+                    let isUser = newPhase == .interacting || newPhase == .decelerating
+                    isUserScrolling = isUser
+                    if isUser || wasUser {
+                        isPinnedToBottom = distanceFromBottom <= 24
+                    }
+                }
+                .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
+                    let maxOffsetY = max(
+                        -geometry.contentInsets.top,
+                        geometry.contentSize.height + geometry.contentInsets.bottom - geometry.containerSize.height
+                    )
+                    let distance = max(0, maxOffsetY - geometry.contentOffset.y)
+                    return ScrollMetrics(
+                        contentHeight: geometry.contentSize.height,
+                        bottomInset: geometry.contentInsets.bottom,
+                        distanceFromBottom: distance
+                    )
+                } action: { oldValue, newValue in
+                    distanceFromBottom = newValue.distanceFromBottom
+                    if isUserScrolling {
+                        isPinnedToBottom = newValue.distanceFromBottom <= 24
+                    } else if isPinnedToBottom,
+                              (newValue.contentHeight > oldValue.contentHeight + 1
+                               || newValue.bottomInset > oldValue.bottomInset + 1),
+                              newValue.distanceFromBottom > 1 {
+                        proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                    }
+                }
+                .onChange(of: latestTextLength) { oldLength, newLength in
+                    guard isGenerating, isPinnedToBottom, !isUserScrolling, newLength > oldLength else { return }
+                    proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                }
+        } else {
+            base
+        }
+    }
+
+    private struct ScrollMetrics: Equatable, Sendable {
+        let contentHeight: CGFloat
+        let bottomInset: CGFloat
+        let distanceFromBottom: CGFloat
     }
 }
 #endif

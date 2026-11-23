@@ -19,6 +19,34 @@ struct ChatMemoryListView: View {
     var body: some View {
         let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         List {
+            if chat.memoriesLoadFailed || chat.unsavedMemories {
+                Section {
+                    if chat.memoriesLoadFailed {
+                        Label("记忆读取失败，请先重试读取以避免覆盖原有内容。", systemImage: "exclamationmark.triangle")
+                            .font(.footnote)
+                            .foregroundStyle(palette.statusWarn)
+                        Button {
+                            Task { await chat.retryLoadMetadata() }
+                        } label: {
+                            Label("重试读取记忆", systemImage: "arrow.clockwise")
+                                .frame(minHeight: 44)
+                        }
+                    }
+                    if chat.unsavedMemories {
+                        Label("记忆更改未能保存到本机，重启后可能恢复旧内容。", systemImage: "exclamationmark.triangle")
+                            .font(.footnote)
+                            .foregroundStyle(palette.statusWarn)
+                        Button {
+                            Task { _ = await chat.retrySaveMemories() }
+                        } label: {
+                            Label("重试保存记忆", systemImage: "arrow.clockwise")
+                                .frame(minHeight: 44)
+                        }
+                    }
+                }
+                .listRowBackground(palette.contentSurface)
+            }
+
             Section {
                 TextField("例如：我主要使用 Swift 和 Go", text: $draft, axis: .vertical)
                     .lineLimit(1...4)
@@ -147,6 +175,34 @@ struct ChatSkillListView: View {
     var body: some View {
         let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         List {
+            if chat.skillsLoadFailed || chat.unsavedSkills {
+                Section {
+                    if chat.skillsLoadFailed {
+                        Label("技能读取失败，已保留磁盘原有文件，请重试读取。", systemImage: "exclamationmark.triangle")
+                            .font(.footnote)
+                            .foregroundStyle(palette.statusWarn)
+                        Button {
+                            Task { await chat.retryLoadMetadata() }
+                        } label: {
+                            Label("重试读取技能", systemImage: "arrow.clockwise")
+                                .frame(minHeight: 44)
+                        }
+                    }
+                    if chat.unsavedSkills {
+                        Label("技能更改未能保存到本机，重启后可能恢复旧内容。", systemImage: "exclamationmark.triangle")
+                            .font(.footnote)
+                            .foregroundStyle(palette.statusWarn)
+                        Button {
+                            Task { _ = await chat.retrySaveSkills() }
+                        } label: {
+                            Label("重试保存技能", systemImage: "arrow.clockwise")
+                                .frame(minHeight: 44)
+                        }
+                    }
+                }
+                .listRowBackground(palette.contentSurface)
+            }
+
             Section {
                 ForEach(chat.skills) { skill in
                     NavigationLink {

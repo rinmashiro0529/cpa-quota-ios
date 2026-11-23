@@ -41,7 +41,16 @@ struct ChatConversationOptionsView: View {
             .listRowBackground(palette.contentSurface)
 
             Section {
-                Picker("模型", selection: binding(\.modelID, in: conversation)) {
+                Picker("模型", selection: Binding(
+                    get: { chat.conversation(conversationID)?.modelID ?? conversation.modelID },
+                    set: { value in
+                        if let value {
+                            chat.selectModel(value, in: conversationID)
+                        } else {
+                            chat.updateConversation(conversationID) { $0.modelID = nil }
+                        }
+                    }
+                )) {
                     Text("未选择").tag(String?.none)
                     ForEach(chat.models) { model in
                         Text(model.id).tag(Optional(model.id))
@@ -59,7 +68,7 @@ struct ChatConversationOptionsView: View {
                 }
                 .pickerStyle(.segmented)
                 Toggle("联网搜索", isOn: binding(\.isWebSearchEnabled, in: conversation))
-                    .disabled(chat.settings.searchProvider == nil)
+                    .disabled(chat.settings.searchProvider == nil && !conversation.isWebSearchEnabled)
             } header: {
                 Text("模型与能力")
             } footer: {
@@ -93,6 +102,11 @@ struct ChatConversationOptionsView: View {
             }
 
             Section {
+                if chat.failedConversationDeletions.contains(conversationID) {
+                    Label("未能从本机删除这段对话，请重试。", systemImage: "exclamationmark.triangle")
+                        .font(.footnote)
+                        .foregroundStyle(palette.statusWarn)
+                }
                 Button(role: .destructive) {
                     isConfirmingDelete = true
                 } label: {
@@ -107,8 +121,11 @@ struct ChatConversationOptionsView: View {
         .background(BrandCanvasBackground())
         .confirmationDialog("删除这段对话？", isPresented: $isConfirmingDelete, titleVisibility: .visible) {
             Button("删除", role: .destructive) {
-                chat.deleteConversation(conversationID)
-                dismiss()
+                Task {
+                    if await chat.deleteConversation(conversationID) {
+                        dismiss()
+                    }
+                }
             }
             Button("取消", role: .cancel) {}
         } message: {

@@ -58,6 +58,15 @@ public struct ChatWorkspaceView: View {
                 .listRowBackground(palette.contentSurface)
             }
 
+            if !chat.failedConversationDeletions.isEmpty {
+                Section {
+                    Label("部分对话未能从本机删除，已保留在列表中，可重试删除。", systemImage: "exclamationmark.triangle")
+                        .font(.footnote)
+                        .foregroundStyle(palette.statusWarn)
+                }
+                .listRowBackground(palette.contentSurface)
+            }
+
             if !chat.isLoaded {
                 Section {
                     ProgressView("正在读取本机对话记录")
@@ -175,7 +184,9 @@ public struct ChatWorkspaceView: View {
             titleVisibility: .visible,
             presenting: pendingDeletion
         ) { conversation in
-            Button("删除", role: .destructive) { chat.deleteConversation(conversation.id) }
+            Button("删除", role: .destructive) {
+                Task { _ = await chat.deleteConversation(conversation.id) }
+            }
             Button("取消", role: .cancel) {}
         } message: { conversation in
             Text(ChatDeletionCopy.message(isGenerating: chat.isGenerating(conversation.id)))
