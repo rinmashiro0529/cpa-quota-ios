@@ -965,7 +965,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         element("chat.send", in: app).tap()
         element("ui-test.chat.release", in: app).tap()
         let second = element("chat.html.snippet.2", in: app)
-        reveal(second, in: app)
+        reveal(second, in: app, upward: false)
         second.tap()
         let secondFragment = app.webViews.staticTexts["Second fragment"].firstMatch
         expectExists(secondFragment, in: app, timeout: 15)
@@ -1204,9 +1204,9 @@ final class CPAQuotaAppUITests: XCTestCase {
         let targetDistance = targetFrame.isEmpty || targetFrame.isNull
             ? nil
             : abs(targetFrame.midY - viewport.midY)
-        let usesPreciseScroll = targetDistance.map { $0 < viewport.height * 0.75 } ?? false
+        let usesPreciseScroll = targetDistance.map { $0 < max(viewport.height * 2, 240) } ?? false
         let dragDistance = usesPreciseScroll
-            ? min(viewport.height * 0.25, max(40, (targetDistance ?? 0) * 0.2))
+            ? min(viewport.height * 0.45, max(28, (targetDistance ?? 0) * 0.6))
             : viewport.height * 0.25
         let centerY = viewport.minY + viewport.height * 0.35
         let top = centerY - dragDistance / 2 - context.containerFrame.minY
@@ -1215,7 +1215,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         let start = origin.withOffset(CGVector(dx: x, dy: upward ? bottom : top))
         let end = origin.withOffset(CGVector(dx: x, dy: upward ? top : bottom))
         if usesPreciseScroll {
-            start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0)
+            start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.15)
         } else {
             start.press(forDuration: 0.05, thenDragTo: end)
         }
