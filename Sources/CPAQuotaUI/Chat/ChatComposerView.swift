@@ -116,18 +116,19 @@ struct ChatComposerView: View {
                     HStack(spacing: 8) {
                         accessoryButtons(palette)
                         Spacer(minLength: 0)
-                        sendButton(palette)
+                        sendButton
                     }
                 }
             } else {
                 HStack(alignment: .bottom, spacing: 8) {
                     accessoryButtons(palette)
                     field(palette)
-                    sendButton(palette)
+                    sendButton
                 }
             }
         }
-        .padding(12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
         .modifier(ChatComposerSurface())
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
@@ -185,7 +186,7 @@ struct ChatComposerView: View {
             .font(.body)
             .foregroundStyle(palette.textPrimary)
             .focused($isFocused)
-            .padding(.vertical, 10)
+            .padding(.vertical, 8)
             .frame(minHeight: 44)
             .accessibilityIdentifier("chat.input")
     }
@@ -246,16 +247,15 @@ struct ChatComposerView: View {
     }
 
     @ViewBuilder
-    private func sendButton(_ palette: BrandPalette) -> some View {
+    private var sendButton: some View {
         if isGenerating {
             Button {
                 chat.stop(conversation.id)
             } label: {
                 Image(systemName: "stop.fill")
                     .font(.headline)
-                    .frame(width: 44, height: 44)
             }
-            .modifier(ChatRoundButtonStyle(prominent: false))
+            .buttonStyle(ChatRoundButtonStyle(prominent: false))
             .accessibilityLabel("停止生成")
             .accessibilityIdentifier("chat.stop")
         } else if let target = continuation {
@@ -265,9 +265,8 @@ struct ChatComposerView: View {
             } label: {
                 Image(systemName: target.isRetry ? "arrow.clockwise" : "arrow.up.right")
                     .font(.headline.weight(.bold))
-                    .frame(width: 44, height: 44)
             }
-            .modifier(ChatRoundButtonStyle(prominent: true))
+            .buttonStyle(ChatRoundButtonStyle(prominent: true))
             .disabled(continuationCooldown)
             .accessibilityLabel(target.isRetry ? "重试生成回复" : "续写上一条回复")
             .accessibilityHint("发起一次新的生成请求，可能产生额外用量")
@@ -276,9 +275,8 @@ struct ChatComposerView: View {
             Button(action: onSubmit) {
                 Image(systemName: editingMessageID == nil ? "arrow.up" : "checkmark")
                     .font(.headline.weight(.bold))
-                    .frame(width: 44, height: 44)
             }
-            .modifier(ChatRoundButtonStyle(prominent: true))
+            .buttonStyle(ChatRoundButtonStyle(prominent: true))
             .disabled(!canSend)
             .keyboardShortcut(.return, modifiers: .command)
             .accessibilityLabel(editingMessageID == nil ? "发送" : "发送修改")
@@ -399,35 +397,31 @@ private struct ChatComposerSurface: ViewModifier {
     }
 }
 
-private struct ChatRoundButtonStyle: ViewModifier {
+private struct ChatRoundButtonStyle: ButtonStyle {
     let prominent: Bool
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.isEnabled) private var isEnabled
 
-    @ViewBuilder
-    func body(content: Content) -> some View {
+    func makeBody(configuration: Configuration) -> some View {
         let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
-        if #available(iOS 26.0, macOS 26.0, *) {
-            if prominent {
-                content
-                    .buttonStyle(.glassProminent)
-                    .buttonBorderShape(.circle)
-                    .tint(palette.accent)
-                    .foregroundStyle(palette.textOnAccent)
+        let isProminent = prominent && isEnabled
+        let label = configuration.label
+            .foregroundStyle(isProminent ? palette.textOnAccent : palette.textPrimary)
+            .frame(width: 36, height: 36)
+
+        Group {
+            if #available(iOS 26.0, macOS 26.0, *) {
+                let glass = isProminent ? Glass.regular.tint(palette.accent) : Glass.regular
+                label.glassEffect(glass.interactive(isEnabled), in: Circle())
             } else {
-                content
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.circle)
+                label.background(isProminent ? palette.accent : palette.insetSurface, in: Circle())
             }
-        } else {
-            // Same fallback as the primary button style: a readable foreground
-            // on a bordered control instead of white on the light accent.
-            content
-                .buttonStyle(.bordered)
-                .buttonBorderShape(.circle)
-                .tint(prominent ? palette.actionTint : palette.textSecondary)
-                .foregroundStyle(palette.textPrimary)
         }
+        .opacity(isEnabled ? (configuration.isPressed ? 0.75 : 1) : 0.55)
+        // Match the composer row's hit area without increasing the visible circle.
+        .frame(width: 44, height: 44)
+        .contentShape(Rectangle())
     }
 }
 #endif
