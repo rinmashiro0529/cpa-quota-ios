@@ -55,6 +55,10 @@ public final class CPAQuotaStore {
         await client.makeCAPUsageClient()
     }
 
+    public func makeAPIKeyDiscovery() async -> CPAAPIKeyDiscovery {
+        await client.makeAPIKeyDiscovery()
+    }
+
     public func retryEligibility(for accountID: String? = nil) async -> QuotaRetryEligibility {
         await client.retryEligibility(for: accountID)
     }

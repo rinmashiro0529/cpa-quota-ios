@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import CPAQuotaKit
 import CPAQuotaActivity
+import CPAQuotaChat
 #if canImport(Security)
 import Security
 #endif
@@ -416,7 +417,43 @@ public final class CPAQuotaSession {
         case connected(server: CPAServer, isRememberedInKeychain: Bool)
     }
 
-    public private(set) var authState: AuthState = .unconfigured
+    @ObservationIgnored private var chatBindingTask: Task<Void, Never>?
+    @ObservationIgnored private var boundChatTarget: (server: CPAServer, remembered: Bool)?
+
+    public private(set) var authState: AuthState = .unconfigured {
+        didSet {
+            reconcileChatWorkspaceBinding()
+        }
+    }
+
+    private func reconcileChatWorkspaceBinding() {
+        let target: (server: CPAServer, remembered: Bool)?
+        switch authState {
+        case .connecting:
+            // Preserve the accepted chat workspace, active stream, and ephemeral
+            // client key while a candidate connection is still being validated.
+            return
+        case .connected(let server, let remembered):
+            target = (server, remembered)
+        case .unconfigured:
+            target = nil
+        }
+        guard target?.server != boundChatTarget?.server || target?.remembered != boundChatTarget?.remembered else {
+            return
+        }
+        boundChatTarget = target
+        chatBindingTask?.cancel()
+        chatWorkspace.unbind()
+        guard let target else { return }
+        let boundServer = target.server
+        let chatWorkspace = self.chatWorkspace
+        // An unremembered connection keeps its chat client key in memory only.
+        chatBindingTask = Task {
+            await chatWorkspace.bind(server: boundServer, persistsKey: target.remembered) { [weak self] in
+                await self?.makeAPIKeyDiscovery(for: boundServer)
+            }
+        }
+    }
     public private(set) var store: CPAQuotaStore?
     public private(set) var currentServer: CPAServer?
     public private(set) var savedServer: CPAServer?
@@ -433,6 +470,7 @@ public final class CPAQuotaSession {
 
     public let capUsageCoordinator = CAPUsageWorkspaceCoordinator()
     public let monitoringCoordinator: MonitoringWorkspaceCoordinator
+    public let chatWorkspace: ChatWorkspaceModel
 
     public var serverAddressDraft: String = ""
     public var managementKeyDraft: String = ""
@@ -494,12 +532,14 @@ public final class CPAQuotaSession {
         widgetSnapshotWriter: (any QuotaWidgetSnapshotWriting)? = nil,
         clientFactory: @escaping @Sendable (CPAServer, ManagementKey) -> CPAClient = { server, key in
             CPAClient(server: server, managementKey: key)
-        }
+        },
+        chatWorkspace: ChatWorkspaceModel? = nil
     ) {
         self.credentialStore = credentialStore
         self.credentialCoordinator = CredentialStoreCoordinator(store: credentialStore)
         self.preferences = preferences
         self.monitoringCoordinator = monitoringCoordinator ?? MonitoringWorkspaceCoordinator()
+        self.chatWorkspace = chatWorkspace ?? ChatWorkspaceModel()
         self.widgetPublisher = QuotaWidgetPublisher(store: widgetSnapshotWriter ?? widgetSnapshotStore, preferences: preferences)
         self.clientFactory = clientFactory
         self.themeMode = preferences.loadThemeMode()
@@ -1064,6 +1104,20 @@ public final class CPAQuotaSession {
         return client
     }
 
+    public func makeAPIKeyDiscovery() async -> CPAAPIKeyDiscovery? {
+        guard let currentServer else { return nil }
+        return await makeAPIKeyDiscovery(for: currentServer)
+    }
+
+    private func makeAPIKeyDiscovery(for server: CPAServer) async -> CPAAPIKeyDiscovery? {
+        guard let activeStore = store, currentServer == server else { return nil }
+        let generation = operationGeneration
+        let discovery = await activeStore.makeAPIKeyDiscovery()
+        guard generation == operationGeneration, store === activeStore, currentServer == server,
+              !Task.isCancelled else { return nil }
+        return discovery
+    }
+
     public func refreshAccount(_ accountID: String, force: Bool = true) async {
         defer { synchronizeQuotaWidgetSnapshot() }
         guard let store else { return }
@@ -1122,9 +1176,24 @@ public final class CPAQuotaSession {
 
         guard generation == operationGeneration, outcome.version == intent.version else { return }
 
-        if let failure = outcome.failure {
+        var forgetFailure = outcome.failure
+        let managementKeyRemoved = forgetFailure == nil
+        if forgetFailure == nil, let server {
+            do { try await chatWorkspace.forget(server: server) }
+            catch { forgetFailure = (error as? CPAError) ?? CPAError(.secureStorageFailure) }
+            guard generation == operationGeneration else { return }
+        }
+        if let failure = forgetFailure {
             // At least one credential is still stored: do not claim the forget completed.
             presentStorageFailure(failure)
+            if managementKeyRemoved, case .connected(let current, true) = authState {
+                // Only the chat client key is left. The management key is gone, so the
+                // connection is no longer remembered; rebinding as unremembered retries
+                // the client key removal, and forgetting again stays available.
+                updateSavedServer(nil)
+                isRememberedInKeychain = false
+                authState = .connected(server: current, isRememberedInKeychain: false)
+            }
             if case .connecting = authState {
                 // The attempt was already invalidated; it cannot reach a connected state.
                 if let existingStore = store {

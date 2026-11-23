@@ -104,6 +104,11 @@ public actor CPAClient {
                        coordinator: limiter, clock: clock)
     }
 
+    public func makeAPIKeyDiscovery() -> CPAAPIKeyDiscovery {
+        CPAAPIKeyDiscovery(server: server, managementKey: key, transport: transport,
+                           coordinator: limiter, clock: clock)
+    }
+
     /// Initial connection may validate just the inventory, then discover optional
     /// quota capabilities after the workspace is visible.
     public func loadAccounts(discoverProviders: Bool = true) async throws -> [CPAAccount] {

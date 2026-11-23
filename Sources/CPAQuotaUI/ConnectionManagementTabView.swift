@@ -2,6 +2,11 @@
 import SwiftUI
 import CPAQuotaKit
 
+/// Destinations pushed inside the connection workspace. Monitoring moved here from its former top-level tab.
+public enum ConnectionDestination: Hashable, Sendable {
+    case monitoring
+}
+
 public struct ConnectionManagementTabView: View {
     @Bindable var session: CPAQuotaSession
     @Environment(\.colorScheme) private var colorScheme
@@ -39,6 +44,28 @@ public struct ConnectionManagementTabView: View {
                 .quotaPrimaryButtonStyle()
             } header: {
                 Text("当前连接").font(QuotaTypography.brandHeadline)
+            }
+            .listRowBackground(palette.contentSurface)
+
+            Section {
+                NavigationLink(value: ConnectionDestination.monitoring) {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("监控与活动")
+                            Text(monitoringSummary)
+                                .font(.subheadline)
+                                .foregroundStyle(palette.textSecondary)
+                        }
+                    } icon: {
+                        Image(systemName: "bell.badge.waveform")
+                    }
+                    .frame(minHeight: 44)
+                }
+                .accessibilityIdentifier("connection.monitoring")
+            } header: {
+                Text("监控")
+            } footer: {
+                Text("监控服务独立于 CPA 管理密钥，使用单独的访问令牌；实时活动与灵动岛从这里开启和结束。")
             }
             .listRowBackground(palette.contentSurface)
 
@@ -124,6 +151,11 @@ public struct ConnectionManagementTabView: View {
         .scrollContentBackground(.hidden)
         .background(BrandCanvasBackground())
         .navigationTitle(CPAWorkspaceTab.connection.title)
+        .navigationDestination(for: ConnectionDestination.self) { destination in
+            switch destination {
+            case .monitoring: MonitoringTabView(session: session)
+            }
+        }
         .tint(palette.actionTint)
         .confirmationDialog(
             "确认忘记此 CPA 连接？",
@@ -136,6 +168,13 @@ public struct ConnectionManagementTabView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("将删除保存在本机钥匙串中的管理密钥，并清空内存中的账号与额度快照。")
+        }
+    }
+
+    private var monitoringSummary: String {
+        switch session.monitoringCoordinator.bridgeState {
+        case .unconfigured: "尚未连接监控服务"
+        case .connected: session.monitoringCoordinator.authorizationSummary
         }
     }
 

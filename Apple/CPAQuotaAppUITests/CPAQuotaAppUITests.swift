@@ -1,5 +1,6 @@
 import XCTest
 import UIKit
+import notify
 
 /// Runs against the real app UI and production parsers using Debug-only local
 /// transport fixtures. Screenshots accompany assertions; they are not treated
@@ -132,7 +133,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         defer { app.terminate() }
         let tabs = [
             ("quotas", "额度总览"), ("usage", "CAP 用量"),
-            ("monitoring", "监控与活动"), ("accounts", "账号诊断"),
+            ("chat", "AI 对话"), ("accounts", "账号诊断"),
             ("connection", "连接管理")
         ]
         // TabView may become a side rail on iOS 27. Verify all five native
@@ -146,6 +147,10 @@ final class CPAQuotaAppUITests: XCTestCase {
             selectTab(id, title: title, in: app)
             verify(app.navigationBars.firstMatch.exists, in: app,
                    "Each workspace must retain its native navigation stack.")
+            if id == "chat" {
+                verify(element("chat.new", in: app).exists, in: app,
+                       "A connected session must show the chat list with its new-conversation action.")
+            }
             attach(app, name: "tab-\(id)")
         }
 
@@ -352,10 +357,64 @@ final class CPAQuotaAppUITests: XCTestCase {
     }
 
     @MainActor
+    func testChatSelectsModelStreamsStopsAndRegenerates() {
+        let app = launch(connected: true)
+        defer { app.terminate() }
+        selectTab("chat", title: "AI 对话", in: app)
+        let newChat = element("chat.emptyNew", in: app)
+        reveal(newChat, in: app)
+        newChat.tap()
+
+        let modelMenu = element("chat.modelMenu", in: app)
+        expectExists(modelMenu, in: app)
+        modelMenu.tap()
+        let alternateModel = textContaining("fixture-chat-alternate", in: app)
+        expectExists(alternateModel, in: app)
+        alternateModel.tap()
+        verify(modelMenu.label.contains("fixture-chat-alternate"), in: app,
+               "The selected model must apply to this conversation.")
+
+        let input = element("chat.input", in: app)
+        expectExists(input, in: app)
+        input.tap()
+        input.typeText("Fixture question")
+        let send = element("chat.send", in: app)
+        expectExists(send, in: app)
+        send.tap()
+        let partial = textContaining("第一段夹具回复", in: app)
+        expectExists(partial, in: app)
+        let stop = element("chat.stop", in: app)
+        expectExists(stop, in: app)
+        stop.tap()
+        expectExists(textContaining("已停止生成", in: app), in: app)
+        verify(partial.exists, in: app, "Stopping must keep the streamed text.")
+
+        let regenerate = element("chat.regenerate", in: app)
+        reveal(regenerate, in: app)
+        regenerate.tap()
+        expectExists(textContaining("重新生成的夹具回复", in: app), in: app)
+        verify(!partial.exists, in: app, "Regenerating must replace the stopped reply.")
+    }
+
+    @MainActor
+    func testMonitoringDeepLinkOpensMonitoringPage() throws {
+        let app = launch(connected: true)
+        defer { app.terminate() }
+        selectTab("chat", title: "AI 对话", in: app)
+        app.open(try XCTUnwrap(URL(string: "cpaquota://monitor?source=personal")))
+        expectExists(app.navigationBars["监控与活动"], in: app, timeout: 10)
+        expectExists(element("monitoring.unconfigured", in: app), in: app)
+    }
+
+    @MainActor
     func testUnconfiguredMonitoringRequiresSeparateCredentials() {
         let app = launch(connected: true)
         defer { app.terminate() }
-        selectTab("monitoring", title: "监控与活动", in: app)
+        selectTab("connection", title: "连接管理", in: app)
+        let monitoringEntry = element("connection.monitoring", in: app)
+        reveal(monitoringEntry, in: app)
+        monitoringEntry.tap()
+        expectExists(app.navigationBars["监控与活动"], in: app, timeout: 5)
         let unconfigured = element("monitoring.unconfigured", in: app)
         expectExists(unconfigured, in: app, timeout: 5)
         let connectLink = app.buttons["连接监控服务"]
@@ -515,10 +574,13 @@ final class CPAQuotaAppUITests: XCTestCase {
     }
 
     @MainActor
-    private func launch(connected: Bool, largeText: Bool = false) -> XCUIApplication {
+    private func launch(connected: Bool, largeText: Bool = false, arguments: [String] = [],
+                        environment: [String: String] = [:]) -> XCUIApplication {
         XCUIDevice.shared.orientation = .portrait
         let app = XCUIApplication()
         app.launchArguments += ["--ui-testing", connected ? "--fixture=connected" : "--fixture=unconfigured"]
+        app.launchEnvironment.merge(environment) { _, value in value }
+        app.launchArguments += arguments
         if largeText { app.launchArguments.append("--ui-test-large-text") }
         app.launch()
         verify(app.wait(for: .runningForeground, timeout: 10), in: app, "The fixture app must launch in the foreground.")
@@ -538,8 +600,383 @@ final class CPAQuotaAppUITests: XCTestCase {
     }
 
     @MainActor
+    func testReasoningIsVisibleBeforeAnswerIsReleased() {
+        let app = launch(connected: true, arguments: ["--ui-test-chat-gate"])
+        defer { app.terminate() }
+        selectTab("chat", title: "AI 对话", in: app)
+        element("chat.emptyNew", in: app).tap()
+        let input = element("chat.input", in: app)
+        input.tap()
+        input.typeText("S1")
+        element("chat.send", in: app).tap()
+        let reasoning = app.staticTexts["可见推理片段"]
+        expectExists(reasoning, in: app)
+        XCTAssertTrue(reasoning.isHittable)
+        XCTAssertTrue(element("chat.stop", in: app).isHittable)
+        XCTAssertFalse(textContaining("放行后的正文", in: app).exists)
+        element("ui-test.chat.release", in: app).tap()
+        expectExists(textContaining("放行后的正文", in: app), in: app)
+        textContaining("思考过程", in: app).tap()
+        expectExists(reasoning, in: app)
+    }
+
+    @MainActor
+    private func startCheckpointScenario(_ app: XCUIApplication) {
+        selectTab("chat", title: "AI 对话", in: app)
+        element("chat.emptyNew", in: app).tap()
+        let input = element("chat.input", in: app)
+        input.tap()
+        input.typeText("B4")
+        element("chat.send", in: app).tap()
+        let checkpoint = element("ui-test.chat.checkpoint", in: app)
+        expectExists(checkpoint, in: app)
+        checkpoint.tap()
+        expectExists(app.staticTexts["生成请求 1，已写块 1"], in: app)
+    }
+
+    @MainActor
+    func testInterruptedGenerationRestoresWrittenCheckpointWithoutRequest() {
+        let arguments = ["--ui-test-chat-gate", "--ui-test-chat-store=\(UUID().uuidString)"]
+        let first = launch(connected: true, arguments: arguments)
+        startCheckpointScenario(first)
+        first.terminate()
+        let reopened = launch(connected: true, arguments: arguments)
+        defer { reopened.terminate() }
+        selectTab("chat", title: "AI 对话", in: reopened)
+        let row = reopened.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "chat.conversation.")).firstMatch
+        expectExists(row, in: reopened)
+        row.tap()
+        expectExists(textContaining("保存片段一", in: reopened), in: reopened)
+        expectExists(textContaining("生成已中断", in: reopened), in: reopened)
+        textContaining("思考过程", in: reopened).tap()
+        expectExists(reopened.staticTexts["可见推理片段"], in: reopened)
+        expectExists(element("chat.continue", in: reopened), in: reopened)
+        XCTAssertFalse(element("chat.stop", in: reopened).exists)
+        XCTAssertTrue(element("ui-test.chat.counts", in: reopened).label.contains("生成请求 0"))
+    }
+
+    @MainActor
+    func testStopContinueAndCompleteOneReply() {
+        let arguments = ["--ui-test-chat-gate", "--ui-test-chat-continuation", "--ui-test-chat-store=\(UUID().uuidString)"]
+        let app = launch(connected: true, arguments: arguments)
+        startCheckpointScenario(app)
+        element("chat.stop", in: app).tap()
+        let resume = element("chat.continue", in: app)
+        expectExists(resume, in: app)
+        XCTAssertEqual(resume.label, "续写上一条回复")
+        let field = element("chat.input", in: app)
+        field.tap()
+        field.typeText("X")
+        XCTAssertTrue(element("chat.send", in: app).isEnabled)
+        XCTAssertFalse(resume.exists)
+        field.typeText(XCUIKeyboardKey.delete.rawValue)
+        expectExists(resume, in: app)
+        resume.tap()
+        expectExists(element("chat.stop", in: app), in: app)
+        element("ui-test.chat.checkpoint", in: app).tap()
+        expectExists(app.staticTexts["生成请求 2，已写块 1"], in: app)
+        app.terminate()
+
+        let reopened = launch(connected: true, arguments: arguments)
+        defer { reopened.terminate() }
+        selectTab("chat", title: "AI 对话", in: reopened)
+        reopened.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "chat.conversation.")).firstMatch.tap()
+        expectExists(textContaining("保存片段一追加片段二", in: reopened), in: reopened)
+        XCTAssertTrue(element("ui-test.chat.counts", in: reopened).label.contains("生成请求 0"))
+        element("chat.continue", in: reopened).tap()
+        element("ui-test.chat.release", in: reopened).tap()
+        expectExists(textContaining("保存片段一追加片段二放行后的正文", in: reopened), in: reopened)
+        XCTAssertTrue(element("ui-test.chat.counts", in: reopened).label.contains("生成请求 1"))
+        XCTAssertFalse(element("chat.continue", in: reopened).exists)
+        attach(reopened, name: "continued-assistant-reply")
+    }
+
+    @MainActor
+    func testForegroundReturnAndExplicitExpiryKeepOneGeneration() {
+        let arguments = ["--ui-test-chat-gate", "--ui-test-chat-store=\(UUID().uuidString)"]
+        let app = launch(connected: true, arguments: arguments)
+        defer { app.terminate() }
+        startCheckpointScenario(app)
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertTrue(element("chat.stop", in: app).exists)
+        element("ui-test.chat.expire", in: app).tap()
+        expectExists(textContaining("后台生成已中断", in: app), in: app)
+        expectExists(textContaining("保存片段一", in: app), in: app)
+        let regenerate = element("chat.regenerate", in: app)
+        reveal(regenerate, in: app)
+        regenerate.tap()
+        let confirmation = app.buttons["确认重新生成"]
+        expectExists(confirmation, in: app)
+        if app.buttons["取消"].exists {
+            app.buttons["取消"].tap()
+        } else {
+            // Compact confirmation popovers can expose only the affirmative action.
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.06, dy: 0.12)).tap()
+        }
+        XCTAssertFalse(confirmation.exists)
+        XCTAssertTrue(element("ui-test.chat.counts", in: app).label.contains("生成请求 1"))
+        regenerate.tap()
+        app.buttons["确认重新生成"].tap()
+        expectExists(element("chat.stop", in: app), in: app)
+        // The Stop button tracks the workspace task. The engine increments its
+        // counter on a later main-actor turn, after the request actually starts.
+        let twoRequests = app.staticTexts.matching(identifier: "ui-test.chat.counts")
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "生成请求 2，")).firstMatch
+        expectExists(twoRequests, in: app)
+    }
+
+    @MainActor
     private func element(_ identifier: String, in app: XCUIApplication) -> XCUIElement {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+    }
+
+    @MainActor
+    func testReadingPositionDuringStreamGrowth() {
+        let app = launch(connected: true, arguments: ["--ui-test-chat-gate", "--ui-test-chat-scroll"])
+        defer { app.terminate() }
+        selectTab("chat", title: "AI 对话", in: app)
+        element("chat.emptyNew", in: app).tap()
+        let input = element("chat.input", in: app)
+        input.tap()
+        input.typeText("Reading anchor")
+        element("chat.send", in: app).tap()
+        let extend = element("ui-test.chat.extend", in: app)
+        extend.tap()
+        let last = textContaining("阅读段落 18", in: app)
+        expectExists(last, in: app)
+        let viewport = CGRect(x: 0, y: app.navigationBars.firstMatch.frame.maxY,
+                              width: app.frame.width, height: max(0, input.frame.minY - app.navigationBars.firstMatch.frame.maxY))
+        XCTAssertTrue(viewport.contains(CGPoint(x: last.frame.midX, y: last.frame.midY)), "U1 bottom \(last.frame) viewport \(viewport)")
+        let first = element("chat.message.user", in: app)
+        reveal(first, in: app, upward: false, requiresHitTarget: false)
+        let originalY = first.frame.midY
+        XCTAssertTrue(viewport.contains(CGPoint(x: first.frame.midX, y: originalY)))
+        extend.tap()
+        expectExists(textContaining("阅读段落 36", in: app), in: app)
+        XCTAssertTrue(viewport.contains(CGPoint(x: first.frame.midX, y: first.frame.midY)))
+        XCTAssertEqual(first.frame.midY, originalY, accuracy: 30)
+    }
+
+    @MainActor
+    func testChatEditCancelRestoresMultilineDraft() {
+        let app = launch(connected: true, arguments: ["--ui-test-chat-gate", "--ui-test-chat-image"])
+        defer { app.terminate() }
+        selectTab("chat", title: "AI 对话", in: app)
+        element("chat.emptyNew", in: app).tap()
+        let input = element("chat.input", in: app)
+        input.tap()
+        input.typeText("Earlier")
+        element("chat.send", in: app).tap()
+        element("ui-test.chat.release", in: app).tap()
+        expectExists(textContaining("放行后的正文", in: app), in: app)
+        input.tap()
+        input.typeText("draft one\ndraft two")
+        element("chat.attach", in: app).tap()
+        expectExists(app.buttons["移除图片"], in: app)
+        let edit = app.buttons["编辑并重新发送"].firstMatch
+        guard edit.exists else {
+            XCTFail("U3 user-message editing has no discoverable button")
+            return
+        }
+        reveal(edit, in: app, upward: false)
+        edit.tap()
+        XCTAssertEqual(input.value as? String, "Earlier")
+        XCTAssertFalse(app.buttons["移除图片"].exists)
+        app.buttons["取消"].tap()
+        XCTAssertEqual(input.value as? String, "draft one\ndraft two")
+        XCTAssertTrue(app.buttons["移除图片"].exists)
+        XCTAssertTrue(app.buttons["复制"].firstMatch.exists)
+        XCTAssertTrue(element("chat.regenerate", in: app).exists)
+        let backButton = element("BackButton", in: app)
+        expectExists(backButton, in: app)
+        backButton.tap()
+        element("chat.new", in: app).tap()
+        XCTAssertFalse((element("chat.input", in: app).value as? String)?.contains("draft one") == true)
+    }
+
+    @MainActor
+    func testLargeChatControlsInLightAndDarkLandscape() async throws {
+        defer { XCUIDevice.shared.orientation = .portrait }
+        for appearance in ["light", "dark"] {
+            let app = launch(connected: true, largeText: true, arguments: ["--ui-test-theme=" + appearance])
+            defer { app.terminate() }
+            selectTab("chat", title: "AI 对话", in: app)
+            element("chat.new", in: app).tap()
+            let menu = element("chat.modelMenu", in: app)
+            let send = element("chat.send", in: app)
+            XCTAssertTrue(menu.isHittable)
+            XCTAssertTrue(send.exists)
+            let lightness = try canvasBrightness(app.screenshot().image)
+            if appearance == "light" { XCTAssertGreaterThan(lightness, 0.65) }
+            else { XCTAssertLessThan(lightness, 0.25) }
+            _ = await rotateDeviceAndWaitForWindow(in: app, policy: layoutPolicy(in: app))
+            XCTAssertTrue(menu.isHittable)
+            XCTAssertTrue(element("chat.attach", in: app).isHittable)
+            XCTAssertTrue(app.frame.contains(CGPoint(x: send.frame.midX, y: send.frame.midY)))
+            attach(app, name: "chat-large-landscape-" + appearance)
+        }
+    }
+
+    @MainActor
+    func testRecentModelPersistsAcrossCreationAndLaunch() {
+        let args = ["--ui-test-chat-store=\(UUID().uuidString)", "--ui-test-chat-models", "--ui-test-chat-gate"]
+        let app = launch(connected: true, arguments: args)
+        selectTab("chat", title: "AI 对话", in: app)
+        element("chat.emptyNew", in: app).tap()
+        element("chat.modelMenu", in: app).tap()
+        textContaining("fixture-chat-alternate", in: app).tap()
+        expectExists(app.staticTexts["模型选择已写入"], in: app)
+        let input = element("chat.input", in: app)
+        input.tap()
+        input.typeText("M1")
+        element("chat.send", in: app).tap()
+        element("ui-test.chat.release", in: app).tap()
+        expectExists(textContaining("放行后的正文", in: app), in: app)
+        let backButton = element("BackButton", in: app)
+        expectExists(backButton, in: app)
+        backButton.tap()
+        element("chat.new", in: app).tap()
+        XCTAssertTrue(element("chat.modelMenu", in: app).label.contains("fixture-chat-alternate"))
+        app.terminate()
+
+        let reopened = launch(connected: true, arguments: args)
+        selectTab("chat", title: "AI 对话", in: reopened)
+        element("chat.new", in: reopened).tap()
+        XCTAssertTrue(element("chat.modelMenu", in: reopened).label.contains("fixture-chat-alternate"))
+        reopened.terminate()
+
+        let removed = launch(connected: true, arguments: args + ["--ui-test-removed-model"])
+        defer { removed.terminate() }
+        selectTab("chat", title: "AI 对话", in: removed)
+        let row = removed.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "chat.conversation.")).firstMatch
+        row.tap()
+        expectExists(textContaining("原模型已不可用", in: removed), in: removed)
+        element("chat.modelMenu", in: removed).tap()
+        textContaining("刷新模型列表", in: removed).tap()
+        element("chat.modelMenu", in: removed).tap()
+        textContaining("fixture-chat-default", in: removed).tap()
+        let next = element("chat.input", in: removed)
+        next.tap()
+        next.typeText("M4")
+        element("chat.send", in: removed).tap()
+        expectExists(element("chat.stop", in: removed), in: removed)
+    }
+
+    @MainActor
+    func testLegacyFixedModelSurvivesLaunch() {
+        let args = ["--ui-test-chat-store=\(UUID().uuidString)", "--ui-test-chat-legacy"]
+        let app = launch(connected: true, arguments: args)
+        defer { app.terminate() }
+        selectTab("chat", title: "AI 对话", in: app)
+        element("chat.emptyNew", in: app).tap()
+        XCTAssertTrue(element("chat.modelMenu", in: app).label.contains("fixture-chat-alternate"))
+    }
+
+    @MainActor
+    func testHTMLFallbackCopiesOriginalMixedFences() {
+        let app = launch(connected: true, arguments: ["--ui-test-chat-gate", "--ui-test-chat-html"])
+        defer { app.terminate() }
+        selectTab("chat", title: "AI 对话", in: app)
+        element("chat.emptyNew", in: app).tap()
+        let input = element("chat.input", in: app)
+        input.tap()
+        input.typeText("HTML")
+        element("chat.send", in: app).tap()
+        element("ui-test.chat.release", in: app).tap()
+        let copy = app.buttons.matching(identifier: "doc.on.doc").firstMatch
+        reveal(copy, in: app)
+        copy.tap()
+        let check = element("ui-test.chat.checkCopy", in: app)
+        check.tap()
+        XCTAssertEqual(check.label, "完整源码一致")
+        XCTAssertFalse(app.webViews.firstMatch.exists)
+    }
+
+    @MainActor
+    func testHTMLPreviewKeepsSnapshotWhileConversationStreams() async throws {
+        guard #available(iOS 18.4, *) else { throw XCTSkip("The static HTML preview requires WebKit file-panel cancellation.") }
+        let gate = UUID().uuidString
+        let name = "icu.nahida.cpaquota.html." + gate
+        let released = expectation(description: "The fixture delivered the next chunk while the preview was open")
+        var token: Int32 = 0
+        XCTAssertEqual(notify_register_dispatch(name + ".released", &token, .main) { _ in released.fulfill() }, UInt32(NOTIFY_STATUS_OK))
+        defer { notify_cancel(token) }
+        let app = launch(connected: true, arguments: ["--ui-test-chat-gate", "--ui-test-chat-html", "--ui-test-theme=light"],
+                         environment: ["CPA_UI_HTML_GATE": gate])
+        defer { app.terminate() }
+        selectTab("chat", title: "AI 对话", in: app)
+        element("chat.emptyNew", in: app).tap()
+        let input = element("chat.input", in: app)
+        input.tap()
+        input.typeText("HTML")
+        element("chat.send", in: app).tap()
+        let first = element("chat.html.snippet.1", in: app)
+        let second = element("chat.html.snippet.2", in: app)
+        reveal(first, in: app)
+        XCTAssertFalse(second.exists)
+        first.tap()
+        let web = app.webViews.firstMatch
+        let start = app.webViews.staticTexts["First fragment"].firstMatch
+        let end = app.webViews.staticTexts["First fixture end"].firstMatch
+        expectExists(start, in: app, timeout: 15)
+        web.swipeUp()
+        let y = end.frame.midY
+        XCTAssertTrue(web.frame.contains(CGPoint(x: end.frame.midX, y: y)))
+        XCTAssertEqual(notify_post(name), UInt32(NOTIFY_STATUS_OK))
+        let result = await XCTWaiter.fulfillment(of: [released], timeout: 10)
+        XCTAssertEqual(result, .completed)
+        XCTAssertEqual(end.frame.midY, y, accuracy: 5)
+        XCTAssertFalse(app.webViews.staticTexts["Second fragment"].exists)
+        app.buttons["源码"].tap()
+        expectExists(textContaining("<p style=", in: app), in: app)
+        app.buttons["刷新"].tap()
+        expectExists(start, in: app, timeout: 15)
+        XCTAssertTrue(web.frame.contains(CGPoint(x: start.frame.midX, y: start.frame.minY + 2)))
+        app.buttons["关闭"].tap()
+        reveal(second, in: app)
+        XCTAssertFalse(element("chat.html.snippet.3", in: app).exists)
+        second.tap()
+        let secondFragment = app.webViews.staticTexts["Second fragment"].firstMatch
+        expectExists(secondFragment, in: app, timeout: 15)
+        XCTAssertFalse(app.webViews.staticTexts["First fragment"].exists)
+        app.buttons["源码"].tap()
+        app.buttons["复制源码"].tap()
+        app.buttons["关闭"].tap()
+        let check = element("ui-test.chat.checkCopy", in: app)
+        check.tap()
+        XCTAssertEqual(check.label, "片段源码一致")
+        expectExists(input, in: app)
+        XCTAssertFalse(element("chat.stop", in: app).exists)
+    }
+
+    @MainActor
+    func testHTMLPreviewRotatesWithLargeTextInDarkAppearance() async throws {
+        guard #available(iOS 18.4, *) else { throw XCTSkip("The static HTML preview requires WebKit file-panel cancellation.") }
+        let app = launch(connected: true, largeText: true,
+                         arguments: ["--ui-test-chat-gate", "--ui-test-chat-html", "--ui-test-theme=dark"])
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        selectTab("chat", title: "AI 对话", in: app)
+        element("chat.new", in: app).tap()
+        let input = element("chat.input", in: app)
+        input.tap()
+        input.typeText("HTML")
+        element("chat.send", in: app).tap()
+        element("ui-test.chat.release", in: app).tap()
+        let second = element("chat.html.snippet.2", in: app)
+        reveal(second, in: app, upward: false)
+        second.tap()
+        let secondFragment = app.webViews.staticTexts["Second fragment"].firstMatch
+        expectExists(secondFragment, in: app, timeout: 15)
+        _ = await rotateDeviceAndWaitForWindow(in: app, policy: layoutPolicy(in: app))
+        app.buttons["源码"].tap()
+        expectExists(textContaining("<p>Second fragment</p>", in: app), in: app)
+        app.buttons["预览"].tap()
+        expectExists(secondFragment, in: app, timeout: 15)
+        attach(app, name: "html-preview-dark-landscape")
+        app.buttons["关闭"].tap()
+        expectExists(input, in: app)
     }
 
     @MainActor
@@ -555,7 +992,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         // Inspect after every gesture, including the final one. Once a lazy
         // target exists, move toward its center instead of blindly sweeping.
         for attempt in 0...30 {
-            let context = geometry(in: app)
+            let context = geometry(in: app, scrollingTo: element)
             let exists = element.exists
             let frame = exists ? element.frame : .null
             let hittable = exists && element.isHittable
@@ -650,7 +1087,7 @@ final class CPAQuotaAppUITests: XCTestCase {
 
     /// Capture geometry once per attempt, then refresh it after each gesture.
     @MainActor
-    private func geometry(in app: XCUIApplication) -> GeometryContext {
+    private func geometry(in app: XCUIApplication, scrollingTo target: XCUIElement? = nil) -> GeometryContext {
         let appFrame = app.frame
         let navBars = app.navigationBars.allElementsBoundByIndex.filter { $0.exists }
         let tabBars = app.tabBars.allElementsBoundByIndex.filter { $0.exists }
@@ -672,9 +1109,31 @@ final class CPAQuotaAppUITests: XCTestCase {
         let selected = (detailForms.isEmpty ? candidates : detailForms).max {
             $0.viewport.width * $0.viewport.height < $1.viewport.width * $1.viewport.height
         }
+        var viewport = selected?.viewport
+        let composerIDs: Set<String> = [
+            "chat.composer", "chat.input", "chat.send", "chat.stop",
+            "chat.continue", "chat.retry", "chat.attach", "chat.webSearch", "chat.searchUnavailable"
+        ]
+        let isComposerTarget = target.map { $0.exists && composerIDs.contains($0.identifier) } ?? false
+        if !isComposerTarget, var visibleViewport = viewport {
+            let chatInput = app.textFields.matching(identifier: "chat.input").firstMatch
+            if chatInput.exists {
+                let composer = element("chat.composer", in: app)
+                let composerTop: CGFloat
+                if composer.exists, !composer.frame.isEmpty {
+                    composerTop = min(composer.frame.minY, chatInput.frame.minY)
+                } else {
+                    composerTop = chatInput.frame.minY
+                }
+                if composerTop - visibleViewport.minY > 80, composerTop < visibleViewport.maxY {
+                    visibleViewport.size.height = composerTop - visibleViewport.minY
+                    viewport = visibleViewport
+                }
+            }
+        }
         return GeometryContext(appFrame: appFrame, bars: navBars + tabBars,
                                container: selected?.element, containerFrame: selected?.frame ?? .null,
-                               viewport: selected?.viewport)
+                               viewport: viewport)
     }
 
     private func visibleContentFrame(_ frame: CGRect, appFrame: CGRect, navFrames: [CGRect],
@@ -742,12 +1201,24 @@ final class CPAQuotaAppUITests: XCTestCase {
         let before = hasAnchor ? anchor.frame : .null
         let preferredX = hasAnchor ? before.minX + 4 : viewport.midX
         let x = min(max(preferredX, viewport.minX + 8), viewport.maxX - 8) - context.containerFrame.minX
-        let top = viewport.minY + viewport.height * 0.375 - context.containerFrame.minY
-        let bottom = viewport.minY + viewport.height * 0.625 - context.containerFrame.minY
+        let targetDistance = targetFrame.isEmpty || targetFrame.isNull
+            ? nil
+            : abs(targetFrame.midY - viewport.midY)
+        let usesPreciseScroll = targetDistance.map { $0 < max(viewport.height * 2, 240) } ?? false
+        let dragDistance = usesPreciseScroll
+            ? min(viewport.height * 0.45, max(28, (targetDistance ?? 0) * 0.6))
+            : viewport.height * 0.25
+        let centerY = viewport.minY + viewport.height * 0.35
+        let top = centerY - dragDistance / 2 - context.containerFrame.minY
+        let bottom = centerY + dragDistance / 2 - context.containerFrame.minY
         let origin = container.coordinate(withNormalizedOffset: .zero)
         let start = origin.withOffset(CGVector(dx: x, dy: upward ? bottom : top))
         let end = origin.withOffset(CGVector(dx: x, dy: upward ? top : bottom))
-        start.press(forDuration: 0.05, thenDragTo: end)
+        if usesPreciseScroll {
+            start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.15)
+        } else {
+            start.press(forDuration: 0.05, thenDragTo: end)
+        }
         let after = anchor.exists ? anchor.frame : .null
         let afterExists = target.exists
         let afterFrame = afterExists ? target.frame : .null

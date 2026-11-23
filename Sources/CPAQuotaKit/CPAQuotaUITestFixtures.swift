@@ -70,6 +70,9 @@ private struct UITestHTTPTransport: HTTPTransport {
            request.value(forHTTPHeaderField: "Authorization") != "Bearer ui-test-valid-key" {
             return response(status: 401, json: "{}")
         }
+        if path == "/v0/management/api-keys" {
+            return response(json: #"{"api-keys":["ui-test-client-key"]}"#)
+        }
         if path.hasSuffix("/auth-files") {
             if url.host == "slow-ui-test.invalid" {
                 // Deliberately finish after the caller cancels, like a transport

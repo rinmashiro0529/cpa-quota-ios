@@ -244,7 +244,19 @@ public struct MonitoringTabView: View {
         .scrollContentBackground(.hidden)
         .background(BrandCanvasBackground())
         .tint(palette.actionTint)
-        .navigationTitle(CPAWorkspaceTab.monitoring.title)
+        .navigationTitle("监控与活动")
+        .toolbar {
+            // Formerly the global workspace action of the monitoring tab.
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    Task { await monitor.reconcileCurrentSession() }
+                } label: {
+                    Label("核对当前监控会话", systemImage: "arrow.clockwise")
+                }
+                .disabled(monitor.activeAddress == nil || monitor.isBusy)
+                .accessibilityIdentifier("monitor.reconcile")
+            }
+        }
         .confirmationDialog("忘记监控服务连接？", isPresented: $isConfirmingForget, titleVisibility: .visible) {
             Button("先停止监控，再忘记连接", role: .destructive) {
                 Task { await monitor.stopAndForgetBridge() }

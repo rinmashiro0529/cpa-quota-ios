@@ -52,7 +52,8 @@ struct NativeWorkspaceLifecycleTests {
             credentialStore: credentials, preferences: preferences, monitoringCoordinator: monitor,
             clientFactory: { server, key in
                 CPAClient(server: server, managementKey: key, transport: transport)
-            }
+            },
+            chatWorkspace: .isolatedForTests()
         )
         let first = Task { await session.restoreApplicationIfAvailable() }
         await gate.waitForArrivals()
@@ -81,7 +82,8 @@ struct NativeWorkspaceLifecycleTests {
             monitoringCoordinator: isolatedMonitor(), widgetSnapshotStore: sharedStore,
             clientFactory: { server, key in
                 CPAClient(server: server, managementKey: key, transport: transport)
-            }
+            },
+            chatWorkspace: .isolatedForTests()
         )
         await session.connect(serverAddress: "https://quota.invalid",
                               managementKeyInput: "fixture-management", rememberInKeychain: false)
@@ -153,7 +155,8 @@ struct NativeWorkspaceLifecycleTests {
         let session = CPAQuotaSession(
             credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore(),
             monitoringCoordinator: isolatedMonitor(), widgetSnapshotWriter: writer,
-            clientFactory: { server, key in CPAClient(server: server, managementKey: key, transport: transport) }
+            clientFactory: { server, key in CPAClient(server: server, managementKey: key, transport: transport) },
+            chatWorkspace: .isolatedForTests()
         )
         await session.connect(serverAddress: "https://quota.invalid",
                               managementKeyInput: "fixture-management", rememberInKeychain: false)
@@ -407,7 +410,8 @@ struct NativeWorkspaceLifecycleTests {
         let session = CPAQuotaSession(
             credentialStore: MemoryCredentialStore(), preferences: MemoryPreferencesStore(),
             monitoringCoordinator: isolatedMonitor(), widgetSnapshotWriter: writer,
-            clientFactory: { server, key in CPAClient(server: server, managementKey: key, transport: transport) }
+            clientFactory: { server, key in CPAClient(server: server, managementKey: key, transport: transport) },
+            chatWorkspace: .isolatedForTests()
         )
         await session.connect(serverAddress: "https://a.invalid", managementKeyInput: "fixture-management", rememberInKeychain: false)
         session.sharesQuotaWithWidgets = true
