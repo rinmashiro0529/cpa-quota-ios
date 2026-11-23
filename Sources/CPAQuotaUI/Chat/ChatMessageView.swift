@@ -333,15 +333,25 @@ struct ChatFailureNotice: View {
     }
 }
 
-/// Streaming-aware Markdown on iOS; plain inline Markdown where the renderer is unavailable.
+/// Uses inline Markdown when the rich renderer or its color assets are unavailable.
 struct ChatMarkdownText: View {
     let text: String
 
+    @ViewBuilder
     var body: some View {
-        #if canImport(SwiftStreamingMarkdown)
-        MarkdownView(text: text)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        #if os(iOS) && canImport(SwiftStreamingMarkdown)
+        if Self.hasRendererColors {
+            MarkdownView(text: text)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            inlineMarkdown
+        }
         #else
+        inlineMarkdown
+        #endif
+    }
+
+    private var inlineMarkdown: some View {
         Text((try? AttributedString(
             markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
@@ -349,8 +359,16 @@ struct ChatMarkdownText: View {
             .font(.body)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
-        #endif
     }
+
+    #if os(iOS) && canImport(SwiftStreamingMarkdown)
+    private static let hasRendererColors: Bool = {
+        // The pinned renderer uses this named color for paragraphs and headings.
+        guard let url = Bundle.main.url(forResource: "SwiftStreamingMarkdown_SwiftStreamingMarkdown", withExtension: "bundle"),
+              let bundle = Bundle(url: url) else { return false }
+        return UIColor(named: "Colors/Copilot/Theme/Foreground/Primary/750", in: bundle, compatibleWith: nil) != nil
+    }()
+    #endif
 }
 
 struct ChatAttachmentStrip: View {

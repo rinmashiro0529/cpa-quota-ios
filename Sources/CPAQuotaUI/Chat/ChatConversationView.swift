@@ -106,12 +106,15 @@ struct ChatConversationView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
             }
+            .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
             .modifier(ChatScrollEdgeModifier())
             .modifier(ChatStreamingAutoScrollModifier(
                 proxy: proxy,
                 bottomAnchor: Self.bottomAnchor,
-                messageCount: conversation.messages.count
+                isGenerating: isGenerating,
+                messageCount: conversation.messages.count,
+                latestTextLength: conversation.messages.last?.text.count ?? 0
             ))
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
@@ -466,55 +469,67 @@ private struct ChatScrollEdgeModifier: ViewModifier {
 private struct ChatStreamingAutoScrollModifier: ViewModifier {
     let proxy: ScrollViewProxy
     let bottomAnchor: String
+    let isGenerating: Bool
     let messageCount: Int
+    let latestTextLength: Int
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isPinnedToBottom = true
     @State private var isUserScrolling = false
-    @State private var isAnimating = false
+    @State private var pendingFollow: Task<Void, Never>?
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        let base = content
-            .onChange(of: messageCount) { oldCount, newCount in
-                guard newCount > oldCount, !isUserScrolling else { return }
-                isPinnedToBottom = true
-                scrollToBottom()
-            }
+        let base = content.onChange(of: messageCount) { oldCount, newCount in
+            guard newCount > oldCount, !isUserScrolling else { return }
+            isPinnedToBottom = true
+            scheduleFollow()
+        }
         if #available(iOS 18.0, macOS 15.0, *) {
             base
-                .defaultScrollAnchor(.bottom, for: .initialOffset)
-                .defaultScrollAnchor(.bottom, for: .alignment)
                 .onScrollPhaseChange { oldPhase, newPhase, context in
-                    let didScroll = oldPhase == .interacting || oldPhase == .decelerating
+                    let wasScrolling = oldPhase == .interacting || oldPhase == .decelerating
                     let isScrolling = newPhase == .interacting || newPhase == .decelerating
-                    let metrics = ScrollMetrics(context.geometry)
                     isUserScrolling = newPhase == .tracking || isScrolling
-                    isAnimating = newPhase == .animating
-                    if didScroll || isScrolling {
-                        isPinnedToBottom = metrics.distanceFromBottom <= 24
+                    if isUserScrolling {
+                        cancelFollow()
                     }
-                    if newPhase == .idle {
-                        followBottomIfNeeded(metrics)
+                    if wasScrolling || isScrolling {
+                        isPinnedToBottom = ScrollMetrics(context.geometry).distanceFromBottom <= 24
                     }
                 }
                 .onScrollGeometryChange(for: ScrollMetrics.self) { ScrollMetrics($0) } action: { oldValue, newValue in
-                    guard oldValue.bottomOffset != newValue.bottomOffset else { return }
-                    followBottomIfNeeded(newValue)
+                    if oldValue.bottomOffset != newValue.bottomOffset, newValue.distanceFromBottom > 1 {
+                        scheduleFollow()
+                    }
                 }
+                .onChange(of: latestTextLength) { oldLength, newLength in
+                    if isGenerating, newLength > oldLength {
+                        scheduleFollow()
+                    }
+                }
+                .onDisappear(perform: cancelFollow)
         } else {
-            base.defaultScrollAnchor(.bottom)
+            base.onDisappear(perform: cancelFollow)
         }
     }
 
-    private func followBottomIfNeeded(_ metrics: ScrollMetrics) {
-        guard isPinnedToBottom, !isUserScrolling, !isAnimating, metrics.distanceFromBottom > 1 else { return }
-        scrollToBottom()
+    private func scheduleFollow() {
+        guard isPinnedToBottom, !isUserScrolling, pendingFollow == nil else { return }
+        // A text change and its layout can arrive in the same update. Let both use one request.
+        pendingFollow = Task { @MainActor in
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            pendingFollow = nil
+            guard isPinnedToBottom, !isUserScrolling else { return }
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
+                proxy.scrollTo(bottomAnchor, anchor: .bottom)
+            }
+        }
     }
 
-    private func scrollToBottom() {
-        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
-            proxy.scrollTo(bottomAnchor, anchor: .bottom)
-        }
+    private func cancelFollow() {
+        pendingFollow?.cancel()
+        pendingFollow = nil
     }
 
     private struct ScrollMetrics: Equatable, Sendable {
