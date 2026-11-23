@@ -22,7 +22,9 @@ class CIGateTests(unittest.TestCase):
         block = self.workflow[prepared:tested]
         self.assertIn("ci/prepare_simulator.py", block)
         self.assertIn('--selection "$RUNNER_TEMP/FrontendEvidence/simulator.json"', block)
-        self.assertIn("--timeout-seconds 300", block)
+        self.assertIn("--timeout-seconds ${{ matrix.preparation_seconds }}", block)
+        budgets = re.findall(r"device: '([^']+)'\n +preparation_seconds: (\d+)", self.workflow)
+        self.assertCountEqual(budgets, [("iPhone 18 Pro", "300"), ("iPhone Duo", "420")])
         self.assertNotIn("continue-on-error", block)
         self.assertNotIn("if:", block)
 
