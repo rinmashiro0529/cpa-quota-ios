@@ -6,6 +6,10 @@ import notify
 /// transport fixtures. Screenshots accompany assertions; they are not treated
 /// as proof of a pass by themselves.
 final class CPAQuotaAppUITests: XCTestCase {
+    // WebKit's accessibility tree can take nearly 15 seconds on a hosted
+    // simulator, even after the preview itself appears.
+    private let htmlPreviewContentTimeout: TimeInterval = 30
+
     override func setUpWithError() throws {
         continueAfterFailure = false
     }
@@ -1096,7 +1100,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         let web = app.webViews.firstMatch
         let start = app.webViews.staticTexts["First fragment"].firstMatch
         let end = app.webViews.staticTexts["First fixture end"].firstMatch
-        expectExists(start, in: app, timeout: 15)
+        expectExists(start, in: app, timeout: htmlPreviewContentTimeout)
         web.swipeUp()
         let y = end.frame.midY
         XCTAssertTrue(web.frame.contains(CGPoint(x: end.frame.midX, y: y)))
@@ -1108,16 +1112,14 @@ final class CPAQuotaAppUITests: XCTestCase {
         app.buttons["源码"].tap()
         expectExists(textContaining("<p style=", in: app), in: app)
         app.buttons["刷新"].tap()
-        expectExists(start, in: app, timeout: 15)
+        expectExists(start, in: app, timeout: htmlPreviewContentTimeout)
         XCTAssertTrue(web.frame.contains(CGPoint(x: start.frame.midX, y: start.frame.minY + 2)))
         app.buttons["关闭"].tap()
         reveal(second, in: app)
         XCTAssertFalse(element("chat.html.snippet.3", in: app).exists)
         second.tap()
         let secondFragment = web.staticTexts["Second fragment"].firstMatch
-        // Reopening the sheet creates a new WebKit accessibility tree. On CI
-        // the second fragment has appeared after the initial 15-second wait.
-        expectExists(secondFragment, in: app, timeout: 30)
+        expectExists(secondFragment, in: app, timeout: htmlPreviewContentTimeout)
         XCTAssertFalse(web.staticTexts["First fragment"].exists)
         app.buttons["源码"].tap()
         app.buttons["复制源码"].tap()
@@ -1146,12 +1148,12 @@ final class CPAQuotaAppUITests: XCTestCase {
         reveal(second, in: app, upward: false)
         second.tap()
         let secondFragment = app.webViews.staticTexts["Second fragment"].firstMatch
-        expectExists(secondFragment, in: app, timeout: 15)
+        expectExists(secondFragment, in: app, timeout: htmlPreviewContentTimeout)
         _ = await rotateDeviceAndWaitForWindow(in: app, policy: layoutPolicy(in: app))
         app.buttons["源码"].tap()
         expectExists(textContaining("<p>Second fragment</p>", in: app), in: app)
         app.buttons["预览"].tap()
-        expectExists(secondFragment, in: app, timeout: 15)
+        expectExists(secondFragment, in: app, timeout: htmlPreviewContentTimeout)
         attach(app, name: "html-preview-dark-landscape")
         app.buttons["关闭"].tap()
         expectExists(input, in: app)
@@ -1408,10 +1410,18 @@ final class CPAQuotaAppUITests: XCTestCase {
     private func tapChatSend(in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
         // Wait for the composer to enable Send after the keyboard delivers the draft.
         let send = app.buttons["chat.send"]
-        expectPredicate(NSPredicate(format: "exists == true AND enabled == true AND hittable == true"),
-                        on: send, in: app, message: "Send must be enabled and hittable after typing.",
-                        finalCheck: { send.exists && send.isEnabled && send.isHittable }, file: file, line: line)
-        send.tap()
+        expectPredicate(NSPredicate(format: "exists == true AND enabled == true"),
+                        on: send, in: app, message: "Send must be enabled after typing.",
+                        finalCheck: { send.exists && send.isEnabled }, file: file, line: line)
+        // XCUITest can report an invalid activation point during the keyboard
+        // transition. Use the center of the actual button for one tap.
+        let button = send.frame
+        let center = CGPoint(x: button.midX, y: button.midY)
+        let window = app.frame
+        verify(!button.isEmpty && window.contains(center), in: app,
+               "Send must be within the app window.", file: file, line: line)
+        app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: center.x - window.minX, dy: center.y - window.minY)).tap()
     }
 
     @MainActor
