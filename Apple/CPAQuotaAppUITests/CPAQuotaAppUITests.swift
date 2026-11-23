@@ -1040,9 +1040,11 @@ final class CPAQuotaAppUITests: XCTestCase {
         reveal(second, in: app)
         XCTAssertFalse(element("chat.html.snippet.3", in: app).exists)
         second.tap()
-        let secondFragment = app.webViews.staticTexts["Second fragment"].firstMatch
-        expectExists(secondFragment, in: app, timeout: 15)
-        XCTAssertFalse(app.webViews.staticTexts["First fragment"].exists)
+        let secondFragment = web.staticTexts["Second fragment"].firstMatch
+        // Reopening the sheet creates a new WebKit accessibility tree. On CI
+        // the second fragment has appeared after the initial 15-second wait.
+        expectExists(secondFragment, in: app, timeout: 30)
+        XCTAssertFalse(web.staticTexts["First fragment"].exists)
         app.buttons["源码"].tap()
         app.buttons["复制源码"].tap()
         app.buttons["关闭"].tap()
