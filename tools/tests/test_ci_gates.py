@@ -66,6 +66,9 @@ class CIGateTests(unittest.TestCase):
             self.assertNotIn("IDESkipMacroFingerprintValidation", workflow)
         self.assertIn("swift test --disable-automatic-resolution", self.workflow)
         self.assertEqual(self.workflow.count(installer), 2)
+        # Shared build bundle must be scoped to run_id (not run_attempt) so failed-job reruns work.
+        self.assertNotIn("ios-sim-test-products-${{ github.run_attempt }}", self.workflow)
+        self.assertEqual(self.workflow.count("ios-sim-test-products-${{ github.run_id }}"), 3)
 
     def test_trusted_macros_match_locked_revisions(self):
         lock_path = ROOT / "Apple/CPAQuota.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
