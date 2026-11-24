@@ -56,35 +56,12 @@ jobs:
           go build -trimpath -o "$RUNNER_TEMP/quota-monitor" ./cmd/quota-monitor
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/quota-monitor.exe" ./cmd/quota-monitor
 
-  swift:
-    name: Swift and native UI (Xcode ${{ matrix.xcode }}, ${{ matrix.device }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: xcode-27
-            xcode: '27.1'
-            major: '27'
-            runtime: '27.0'
-            device: 'iPhone 18 Pro'
-            preparation_seconds: 300
-            layout: standard-iphone
-            evidence: xcode27-iphone18pro
-          - runner: xcode-27
-            xcode: '27.1'
-            major: '27'
-            runtime: '27.1'
-            # Cold Duo boots have used about 296 seconds, including verification.
-            device: 'iPhone Duo'
-            preparation_seconds: 420
-            layout: duo-adaptive
-            evidence: xcode27-duo
-    runs-on: ${{ matrix.runner }}
-    # A cold hosted runner reached the 75-minute limit with UI tests still
-    # passing. Allow time for the remaining tests, Release build and evidence.
-    timeout-minutes: 105
+  swift-package-and-release:
+    name: Swift package tests and Release iOS build (Xcode 27.1)
+    runs-on: xcode-27
+    timeout-minutes: 35
     env:
-      DEVELOPER_DIR: /Applications/Xcode_${{ matrix.xcode }}.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
     steps:
       - name: Check out source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
@@ -106,17 +83,154 @@ jobs:
           python3 -I ci/test_activity_extension.py
       - name: Install pinned Swift macro trust
         run: bash ci/install_trusted_swift_macros.sh
+      - name: Cache SwiftPM build artifacts
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .build
+          key: xcode271-spm-test-${{ runner.arch }}-${{ hashFiles('Package.swift', 'Apple/CPAQuota.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: |
+            xcode271-spm-test-${{ runner.arch }}-
       - name: Run Swift package and contract tests
         shell: bash
         run: |
           set -euo pipefail
           cp Apple/CPAQuota.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved Package.resolved
           swift test --disable-automatic-resolution --parallel 2>&1 | tee "$RUNNER_TEMP/FrontendEvidence/swift-tests.log"
+      - name: Cache Release DerivedData
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/ReleaseDerivedData
+          key: xcode271-rel-derived-${{ runner.arch }}-${{ hashFiles('Apple/CPAQuota.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: |
+            xcode271-rel-derived-${{ runner.arch }}-
+      - name: Build Release for physical iOS devices without signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild build \
+            -project Apple/CPAQuota.xcodeproj \
+            -scheme CPAQuota \
+            -onlyUsePackageVersionsFromResolvedFile \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/ReleaseDerivedData" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= \
+            2>&1 | tee "$RUNNER_TEMP/FrontendEvidence/release-build.log"
+          python3 -I ci/validate_activity_extension.py \
+            --app "$RUNNER_TEMP/ReleaseDerivedData/Build/Products/Release-iphoneos/CPAQuota.app" \
+            --platform ios
+          rm -rf "$RUNNER_TEMP/ReleaseDerivedData/Logs" "$RUNNER_TEMP/ReleaseDerivedData/Index.noindex"
+      - name: Preserve package and release build logs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-build-and-package-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/FrontendEvidence
+          if-no-files-found: warn
+          retention-days: 7
+
+  ios-build-for-testing:
+    name: Build iOS simulator test bundle (Xcode 27.1)
+    runs-on: xcode-27
+    timeout-minutes: 35
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Record toolchain and verify native membership
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/FrontendEvidence"
+          {
+            xcodebuild -version
+            xcrun swift --version
+            xcrun --sdk iphonesimulator --show-sdk-version
+            python3 -c 'import os; print(os.path.realpath(os.environ["DEVELOPER_DIR"]))'
+          } | tee "$RUNNER_TEMP/FrontendEvidence/toolchain.txt"
+          python3 -I ci/validate_source_layout.py --root .
+      - name: Install pinned Swift macro trust
+        run: bash ci/install_trusted_swift_macros.sh
+      - name: Cache Simulator DerivedData
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/FrontendDerivedData
+          key: xcode271-sim-derived-${{ runner.arch }}-${{ hashFiles('Apple/CPAQuota.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: |
+            xcode271-sim-derived-${{ runner.arch }}-
+      - name: Build Debug simulator app and test targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild build-for-testing \
+            -project Apple/CPAQuota.xcodeproj \
+            -scheme CPAQuota \
+            -onlyUsePackageVersionsFromResolvedFile \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/FrontendDerivedData" \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= \
+            2>&1 | tee "$RUNNER_TEMP/FrontendEvidence/build-for-testing.log"
+      - name: Verify embedded simulator Live Activity extension
+        run: >-
+          python3 -I ci/validate_activity_extension.py
+          --app "$RUNNER_TEMP/FrontendDerivedData/Build/Products/Debug-iphonesimulator/CPAQuota.app"
+          --platform ios-simulator
+      - name: Package simulator test bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -cf - -C "$RUNNER_TEMP/FrontendDerivedData/Build" Products | gzip -1 > "$RUNNER_TEMP/SimTestProducts.tar.gz"
+          ls -lh "$RUNNER_TEMP/SimTestProducts.tar.gz"
+          rm -rf "$RUNNER_TEMP/FrontendDerivedData/Logs" "$RUNNER_TEMP/FrontendDerivedData/Index.noindex"
+      - name: Upload simulator test bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ios-sim-test-products-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/SimTestProducts.tar.gz
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  ios-ui-iphone18pro:
+    name: Native UI (Xcode 27.1, iPhone 18 Pro, shard ${{ matrix.shard }}/3)
+    needs: [ios-build-for-testing]
+    strategy:
+      fail-fast: false
+      matrix:
+        device: ['iPhone 18 Pro']
+        preparation_seconds: [300]
+        shard: [1, 2, 3]
+    runs-on: xcode-27
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Download simulator test bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ios-sim-test-products-${{ github.run_attempt }}
+          path: ${{ runner.temp }}
+      - name: Extract simulator test bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/FrontendEvidence" "$RUNNER_TEMP/FrontendDerivedData/Build"
+          tar -xzf "$RUNNER_TEMP/SimTestProducts.tar.gz" -C "$RUNNER_TEMP/FrontendDerivedData/Build"
       - name: Select and record the installed simulator
         id: simulator
         env:
-          SIMULATOR_MAJOR: ${{ matrix.major }}
-          SIMULATOR_RUNTIME: ${{ matrix.runtime }}
+          SIMULATOR_MAJOR: '27'
+          SIMULATOR_RUNTIME: '27.0'
           SIMULATOR_DEVICE: ${{ matrix.device }}
         shell: bash
         run: |
@@ -138,21 +252,32 @@ jobs:
         shell: bash
         env:
           SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
-          TEST_RUNNER_CPA_UI_LAYOUT_POLICY: ${{ matrix.layout }}
+          TEST_RUNNER_CPA_UI_LAYOUT_POLICY: standard-iphone
           TEST_RUNNER_CPA_UI_SIMULATOR_DEVICE: ${{ matrix.device }}
         run: |
           set -euo pipefail
-          xcodebuild test \
-            -project Apple/CPAQuota.xcodeproj \
-            -scheme CPAQuota \
-            -onlyUsePackageVersionsFromResolvedFile \
-            -configuration Debug \
+          XCTESTRUN="$(find "$RUNNER_TEMP/FrontendDerivedData/Build/Products" -maxdepth 1 -name '*.xctestrun' | head -n 1)"
+          test -n "$XCTESTRUN"
+          python3 -I ci/select_ui_test_shard.py \
+            --source Apple/CPAQuotaAppUITests/CPAQuotaAppUITests.swift \
+            --mode full \
+            --shard-index "${{ matrix.shard }}" \
+            --shard-count 3 \
+            --patch-xctestrun "$XCTESTRUN" \
+            --layout-policy "$TEST_RUNNER_CPA_UI_LAYOUT_POLICY" \
+            --simulator-device "$TEST_RUNNER_CPA_UI_SIMULATOR_DEVICE" \
+            --emit-args "$RUNNER_TEMP/only-testing-args.txt"
+          ONLY_TESTING_ARGS=()
+          while IFS= read -r arg; do
+            test -n "$arg" && ONLY_TESTING_ARGS+=("$arg")
+          done < "$RUNNER_TEMP/only-testing-args.txt"
+          xcodebuild test-without-building \
+            -xctestrun "$XCTESTRUN" \
             -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
-            -derivedDataPath "$RUNNER_TEMP/FrontendDerivedData" \
             -resultBundlePath "$RUNNER_TEMP/FrontendEvidence/NativeTests.xcresult" \
             -parallel-testing-enabled NO \
             -collect-test-diagnostics never \
-            ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= \
+            "${ONLY_TESTING_ARGS[@]}" \
             2>&1 | tee "$RUNNER_TEMP/FrontendEvidence/native-tests.log"
       - name: Verify embedded simulator Live Activity extension
         if: ${{ !cancelled() }}
@@ -160,25 +285,6 @@ jobs:
           python3 -I ci/validate_activity_extension.py
           --app "$RUNNER_TEMP/FrontendDerivedData/Build/Products/Debug-iphonesimulator/CPAQuota.app"
           --platform ios-simulator
-      - name: Build Release for physical iOS devices without signing
-        # Preserve an independent compile/link result even when a UI assertion fails.
-        # Both this build and the UI tests remain blocking checks.
-        if: ${{ !cancelled() }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          xcodebuild build \
-            -project Apple/CPAQuota.xcodeproj \
-            -scheme CPAQuota \
-            -onlyUsePackageVersionsFromResolvedFile \
-            -configuration Release \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath "$RUNNER_TEMP/ReleaseDerivedData" \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= \
-            2>&1 | tee "$RUNNER_TEMP/FrontendEvidence/release-build.log"
-          python3 -I ci/validate_activity_extension.py \
-            --app "$RUNNER_TEMP/ReleaseDerivedData/Build/Products/Release-iphoneos/CPAQuota.app" \
-            --platform ios
       - name: Record native test summary
         if: always()
         run: python3 -I ci/export_frontend_evidence.py --evidence "$RUNNER_TEMP/FrontendEvidence" --export-screenshots
@@ -188,10 +294,149 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: native-frontend-${{ matrix.evidence }}-${{ github.run_attempt }}
+          name: native-frontend-xcode27-iphone18pro-shard${{ matrix.shard }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/FrontendEvidence
           if-no-files-found: warn
           retention-days: 7
       - name: Preserve review previews when artifact storage is unavailable
         if: always() && steps.evidence_upload.outcome == 'failure'
         run: python3 -I ci/export_frontend_evidence.py --evidence "$RUNNER_TEMP/FrontendEvidence" --log-previews
+
+  ios-ui-duo:
+    name: Native UI (Xcode 27.1, iPhone Duo, ${{ github.event_name == 'pull_request' && 'focused' || format('shard {0}/3', matrix.shard) }})
+    needs: [ios-build-for-testing]
+    strategy:
+      fail-fast: false
+      matrix:
+        # PRs run the focused Duo adaptive/layout/AX5/chat suite alongside full
+        # 3-shard iPhone 18 Pro coverage; pushes to main and manual dispatches
+        # run the full 3-shard suite on Duo as well.
+        device: ['iPhone Duo']
+        preparation_seconds: [420]
+        shard: ${{ fromJSON(github.event_name == 'pull_request' && '[1]' || '[1, 2, 3]') }}
+    runs-on: xcode-27
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Download simulator test bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ios-sim-test-products-${{ github.run_attempt }}
+          path: ${{ runner.temp }}
+      - name: Extract simulator test bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/FrontendEvidence" "$RUNNER_TEMP/FrontendDerivedData/Build"
+          tar -xzf "$RUNNER_TEMP/SimTestProducts.tar.gz" -C "$RUNNER_TEMP/FrontendDerivedData/Build"
+      - name: Select and record the installed simulator
+        id: simulator
+        env:
+          SIMULATOR_MAJOR: '27'
+          SIMULATOR_RUNTIME: '27.1'
+          SIMULATOR_DEVICE: ${{ matrix.device }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          SIMULATOR_UDID="$(python3 -I ci/select_simulator.py \
+            --major "$SIMULATOR_MAJOR" --preferred-runtime "$SIMULATOR_RUNTIME" \
+            --preferred-device "$SIMULATOR_DEVICE" \
+            --require-preferred \
+            --report "$RUNNER_TEMP/FrontendEvidence/simulator.json")"
+          echo "udid=$SIMULATOR_UDID" >> "$GITHUB_OUTPUT"
+          cat "$RUNNER_TEMP/FrontendEvidence/simulator.json"
+      - name: Prepare the selected simulator
+        run: >-
+          python3 -I ci/prepare_simulator.py
+          --selection "$RUNNER_TEMP/FrontendEvidence/simulator.json"
+          --report "$RUNNER_TEMP/FrontendEvidence/simulator-readiness.json"
+          --timeout-seconds ${{ matrix.preparation_seconds }}
+      - name: Run native unit and UI regression tests
+        shell: bash
+        env:
+          SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
+          TEST_RUNNER_CPA_UI_LAYOUT_POLICY: duo-adaptive
+          TEST_RUNNER_CPA_UI_SIMULATOR_DEVICE: ${{ matrix.device }}
+          SHARD_MODE: ${{ github.event_name == 'pull_request' && 'duo-pr' || 'full' }}
+        run: |
+          set -euo pipefail
+          XCTESTRUN="$(find "$RUNNER_TEMP/FrontendDerivedData/Build/Products" -maxdepth 1 -name '*.xctestrun' | head -n 1)"
+          test -n "$XCTESTRUN"
+          python3 -I ci/select_ui_test_shard.py \
+            --source Apple/CPAQuotaAppUITests/CPAQuotaAppUITests.swift \
+            --mode "$SHARD_MODE" \
+            --shard-index "${{ matrix.shard }}" \
+            --shard-count 3 \
+            --patch-xctestrun "$XCTESTRUN" \
+            --layout-policy "$TEST_RUNNER_CPA_UI_LAYOUT_POLICY" \
+            --simulator-device "$TEST_RUNNER_CPA_UI_SIMULATOR_DEVICE" \
+            --emit-args "$RUNNER_TEMP/only-testing-args.txt"
+          ONLY_TESTING_ARGS=()
+          while IFS= read -r arg; do
+            test -n "$arg" && ONLY_TESTING_ARGS+=("$arg")
+          done < "$RUNNER_TEMP/only-testing-args.txt"
+          xcodebuild test-without-building \
+            -xctestrun "$XCTESTRUN" \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -resultBundlePath "$RUNNER_TEMP/FrontendEvidence/NativeTests.xcresult" \
+            -parallel-testing-enabled NO \
+            -collect-test-diagnostics never \
+            "${ONLY_TESTING_ARGS[@]}" \
+            2>&1 | tee "$RUNNER_TEMP/FrontendEvidence/native-tests.log"
+      - name: Verify embedded simulator Live Activity extension
+        if: ${{ !cancelled() }}
+        run: >-
+          python3 -I ci/validate_activity_extension.py
+          --app "$RUNNER_TEMP/FrontendDerivedData/Build/Products/Debug-iphonesimulator/CPAQuota.app"
+          --platform ios-simulator
+      - name: Record native test summary
+        if: always()
+        run: python3 -I ci/export_frontend_evidence.py --evidence "$RUNNER_TEMP/FrontendEvidence" --export-screenshots
+      - name: Preserve test results and screenshots
+        id: evidence_upload
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-frontend-xcode27-duo-shard${{ matrix.shard }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/FrontendEvidence
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Preserve review previews when artifact storage is unavailable
+        if: always() && steps.evidence_upload.outcome == 'failure'
+        run: python3 -I ci/export_frontend_evidence.py --evidence "$RUNNER_TEMP/FrontendEvidence" --log-previews
+
+  swift-gate-iphone18pro:
+    name: Swift and native UI (Xcode 27.1, iPhone 18 Pro)
+    needs: [swift-package-and-release, ios-build-for-testing, ios-ui-iphone18pro]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Verify all iPhone 18 Pro build and test jobs succeeded
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ needs.swift-package-and-release.result }}" = "success"
+          test "${{ needs.ios-build-for-testing.result }}" = "success"
+          test "${{ needs.ios-ui-iphone18pro.result }}" = "success"
+
+  swift-gate-duo:
+    name: Swift and native UI (Xcode 27.1, iPhone Duo)
+    needs: [swift-package-and-release, ios-build-for-testing, ios-ui-duo]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Verify all iPhone Duo build and test jobs succeeded
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ needs.swift-package-and-release.result }}" = "success"
+          test "${{ needs.ios-build-for-testing.result }}" = "success"
+          test "${{ needs.ios-ui-duo.result }}" = "success"
