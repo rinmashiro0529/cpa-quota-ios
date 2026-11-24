@@ -124,9 +124,9 @@ struct ChatConversationView: View {
             else { return nil }
             return resolution.noticeText
         }()
-        Group {
-            if conversation.messages.isEmpty {
-                ScrollView {
+        ScrollViewReader { proxy in
+            ScrollView {
+                if conversation.messages.isEmpty {
                     VStack(spacing: 0) {
                         Spacer(minLength: 0)
                         ChatConversationEmptyState(conversation: conversation)
@@ -136,114 +136,107 @@ struct ChatConversationView: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
                     .frame(maxWidth: .infinity, minHeight: max(0, emptyStateMinHeight))
-                }
-                .defaultScrollAnchor(.top)
-                .scrollDismissesKeyboard(.interactively)
-                .modifier(ChatScrollEdgeModifier())
-                .modifier(ChatEmptyStateViewportModifier(visibleViewportHeight: $emptyStateMinHeight))
-            } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 18) {
-                            let canRerun = chat.generationBlocker(for: conversation.id) == nil
-                            ForEach(conversation.messages) { message in
-                                ChatMessageView(
-                                    message: message,
-                                    isLatestAssistant: message.id == lastAssistantID,
-                                    isConversationGenerating: isGenerating,
-                                    canRerun: canRerun,
-                                    actions: actions(for: message)
-                                )
-                                .equatable()
-                                .id(message.id)
-                            }
-                            Color.clear
-                                .frame(height: 1)
-                                .padding(.bottom, 12)
-                                .id(Self.bottomAnchor)
+                } else {
+                    LazyVStack(alignment: .leading, spacing: 18) {
+                        let canRerun = chat.generationBlocker(for: conversation.id) == nil
+                        ForEach(conversation.messages) { message in
+                            ChatMessageView(
+                                message: message,
+                                isLatestAssistant: message.id == lastAssistantID,
+                                isConversationGenerating: isGenerating,
+                                canRerun: canRerun,
+                                actions: actions(for: message)
+                            )
+                            .equatable()
+                            .id(message.id)
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.top, 12)
+                        Color.clear
+                            .frame(height: 1)
+                            .padding(.bottom, 12)
+                            .id(Self.bottomAnchor)
                     }
-                    .scrollDismissesKeyboard(.interactively)
-                    .modifier(ChatScrollEdgeModifier())
-                    .modifier(ChatStreamingAutoScrollModifier(
-                        proxy: proxy,
-                        bottomAnchor: Self.bottomAnchor,
-                        isGenerating: isGenerating,
-                        messageCount: conversation.messages.count,
-                        latestTextLength: conversation.messages.last?.text.count ?? 0,
-                        scrollToBottomTrigger: scrollToBottomTrigger,
-                        isScrolledAwayFromBottom: $isScrolledAwayFromBottom
-                    ))
-                    .overlay(alignment: .bottomTrailing) {
-                        if isScrolledAwayFromBottom {
-                            Button {
-                                scrollToBottomTrigger &+= 1
-                            } label: {
-                                Image(systemName: "arrow.down")
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(palette.textPrimary)
-                                    .frame(width: 36, height: 36)
-                                    .background(.regularMaterial, in: Circle())
-                                    .overlay {
-                                        Circle()
-                                            .strokeBorder(palette.trackBackground, lineWidth: 0.75)
-                                            .allowsHitTesting(false)
-                                    }
-                                    .shadow(color: Color.black.opacity(0.12), radius: 4, y: 2)
-                                    .frame(width: 44, height: 44)
-                                    .contentShape(Circle())
-                            }
-                            .buttonStyle(.plain)
-                            .padding(.trailing, 16)
-                            .padding(.bottom, 8)
-                            .accessibilityLabel("回到底部")
-                            .accessibilityIdentifier("chat.scrollToBottom")
-                            .transition(.opacity.combined(with: .scale(scale: 0.9)))
-                        }
-                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
                 }
             }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 0) {
-                if chat.unsavedConversations.contains(conversation.id) {
-                    Label("最新内容未能保存到本机", systemImage: "exclamationmark.triangle")
-                        .font(.footnote)
-                        .foregroundStyle(palette.statusWarn)
+            .scrollDismissesKeyboard(.interactively)
+            .modifier(ChatScrollEdgeModifier())
+            .modifier(ChatStreamingAutoScrollModifier(
+                proxy: proxy,
+                bottomAnchor: Self.bottomAnchor,
+                isGenerating: isGenerating,
+                messageCount: conversation.messages.count,
+                latestTextLength: conversation.messages.last?.text.count ?? 0,
+                scrollToBottomTrigger: scrollToBottomTrigger,
+                isScrolledAwayFromBottom: $isScrolledAwayFromBottom,
+                visibleViewportHeight: $emptyStateMinHeight
+            ))
+            .overlay(alignment: .bottomTrailing) {
+                if isScrolledAwayFromBottom, !conversation.messages.isEmpty {
+                    Button {
+                        scrollToBottomTrigger &+= 1
+                    } label: {
+                        Image(systemName: "arrow.down")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(palette.textPrimary)
+                            .frame(width: 36, height: 36)
+                            .background(.regularMaterial, in: Circle())
+                            .overlay {
+                                Circle()
+                                    .strokeBorder(palette.trackBackground, lineWidth: 0.75)
+                                    .allowsHitTesting(false)
+                            }
+                            .shadow(color: Color.black.opacity(0.12), radius: 4, y: 2)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 8)
+                    .accessibilityLabel("回到底部")
+                    .accessibilityIdentifier("chat.scrollToBottom")
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
                 }
-                // Above the composer, so the notice is visible wherever the remembered message was.
-                if let memoryNotice {
-                    Label(memoryNotice, systemImage: "checkmark.circle")
-                        .font(.footnote)
-                        .foregroundStyle(palette.textSecondary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(.regularMaterial, in: Capsule())
-                        .padding(.bottom, 4)
-                        .transition(.opacity)
-                }
-                if let change = chat.serverChange(for: conversation.id) {
-                    ChatServerChangeNotice(change: change)
-                        .padding(.horizontal, 24)
-                        .padding(.bottom, 4)
-                }
-                ChatComposerView(
-                    chat: chat,
-                    conversation: conversation,
-                    activeReasoningNotice: activeReasoningNotice,
-                    draft: $draft,
-                    attachments: $attachments,
-                    editingMessageID: $editingMessageID,
-                    onOpenSettings: { isPresentingSettings = true },
-                    onCancelEdit: endEditing,
-                    onContinue: { request(.continueReply($0)) },
-                    onSubmit: { submit() }
-                )
             }
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("chat.composer")
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(spacing: 0) {
+                    if chat.unsavedConversations.contains(conversation.id) {
+                        Label("最新内容未能保存到本机", systemImage: "exclamationmark.triangle")
+                            .font(.footnote)
+                            .foregroundStyle(palette.statusWarn)
+                    }
+                    // Above the composer, so the notice is visible wherever the remembered message was.
+                    if let memoryNotice {
+                        Label(memoryNotice, systemImage: "checkmark.circle")
+                            .font(.footnote)
+                            .foregroundStyle(palette.textSecondary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(.regularMaterial, in: Capsule())
+                            .padding(.bottom, 4)
+                            .transition(.opacity)
+                    }
+                    if let change = chat.serverChange(for: conversation.id) {
+                        ChatServerChangeNotice(change: change)
+                            .padding(.horizontal, 24)
+                            .padding(.bottom, 4)
+                    }
+                    ChatComposerView(
+                        chat: chat,
+                        conversation: conversation,
+                        activeReasoningNotice: activeReasoningNotice,
+                        draft: $draft,
+                        attachments: $attachments,
+                        editingMessageID: $editingMessageID,
+                        onOpenSettings: { isPresentingSettings = true },
+                        onCancelEdit: endEditing,
+                        onContinue: { request(.continueReply($0)) },
+                        onSubmit: { submit() }
+                    )
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("chat.composer")
+            }
         }
         .onChange(of: conversation.messages.last.map { "\($0.id)|\($0.status.rawValue)" }) { old, _ in
             guard old != nil, let last = conversation.messages.last, last.role == .assistant else { return }
@@ -587,27 +580,6 @@ private struct ChatScrollEdgeModifier: ViewModifier {
     }
 }
 
-/// Tracks the visible scroll height so empty conversations center in tall viewports
-/// while staying scrollable without clipping in AX5 landscape viewports.
-private struct ChatEmptyStateViewportModifier: ViewModifier {
-    @Binding var visibleViewportHeight: CGFloat
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if #available(iOS 18.0, macOS 15.0, *) {
-            content.onScrollGeometryChange(for: CGFloat.self) { geometry in
-                max(0, (geometry.containerSize.height - geometry.contentInsets.top - geometry.contentInsets.bottom).rounded(.down))
-            } action: { _, newHeight in
-                if abs(visibleViewportHeight - newHeight) >= 1 {
-                    visibleViewportHeight = newHeight
-                }
-            }
-        } else {
-            content
-        }
-    }
-}
-
 /// Follows streaming growth while the reader stays at the bottom without yanking them back once they scroll up.
 private struct ChatStreamingAutoScrollModifier: ViewModifier {
     let proxy: ScrollViewProxy
@@ -617,6 +589,7 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
     let latestTextLength: Int
     let scrollToBottomTrigger: Int
     @Binding var isScrolledAwayFromBottom: Bool
+    @Binding var visibleViewportHeight: CGFloat
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isPinnedToBottom = true
     @State private var isUserScrolling = false
@@ -641,9 +614,10 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
             }
         if #available(iOS 18.0, macOS 15.0, *) {
             base
-                // Explicit follow requests own size changes, including when the keyboard is open.
-                .defaultScrollAnchor(.bottom, for: .initialOffset)
-                .defaultScrollAnchor(.bottom, for: .alignment)
+                // Anchor empty conversations to the top so AX5/landscape content scrolls downward
+                // cleanly instead of colliding with the navigation bar; active threads anchor bottom.
+                .defaultScrollAnchor(messageCount == 0 ? .top : .bottom, for: .initialOffset)
+                .defaultScrollAnchor(messageCount == 0 ? .top : .bottom, for: .alignment)
                 .onScrollPhaseChange { oldPhase, newPhase, context in
                     let wasScrolling = oldPhase == .interacting || oldPhase == .decelerating
                     let isScrolling = newPhase == .interacting || newPhase == .decelerating
@@ -658,8 +632,11 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
                     }
                 }
                 .onScrollGeometryChange(for: ScrollMetrics.self) { ScrollMetrics($0) } action: { oldValue, newValue in
+                    if abs(visibleViewportHeight - newValue.visibleHeight) >= 1 {
+                        visibleViewportHeight = newValue.visibleHeight
+                    }
                     updateScrolledAwayState(distance: newValue.visibleDistanceFromBottom)
-                    if oldValue.bottomOffset != newValue.bottomOffset, newValue.distanceFromBottom > 1 {
+                    if messageCount > 0, oldValue.bottomOffset != newValue.bottomOffset, newValue.distanceFromBottom > 1 {
                         scheduleFollow()
                     }
                 }
@@ -671,7 +648,7 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
                 .onDisappear(perform: cancelFollow)
         } else {
             base
-                .defaultScrollAnchor(.bottom)
+                .defaultScrollAnchor(messageCount == 0 ? .top : .bottom)
                 .onDisappear(perform: cancelFollow)
         }
     }
@@ -707,6 +684,7 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
         let bottomOffset: CGFloat
         let distanceFromBottom: CGFloat
         let visibleDistanceFromBottom: CGFloat
+        let visibleHeight: CGFloat
 
         @available(iOS 18.0, macOS 15.0, *)
         init(_ geometry: ScrollGeometry) {
@@ -717,6 +695,7 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
             distanceFromBottom = max(0, bottomOffset - geometry.contentOffset.y)
             // Use `visibleRect` for the scroll-to-bottom button so bottom-aligned short conversations never trigger it.
             visibleDistanceFromBottom = max(0, geometry.contentSize.height - geometry.visibleRect.maxY)
+            visibleHeight = max(0, (geometry.containerSize.height - geometry.contentInsets.top - geometry.contentInsets.bottom).rounded(.down))
         }
     }
 }
