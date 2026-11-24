@@ -11,7 +11,7 @@ extension CPAThemeMode {
     }
 }
 
-public struct BrandPalette: Sendable {
+public struct BrandPalette: Equatable, Sendable {
     public let colorScheme: ColorScheme
     public let contrast: ColorSchemeContrast
 
@@ -44,9 +44,8 @@ public struct BrandPalette: Sendable {
     }
 
     public var textMuted: Color {
-        isDark
-            ? Color(red: 0.431, green: 0.416, blue: 0.388) // #6E6A63
-            : Color(red: 0.580, green: 0.561, blue: 0.529) // #948F87
+        let value = BrandMutedTextColor.resolve(isDark: isDark, increasedContrast: contrast == .increased)
+        return Color(.sRGB, red: value.red, green: value.green, blue: value.blue, opacity: 1)
     }
 
     // Preserve the original terracotta in both appearances.
@@ -224,7 +223,31 @@ public struct NativeGlassActionGroup<Content: View>: View {
     }
 }
 
+private struct BrandPaletteKey: EnvironmentKey {
+    static let defaultValue = BrandPalette(colorScheme: .light)
+}
+
+extension EnvironmentValues {
+    public var brandPalette: BrandPalette {
+        get { self[BrandPaletteKey.self] }
+        set { self[BrandPaletteKey.self] = newValue }
+    }
+}
+
+private struct BrandPaletteEnvironmentModifier: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    func body(content: Content) -> some View {
+        content.environment(\.brandPalette, BrandPalette(colorScheme: colorScheme, contrast: contrast))
+    }
+}
+
 extension View {
+    public func brandPaletteEnvironment() -> some View {
+        modifier(BrandPaletteEnvironmentModifier())
+    }
+
     public func quotaContentSurface(cornerRadius: CGFloat = 20, prominent: Bool = false) -> some View {
         modifier(QuotaContentSurfaceModifier(cornerRadius: cornerRadius, prominent: prominent))
     }

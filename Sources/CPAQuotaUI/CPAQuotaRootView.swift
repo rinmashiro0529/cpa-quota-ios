@@ -49,6 +49,7 @@ public struct CPAQuotaRootView: View {
             }
         }
         .tint(BrandPalette(colorScheme: colorScheme, contrast: contrast).actionTint)
+        .brandPaletteEnvironment()
         .preferredColorScheme(session.themeMode.preferredColorScheme)
         .sheet(item: presentedSheet) { sheet in
             NavigationStack {
@@ -60,6 +61,7 @@ public struct CPAQuotaRootView: View {
                 }
             }
             .tint(BrandPalette(colorScheme: colorScheme, contrast: contrast).actionTint)
+            .brandPaletteEnvironment()
             // Presentations share the current system/host text setting; do not
             // reset or cap Dynamic Type at the sheet's hosting boundary.
             .environment(\.dynamicTypeSize, dynamicTypeSize)
@@ -116,7 +118,7 @@ public struct CPAQuotaRootView: View {
             switch tab {
             case .quotas: QuotasOverviewTabView(session: session)
             case .usage: CAPUsageTabView(session: session)
-            case .chat: ChatWorkspaceView(session: session)
+            case .chat: ChatWorkspaceView(session: session, navigationPath: path(for: .chat))
             case .accounts: AccountsDiagnosticsTabView(session: session)
             case .connection: ConnectionManagementTabView(session: session)
             }

@@ -109,12 +109,33 @@ public struct ChatFailurePresentation: Equatable, Sendable {
     }
 }
 
+/// Direct recovery action offered beside an inline chat failure notice.
+public enum ChatFailureRecoveryAction: Equatable, Sendable {
+    case openSettings(title: String)
+    case refreshModels
+    case regenerate
+}
+
 extension ChatFailure {
     /// The key was rejected for this request; choosing another key may help.
     var suggestsDifferentKey: Bool {
         switch self {
         case .unauthorized, .forbidden: true
         default: false
+        }
+    }
+
+    public var recoveryAction: ChatFailureRecoveryAction? {
+        switch self {
+        case .missingAPIKey, .unauthorized, .forbidden, .searchNotConfigured, .searchFailed:
+            .openSettings(title: "前往对话设置")
+        case .modelUnavailable, .missingModel:
+            .refreshModels
+        case .rateLimited, .upstream, .network, .timeout, .streamInterrupted,
+             .interruptedInBackground, .generationInterrupted, .invalidResponse:
+            .regenerate
+        case .connectionChanged, .continuationAddedNothing:
+            nil
         }
     }
 }
@@ -227,3 +248,36 @@ enum ChatClipboard {
         #endif
     }
 }
+
+#if canImport(SwiftUI)
+import SwiftUI
+
+/// Shared warning and optional retry row for local persistence load/save failures.
+struct ChatStorageWarningRow: View {
+    let message: String
+    var retryTitle: String? = nil
+    var retryAction: (() async -> Void)? = nil
+    @Environment(\.brandPalette) private var palette
+    @State private var isRetrying = false
+
+    var body: some View {
+        Label(message, systemImage: "exclamationmark.triangle")
+            .font(.footnote)
+            .foregroundStyle(palette.statusWarn)
+        if let retryTitle, let retryAction {
+            Button {
+                guard !isRetrying else { return }
+                isRetrying = true
+                Task {
+                    await retryAction()
+                    isRetrying = false
+                }
+            } label: {
+                Label(retryTitle, systemImage: "arrow.clockwise")
+                    .frame(minHeight: 44)
+            }
+            .disabled(isRetrying)
+        }
+    }
+}
+#endif

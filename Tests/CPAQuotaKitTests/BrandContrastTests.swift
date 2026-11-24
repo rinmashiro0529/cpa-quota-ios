@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import CPAQuotaChat
 import CPAQuotaUI
 
 @Suite("Interactive text contrast")
@@ -20,6 +21,36 @@ struct BrandContrastTests {
                 }
             }
         }
+    }
+
+    @Test func mutedTextPassesEveryOpaqueContentSurfaceInBothAppearances() {
+        for dark in [false, true] {
+            let backgrounds = dark
+                ? [(0.145, 0.137, 0.125), (0.075, 0.071, 0.067), (0.180, 0.173, 0.161)]
+                : [(1.000, 0.992, 0.976), (0.980, 0.973, 0.957), (0.941, 0.922, 0.886)]
+            for high in [false, true] {
+                let foreground = BrandMutedTextColor.resolve(isDark: dark, increasedContrast: high)
+                let foregroundLuminance = luminance(foreground.red, foreground.green, foreground.blue)
+                for background in backgrounds {
+                    let backgroundLuminance = luminance(background.0, background.1, background.2)
+                    let ratio = (max(foregroundLuminance, backgroundLuminance) + 0.05)
+                        / (min(foregroundLuminance, backgroundLuminance) + 0.05)
+                    #expect(ratio >= (high ? 7.0 : 4.5), "muted dark=\(dark), increasedContrast=\(high), ratio=\(ratio)")
+                }
+            }
+        }
+    }
+
+    @Test func chatFailureRecoveryActionsMatchErrorCategories() {
+        #expect(ChatFailure.missingAPIKey.recoveryAction == .openSettings(title: "前往对话设置"))
+        #expect(ChatFailure.unauthorized(statusCode: 401).recoveryAction == .openSettings(title: "前往对话设置"))
+        #expect(ChatFailure.searchNotConfigured.recoveryAction == .openSettings(title: "前往对话设置"))
+        #expect(ChatFailure.modelUnavailable(statusCode: 404).recoveryAction == .refreshModels)
+        #expect(ChatFailure.missingModel.recoveryAction == .refreshModels)
+        #expect(ChatFailure.network.recoveryAction == .regenerate)
+        #expect(ChatFailure.streamInterrupted.recoveryAction == .regenerate)
+        #expect(ChatFailure.connectionChanged.recoveryAction == nil)
+        #expect(ChatFailure.continuationAddedNothing.recoveryAction == nil)
     }
 
     private func luminance(_ r: Double, _ g: Double, _ b: Double) -> Double {

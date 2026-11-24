@@ -6,8 +6,7 @@ import CPAQuotaChat
 /// Facts the user wants every conversation to know. Pinned items are sent first.
 struct ChatMemoryListView: View {
     let chat: ChatWorkspaceModel
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.brandPalette) private var palette
     @State private var draft = ""
 
     private var orderedMemories: [ChatMemoryItem] {
@@ -17,31 +16,22 @@ struct ChatMemoryListView: View {
     }
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         List {
             if chat.memoriesLoadFailed || chat.unsavedMemories {
                 Section {
                     if chat.memoriesLoadFailed {
-                        Label("记忆读取失败，请先重试读取以避免覆盖原有内容。", systemImage: "exclamationmark.triangle")
-                            .font(.footnote)
-                            .foregroundStyle(palette.statusWarn)
-                        Button {
-                            Task { await chat.retryLoadMetadata() }
-                        } label: {
-                            Label("重试读取记忆", systemImage: "arrow.clockwise")
-                                .frame(minHeight: 44)
-                        }
+                        ChatStorageWarningRow(
+                            message: "记忆读取失败，请先重试读取以避免覆盖原有内容。",
+                            retryTitle: "重试读取记忆",
+                            retryAction: { await chat.retryLoadMetadata() }
+                        )
                     }
                     if chat.unsavedMemories {
-                        Label("记忆更改未能保存到本机，重启后可能恢复旧内容。", systemImage: "exclamationmark.triangle")
-                            .font(.footnote)
-                            .foregroundStyle(palette.statusWarn)
-                        Button {
-                            Task { _ = await chat.retrySaveMemories() }
-                        } label: {
-                            Label("重试保存记忆", systemImage: "arrow.clockwise")
-                                .frame(minHeight: 44)
-                        }
+                        ChatStorageWarningRow(
+                            message: "记忆更改未能保存到本机，重启后可能恢复旧内容。",
+                            retryTitle: "重试保存记忆",
+                            retryAction: { _ = await chat.retrySaveMemories() }
+                        )
                     }
                 }
                 .listRowBackground(palette.contentSurface)
@@ -122,8 +112,7 @@ struct ChatMemoryEditorView: View {
     let chat: ChatWorkspaceModel
     @State private var item: ChatMemoryItem
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.brandPalette) private var palette
 
     init(chat: ChatWorkspaceModel, item: ChatMemoryItem) {
         self.chat = chat
@@ -131,7 +120,6 @@ struct ChatMemoryEditorView: View {
     }
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         Form {
             Section {
                 TextEditor(text: $item.text)
@@ -169,35 +157,25 @@ struct ChatMemoryEditorView: View {
 /// Slash commands that wrap the user's text with a saved prompt.
 struct ChatSkillListView: View {
     let chat: ChatWorkspaceModel
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.brandPalette) private var palette
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         List {
             if chat.skillsLoadFailed || chat.unsavedSkills {
                 Section {
                     if chat.skillsLoadFailed {
-                        Label("技能读取失败，已保留磁盘原有文件，请重试读取。", systemImage: "exclamationmark.triangle")
-                            .font(.footnote)
-                            .foregroundStyle(palette.statusWarn)
-                        Button {
-                            Task { await chat.retryLoadMetadata() }
-                        } label: {
-                            Label("重试读取技能", systemImage: "arrow.clockwise")
-                                .frame(minHeight: 44)
-                        }
+                        ChatStorageWarningRow(
+                            message: "技能读取失败，已保留磁盘原有文件，请重试读取。",
+                            retryTitle: "重试读取技能",
+                            retryAction: { await chat.retryLoadMetadata() }
+                        )
                     }
                     if chat.unsavedSkills {
-                        Label("技能更改未能保存到本机，重启后可能恢复旧内容。", systemImage: "exclamationmark.triangle")
-                            .font(.footnote)
-                            .foregroundStyle(palette.statusWarn)
-                        Button {
-                            Task { _ = await chat.retrySaveSkills() }
-                        } label: {
-                            Label("重试保存技能", systemImage: "arrow.clockwise")
-                                .frame(minHeight: 44)
-                        }
+                        ChatStorageWarningRow(
+                            message: "技能更改未能保存到本机，重启后可能恢复旧内容。",
+                            retryTitle: "重试保存技能",
+                            retryAction: { _ = await chat.retrySaveSkills() }
+                        )
                     }
                 }
                 .listRowBackground(palette.contentSurface)
@@ -251,8 +229,7 @@ struct ChatSkillEditorView: View {
     let isNew: Bool
     @State private var skill: ChatSkill
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.brandPalette) private var palette
 
     init(chat: ChatWorkspaceModel, skill: ChatSkill, isNew: Bool) {
         self.chat = chat
@@ -260,15 +237,19 @@ struct ChatSkillEditorView: View {
         _skill = State(initialValue: skill)
     }
 
+    private var hasConflictingCommand: Bool {
+        chat.hasConflictingSkillCommand(skill.command, excluding: isNew ? nil : skill.id)
+    }
+
     private var isValid: Bool {
         let command = skill.command.trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         return !command.isEmpty && !command.contains(where: \.isWhitespace)
+            && !hasConflictingCommand
             && !skill.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         Form {
             Section {
                 TextField("命令，例如 translate", text: $skill.command)
@@ -277,6 +258,12 @@ struct ChatSkillEditorView: View {
                     #endif
                     .autocorrectionDisabled()
                     .font(QuotaTypography.data)
+                if hasConflictingCommand {
+                    Label("已有相同命令的技能，请更换命令名。", systemImage: "exclamationmark.triangle")
+                        .font(.footnote)
+                        .foregroundStyle(palette.statusWarn)
+                        .accessibilityIdentifier("chat.skill.duplicateWarning")
+                }
                 TextField("名称，例如 翻译", text: $skill.title)
             } header: {
                 Text("命令")

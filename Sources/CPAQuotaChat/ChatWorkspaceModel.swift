@@ -405,15 +405,31 @@ public final class ChatWorkspaceModel {
 
     private func performLoad() async {
         defer { isLoaded = true }
-        let stored = ((try? await persistence.loadConversations()) ?? [])
+        let store = persistence
+        async let loadedConversations = try? store.loadConversations()
+        async let loadedSettings: Result<ChatSettings?, any Error> = {
+            do { return .success(try await store.loadSettings()) }
+            catch { return .failure(error) }
+        }()
+        async let loadedMemories: Result<[ChatMemoryItem]?, any Error> = {
+            do { return .success(try await store.loadMemories()) }
+            catch { return .failure(error) }
+        }()
+        async let loadedSkills: Result<[ChatSkill]?, any Error> = {
+            do { return .success(try await store.loadSkills()) }
+            catch { return .failure(error) }
+        }()
+
+        let stored = (await loadedConversations ?? [])
             .filter { !$0.messages.isEmpty }
         // Keep anything created in memory meanwhile instead of overwriting it.
         let created = conversations.filter { local in !stored.contains { $0.id == local.id } }
         conversations = (stored + created).sorted { $0.updatedAt > $1.updatedAt }
         recoverOrphanedReplies()
-        await loadSettingsFromDisk()
-        await loadMemoriesFromDisk()
-        await loadSkillsFromDisk()
+
+        applyLoadedSettings(await loadedSettings)
+        applyLoadedMemories(await loadedMemories)
+        applyLoadedSkills(await loadedSkills)
     }
 
     /// Retries loading any workspace metadata whose initial read failed.
@@ -424,38 +440,62 @@ public final class ChatWorkspaceModel {
     }
 
     private func loadSettingsFromDisk() async {
-        do {
-            if let stored = try await persistence.loadSettings() {
+        let result: Result<ChatSettings?, any Error>
+        do { result = .success(try await persistence.loadSettings()) }
+        catch { result = .failure(error) }
+        applyLoadedSettings(result)
+    }
+
+    private func applyLoadedSettings(_ result: Result<ChatSettings?, any Error>) {
+        switch result {
+        case .success(let stored):
+            if let stored {
                 isApplyingLoadedSettings = true
                 settings = stored
                 isApplyingLoadedSettings = false
             }
             settingsLoadFailed = false
-        } catch {
+        case .failure:
             settingsLoadFailed = true
         }
     }
 
     private func loadMemoriesFromDisk() async {
-        do {
-            memories = (try await persistence.loadMemories()) ?? []
+        let result: Result<[ChatMemoryItem]?, any Error>
+        do { result = .success(try await persistence.loadMemories()) }
+        catch { result = .failure(error) }
+        applyLoadedMemories(result)
+    }
+
+    private func applyLoadedMemories(_ result: Result<[ChatMemoryItem]?, any Error>) {
+        switch result {
+        case .success(let stored):
+            memories = stored ?? []
             memoriesLoadFailed = false
-        } catch {
+        case .failure:
             memories = []
             memoriesLoadFailed = true
         }
     }
 
     private func loadSkillsFromDisk() async {
-        do {
-            if let stored = try await persistence.loadSkills() {
+        let result: Result<[ChatSkill]?, any Error>
+        do { result = .success(try await persistence.loadSkills()) }
+        catch { result = .failure(error) }
+        applyLoadedSkills(result)
+    }
+
+    private func applyLoadedSkills(_ result: Result<[ChatSkill]?, any Error>) {
+        switch result {
+        case .success(let stored):
+            if let stored {
                 skills = stored
             } else {
                 skills = Self.defaultSkills
                 persistSkills(skills)
             }
             skillsLoadFailed = false
-        } catch {
+        case .failure:
             // Never overwrite an unreadable skills file with defaults.
             skills = []
             skillsLoadFailed = true
@@ -1503,10 +1543,19 @@ public final class ChatWorkspaceModel {
         await persistSkills(skills).value
     }
 
+    public func hasConflictingSkillCommand(_ command: String, excluding id: UUID?) -> Bool {
+        let normalized = ChatPromptBuilder.normalizedCommand(command)
+        guard !normalized.isEmpty else { return false }
+        return skills.contains {
+            $0.id != id && ChatPromptBuilder.normalizedCommand($0.command) == normalized
+        }
+    }
+
     public func saveSkill(_ skill: ChatSkill) {
         var normalized = skill
         normalized.command = ChatPromptBuilder.normalizedCommand(skill.command)
-        guard !normalized.command.isEmpty else { return }
+        guard !normalized.command.isEmpty,
+              !hasConflictingSkillCommand(normalized.command, excluding: skill.id) else { return }
         if let index = skills.firstIndex(where: { $0.id == skill.id }) {
             skills[index] = normalized
         } else {

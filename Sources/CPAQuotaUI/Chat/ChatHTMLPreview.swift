@@ -4,8 +4,14 @@ import WebKit
 
 struct ChatHTMLSnippetButtons: View {
     let text: String
+    var isStreaming: Bool = false
     let open: (ChatHTMLSnippet) -> Void
     @State private var snippets: [ChatHTMLSnippet] = []
+
+    private struct ParseTrigger: Equatable {
+        let text: String
+        let isStreaming: Bool
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -18,7 +24,13 @@ struct ChatHTMLSnippetButtons: View {
                 .accessibilityIdentifier("chat.html.snippet.\(snippet.id)")
             }
         }
-        .task(id: text) {
+        .task(id: ParseTrigger(text: text, isStreaming: isStreaming)) {
+            if isStreaming {
+                // Coalesce Markdown AST parsing while tokens arrive rapidly;
+                // once streaming completes, parse immediately without delay.
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+            }
             let parsed = await Self.parse(text)
             if !Task.isCancelled { snippets = parsed }
         }
@@ -33,10 +45,13 @@ struct ChatHTMLSnippetButtons: View {
 struct ChatHTMLPreview: View {
     let snippet: ChatHTMLSnippet
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.brandPalette) private var palette
     @State private var showsSource: Bool
     @State private var loadFailed = false
     @State private var isLoadingPreview = true
     @State private var revision = 0
+    @State private var justCopiedSource = false
+    @State private var copyFeedbackTask: Task<Void, Never>?
 
     private static var supportsStaticPreview: Bool {
         if #available(iOS 18.4, *) { return true }
@@ -50,32 +65,59 @@ struct ChatHTMLPreview: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 8) {
+            VStack(spacing: 10) {
                 if Self.supportsStaticPreview {
                     Picker("显示方式", selection: $showsSource) {
                         Text("预览").tag(false)
                         Text("源码").tag(true)
                     }
                     .pickerStyle(.segmented)
-                    .padding(.horizontal)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
                 }
 
                 if showsSource || !Self.supportsStaticPreview {
                     if !Self.supportsStaticPreview {
                         Text("静态预览需要 iOS 18.4 及以上系统，当前仅展示源码，可复制使用。")
                             .font(.footnote)
-                            .padding(.horizontal)
+                            .foregroundStyle(palette.textSecondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
                     } else if loadFailed {
-                        Text("预览载入失败，可复制源码或刷新重试。").font(.footnote)
+                        Text("预览载入失败，可复制源码或刷新重试。")
+                            .font(.footnote)
+                            .foregroundStyle(palette.statusWarn)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
                     }
                     ScrollView {
                         Text(verbatim: snippet.source)
                             .font(.system(.body, design: .monospaced))
+                            .foregroundStyle(palette.textPrimary)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding()
+                            .padding(14)
                     }
-                    Button("复制源码") { ChatClipboard.copy(snippet.source) }
+                    .quotaContentSurface(cornerRadius: 14)
+                    .padding(.horizontal, 16)
+
+                    Button {
+                        ChatClipboard.copy(snippet.source)
+                        justCopiedSource = true
+                        copyFeedbackTask?.cancel()
+                        copyFeedbackTask = Task {
+                            try? await Task.sleep(for: .milliseconds(1500))
+                            guard !Task.isCancelled else { return }
+                            justCopiedSource = false
+                        }
+                    } label: {
+                        Label(justCopiedSource ? "已复制源码" : "复制源码",
+                              systemImage: justCopiedSource ? "checkmark" : "doc.on.doc")
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .quotaSecondaryButtonStyle()
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
                 } else {
                     ZStack {
                         StaticHTMLView(
@@ -97,8 +139,13 @@ struct ChatHTMLPreview: View {
                     }
                 }
             }
+            .background(BrandCanvasBackground())
             .onChange(of: showsSource) { _, showingSource in
                 if !showingSource { isLoadingPreview = true }
+            }
+            .onDisappear {
+                copyFeedbackTask?.cancel()
+                copyFeedbackTask = nil
             }
             .navigationTitle("HTML 片段 \(snippet.id)")
             .navigationBarTitleDisplayMode(.inline)
@@ -118,6 +165,7 @@ struct ChatHTMLPreview: View {
                 }
             }
         }
+        .brandPaletteEnvironment()
     }
 }
 

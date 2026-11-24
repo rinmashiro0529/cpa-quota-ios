@@ -113,4 +113,28 @@ struct ChatFilePersistenceTests {
         #expect(loaded.serverIdentifier == nil)
         #expect(loaded.messages == conversation.messages)
     }
+
+    @Test func repeatedSavesReusePreparedDirectoriesAndRecoverIfRemovedExternally() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let persistence = ChatFilePersistence(directory: directory)
+
+        let first = ChatConversation(title: "一")
+        let second = ChatConversation(title: "二")
+        try await persistence.saveConversation(first)
+        try await persistence.saveConversation(second)
+        #expect(try await persistence.loadConversations().count == 2)
+
+        // Removing the Conversations directory externally should cause one write failure
+        // that invalidates the prepared-directory cache so the retry recreates it.
+        let conversationsDir = directory.appendingPathComponent("Conversations")
+        try FileManager.default.removeItem(at: conversationsDir)
+        let third = ChatConversation(title: "三")
+        do {
+            try await persistence.saveConversation(third)
+        } catch {
+            try await persistence.saveConversation(third)
+        }
+        #expect(try await persistence.loadConversations().map(\.id) == [third.id])
+    }
 }

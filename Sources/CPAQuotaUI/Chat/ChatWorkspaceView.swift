@@ -10,23 +10,30 @@ enum ChatDestination: Hashable {
 /// Root of the AI chat tab: conversation history plus the entry to chat settings.
 public struct ChatWorkspaceView: View {
     @Bindable var session: CPAQuotaSession
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    private let navigationPath: Binding<NavigationPath>?
+    @Environment(\.brandPalette) private var palette
     @State private var searchText = ""
+    @State private var debouncedSearchText = ""
     @State private var isPresentingSettings = false
-    @State private var pendingConversation: UUID?
+    @State private var fallbackConversation: UUID?
     @State private var renaming: ChatConversation?
     @State private var renameDraft = ""
     @State private var pendingDeletion: ChatConversation?
 
     public init(session: CPAQuotaSession) {
         self.session = session
+        self.navigationPath = nil
+    }
+
+    init(session: CPAQuotaSession, navigationPath: Binding<NavigationPath>?) {
+        self.session = session
+        self.navigationPath = navigationPath
     }
 
     private var chat: ChatWorkspaceModel { session.chatWorkspace }
 
     private var visibleConversations: [ChatConversation] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = debouncedSearchText
         guard !query.isEmpty else { return chat.conversations }
         return chat.conversations.filter {
             $0.displayTitle.localizedCaseInsensitiveContains(query)
@@ -35,12 +42,31 @@ public struct ChatWorkspaceView: View {
     }
 
     public var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
-        // Filtered once per render; message text is only scanned while searching.
+        // Filtered once per render; message text is only scanned after search debounce settles.
         let visible = visibleConversations
         let hasBannerSections = !isCredentialReady || !chat.failedConversationDeletions.isEmpty
         let showsFullEmptyOverlay = chat.isLoaded && chat.conversations.isEmpty && !hasBannerSections
         let showsSearchEmptyOverlay = chat.isLoaded && !chat.conversations.isEmpty && visible.isEmpty && !hasBannerSections
+        listContent(
+            visible: visible,
+            hasBannerSections: hasBannerSections,
+            showsFullEmptyOverlay: showsFullEmptyOverlay,
+            showsSearchEmptyOverlay: showsSearchEmptyOverlay
+        )
+        .modifier(ChatFallbackNavigationDestinationModifier(
+            isEnabled: navigationPath == nil,
+            selection: $fallbackConversation,
+            session: session
+        ))
+        .brandPaletteEnvironment()
+    }
+
+    private func listContent(
+        visible: [ChatConversation],
+        hasBannerSections: Bool,
+        showsFullEmptyOverlay: Bool,
+        showsSearchEmptyOverlay: Bool
+    ) -> some View {
         List {
             if !isCredentialReady {
                 Section {
@@ -63,9 +89,7 @@ public struct ChatWorkspaceView: View {
 
             if !chat.failedConversationDeletions.isEmpty {
                 Section {
-                    Label("部分对话未能从本机删除，已保留在列表中，可重试删除。", systemImage: "exclamationmark.triangle")
-                        .font(.footnote)
-                        .foregroundStyle(palette.statusWarn)
+                    ChatStorageWarningRow(message: "部分对话未能从本机删除，已保留在列表中，可重试删除。")
                 }
                 .listRowBackground(palette.contentSurface)
             }
@@ -87,7 +111,7 @@ public struct ChatWorkspaceView: View {
             } else if visible.isEmpty {
                 if hasBannerSections {
                     Section {
-                        ContentUnavailableView.search(text: searchText)
+                        ContentUnavailableView.search(text: debouncedSearchText)
                     }
                     .listRowBackground(palette.contentSurface)
                 }
@@ -133,13 +157,23 @@ public struct ChatWorkspaceView: View {
                 emptyConversationsView()
                     .padding(24)
             } else if showsSearchEmptyOverlay {
-                ContentUnavailableView.search(text: searchText)
+                ContentUnavailableView.search(text: debouncedSearchText)
             }
         }
         .scrollContentBackground(.hidden)
         .background(BrandCanvasBackground())
         .navigationTitle(CPAWorkspaceTab.chat.title)
         .searchable(text: $searchText, prompt: "搜索对话标题或内容")
+        .task(id: searchText) {
+            let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                debouncedSearchText = ""
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            debouncedSearchText = trimmed
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -165,13 +199,11 @@ public struct ChatWorkspaceView: View {
                 ChatConversationView(session: session, conversationID: id)
             }
         }
-        .navigationDestination(item: $pendingConversation) { id in
-            ChatConversationView(session: session, conversationID: id)
-        }
         .sheet(isPresented: $isPresentingSettings) {
             NavigationStack {
                 ChatSettingsView(chat: chat)
             }
+            .brandPaletteEnvironment()
             .tint(palette.actionTint)
             .presentationDragIndicator(.visible)
         }
@@ -203,7 +235,9 @@ public struct ChatWorkspaceView: View {
             guard let id = chat.requestedConversationID else { return }
             await chat.loadIfNeeded()
             chat.requestedConversationID = nil
-            if chat.conversation(id) != nil { pendingConversation = id }
+            if chat.conversation(id) != nil {
+                openConversation(id, replaceStack: true)
+            }
         }
     }
 
@@ -213,7 +247,17 @@ public struct ChatWorkspaceView: View {
     }
 
     private func startConversation() {
-        pendingConversation = chat.createConversation()
+        openConversation(chat.createConversation(), replaceStack: false)
+    }
+
+    private func openConversation(_ id: UUID, replaceStack: Bool) {
+        if let navigationPath {
+            var next = replaceStack ? NavigationPath() : navigationPath.wrappedValue
+            next.append(ChatDestination.conversation(id))
+            navigationPath.wrappedValue = next
+        } else {
+            fallbackConversation = id
+        }
     }
 
     private func emptyConversationsView() -> some View {
@@ -239,14 +283,29 @@ public struct ChatWorkspaceView: View {
     }
 }
 
+private struct ChatFallbackNavigationDestinationModifier: ViewModifier {
+    let isEnabled: Bool
+    @Binding var selection: UUID?
+    let session: CPAQuotaSession
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.navigationDestination(item: $selection) { id in
+                ChatConversationView(session: session, conversationID: id)
+            }
+        } else {
+            content
+        }
+    }
+}
+
 struct ChatConversationRow: View {
     let conversation: ChatConversation
     let isGenerating: Bool
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.brandPalette) private var palette
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(conversation.displayTitle)
@@ -283,11 +342,9 @@ struct ChatConversationRow: View {
 /// Shows where the chat credential stands without ever revealing the key.
 struct ChatCredentialStatusRow: View {
     let chat: ChatWorkspaceModel
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.brandPalette) private var palette
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         switch chat.credentialState {
         case .unbound:
             Label("尚未连接 CPA 服务", systemImage: "link")

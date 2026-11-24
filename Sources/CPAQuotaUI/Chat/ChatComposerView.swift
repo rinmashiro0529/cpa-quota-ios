@@ -13,6 +13,7 @@ import UIKit
 struct ChatComposerView: View {
     let chat: ChatWorkspaceModel
     let conversation: ChatConversation
+    var activeReasoningNotice: String? = nil
     @Binding var draft: String
     @Binding var attachments: [ChatImageAttachment]
     @Binding var editingMessageID: UUID?
@@ -20,8 +21,7 @@ struct ChatComposerView: View {
     let onCancelEdit: () -> Void
     let onContinue: (ChatContinuation) -> Void
     let onSubmit: () -> Void
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.brandPalette) private var palette
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -57,7 +57,6 @@ struct ChatComposerView: View {
     }
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         VStack(alignment: .leading, spacing: 8) {
             if !isCredentialReady {
                 blockedNotice(palette)
@@ -258,7 +257,10 @@ struct ChatComposerView: View {
     }
 
     private var reasoningButton: some View {
-        ChatReasoningTriggerButton(effort: conversation.reasoningEffort) { effort in
+        ChatReasoningTriggerButton(
+            effort: conversation.reasoningEffort,
+            activeResolutionNotice: activeReasoningNotice
+        ) { effort in
             chat.selectReasoningEffort(effort, in: conversation.id)
         }
     }
@@ -363,8 +365,11 @@ struct ChatComposerView: View {
         }
         for item in items {
             guard attachments.count < 4,
-                  let data = try? await item.loadTransferable(type: Data.self),
-                  let attachment = ChatImageEncoder.attachment(from: data) else { continue }
+                  let data = try? await item.loadTransferable(type: Data.self) else { continue }
+            let attachment = await Task.detached(priority: .userInitiated) {
+                ChatImageEncoder.attachment(from: data)
+            }.value
+            guard let attachment, attachments.count < 4 else { continue }
             attachments.append(attachment)
         }
     }
@@ -437,8 +442,7 @@ enum ChatImageEncoder {
 }
 
 private struct ChatComposerSurface: ViewModifier {
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.brandPalette) private var palette
 
     @ViewBuilder
     func body(content: Content) -> some View {
@@ -446,7 +450,6 @@ private struct ChatComposerSurface: ViewModifier {
         if #available(iOS 26.0, macOS 26.0, *) {
             content.glassEffect(.regular, in: shape)
         } else {
-            let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
             content
                 .background(.regularMaterial, in: shape)
                 .overlay {
@@ -459,12 +462,10 @@ private struct ChatComposerSurface: ViewModifier {
 
 private struct ChatRoundButtonStyle: ButtonStyle {
     let prominent: Bool
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.brandPalette) private var palette
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         let isProminent = prominent && isEnabled
         configuration.label
             .foregroundStyle(isProminent ? palette.textOnAccent : palette.textPrimary)

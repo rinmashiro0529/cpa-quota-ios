@@ -25,6 +25,9 @@ public enum ChatPersistenceError: Error, Sendable {
 /// supports it the directory is file-protected and excluded from backup.
 public actor ChatFilePersistence: ChatPersistence {
     private let directory: URL
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
+    private var directoriesPrepared = false
 
     public static let `default` = ChatFilePersistence(directory: defaultDirectory())
 
@@ -43,6 +46,7 @@ public actor ChatFilePersistence: ChatPersistence {
     }
 
     private func prepareDirectories() throws {
+        guard !directoriesPrepared else { return }
         let manager = FileManager.default
         try manager.createDirectory(at: conversationsDirectory, withIntermediateDirectories: true)
         #if canImport(Darwin)
@@ -53,14 +57,18 @@ public actor ChatFilePersistence: ChatPersistence {
         var directoryURL = directory
         try directoryURL.setResourceValues(values)
         #endif
+        directoriesPrepared = true
     }
 
     private func write(_ value: some Encodable, to url: URL) throws {
         let data: Data
-        do { data = try JSONEncoder().encode(value) }
+        do { data = try encoder.encode(value) }
         catch { throw ChatPersistenceError.invalidData }
         do { try data.write(to: url, options: .atomic) }
-        catch { throw ChatPersistenceError.storageFailure }
+        catch {
+            directoriesPrepared = false
+            throw ChatPersistenceError.storageFailure
+        }
     }
 
     private func read<Value: Decodable>(_ type: Value.Type, from url: URL) throws -> Value? {
@@ -68,7 +76,7 @@ public actor ChatFilePersistence: ChatPersistence {
         let data: Data
         do { data = try Data(contentsOf: url) }
         catch { throw ChatPersistenceError.storageFailure }
-        do { return try JSONDecoder().decode(type, from: data) }
+        do { return try decoder.decode(type, from: data) }
         catch { throw ChatPersistenceError.invalidData }
     }
 
@@ -81,11 +89,14 @@ public actor ChatFilePersistence: ChatPersistence {
                 at: conversationsDirectory,
                 includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles])
-        } catch { throw ChatPersistenceError.storageFailure }
+        } catch {
+            directoriesPrepared = false
+            throw ChatPersistenceError.storageFailure
+        }
         var conversations: [ChatConversation] = []
         for file in files where file.pathExtension == "json" {
             do {
-                conversations.append(try JSONDecoder().decode(
+                conversations.append(try decoder.decode(
                     ChatConversation.self, from: Data(contentsOf: file)))
             } catch {
                 // A corrupt conversation file must not take down the rest.
