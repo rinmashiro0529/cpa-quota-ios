@@ -766,7 +766,17 @@ final class CPAQuotaAppUITests: XCTestCase {
         expectExists(last, in: app)
         let viewport = CGRect(x: 0, y: app.navigationBars.firstMatch.frame.maxY,
                               width: app.frame.width, height: max(0, input.frame.minY - app.navigationBars.firstMatch.frame.maxY))
-        XCTAssertTrue(viewport.contains(CGPoint(x: last.frame.midX, y: last.frame.midY)), "U1 bottom \(last.frame) viewport \(viewport)")
+        // Wait briefly for the animated streaming auto-scroll to finish settling into the viewport.
+        let settleDeadline = Date().addingTimeInterval(3)
+        var lastFrame = last.frame
+        while !viewport.contains(CGPoint(x: lastFrame.midX, y: lastFrame.midY)), Date() < settleDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            if last.exists, let snap = try? last.snapshot() {
+                lastFrame = snap.frame
+            }
+        }
+        XCTAssertTrue(viewport.contains(CGPoint(x: lastFrame.midX, y: lastFrame.midY)),
+                      "U1 bottom \(lastFrame) viewport \(viewport)")
         let first = element("chat.message.user", in: app)
         reveal(first, in: app, upward: false, requiresHitTarget: false)
         let originalY = first.frame.midY
@@ -1223,7 +1233,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         // target exists, move toward its center instead of blindly sweeping.
         for attempt in 0...30 {
             let context = geometry(in: app, scrollingTo: element)
-            let snap = try? element.snapshot()
+            let snap: (any XCUIElementSnapshot)? = element.exists ? (try? element.snapshot()) : nil
             let exists = snap != nil
             let frame = snap?.frame ?? .null
             let hittable = exists && element.isHittable
@@ -1336,7 +1346,8 @@ final class CPAQuotaAppUITests: XCTestCase {
         let tabBars = tabBarEntries.map(\.element)
         let navFrames = navBarEntries.map(\.frame)
         let tabFrames = tabBarEntries.map(\.frame)
-        let keyboardFrame: CGRect? = (try? app.keyboards.firstMatch.snapshot())?.frame
+        let keyboard = app.keyboards.firstMatch
+        let keyboardFrame: CGRect? = keyboard.exists ? (try? keyboard.snapshot())?.frame : nil
         let containers = app.collectionViews.allElementsBoundByIndex
             + app.tables.allElementsBoundByIndex + app.scrollViews.allElementsBoundByIndex
         let candidates: [(element: XCUIElement, identifier: String, frame: CGRect, viewport: CGRect)] = containers.compactMap { container in
@@ -1356,19 +1367,23 @@ final class CPAQuotaAppUITests: XCTestCase {
             "chat.composer", "chat.input", "chat.send", "chat.stop",
             "chat.continue", "chat.retry", "chat.attach", "chat.webSearch", "chat.searchUnavailable"
         ]
-        let isComposerTarget = target.flatMap { try? $0.snapshot() }.map { composerIDs.contains($0.identifier) } ?? false
-        if !isComposerTarget, var visibleViewport = viewport,
-           let inputSnap = try? app.textFields.matching(identifier: "chat.input").firstMatch.snapshot() {
-            let composerSnap = try? element("chat.composer", in: app).snapshot()
-            let composerTop: CGFloat
-            if let composerSnap, !composerSnap.frame.isEmpty {
-                composerTop = min(composerSnap.frame.minY, inputSnap.frame.minY)
-            } else {
-                composerTop = inputSnap.frame.minY
-            }
-            if composerTop - visibleViewport.minY > 80, composerTop < visibleViewport.maxY {
-                visibleViewport.size.height = composerTop - visibleViewport.minY
-                viewport = visibleViewport
+        let isComposerTarget = target.flatMap { $0.exists ? (try? $0.snapshot()) : nil }
+            .map { composerIDs.contains($0.identifier) } ?? false
+        if !isComposerTarget, var visibleViewport = viewport {
+            let chatInput = app.textFields.matching(identifier: "chat.input").firstMatch
+            if chatInput.exists, let inputSnap = try? chatInput.snapshot() {
+                let composer = element("chat.composer", in: app)
+                let composerSnap = composer.exists ? (try? composer.snapshot()) : nil
+                let composerTop: CGFloat
+                if let composerSnap, !composerSnap.frame.isEmpty {
+                    composerTop = min(composerSnap.frame.minY, inputSnap.frame.minY)
+                } else {
+                    composerTop = inputSnap.frame.minY
+                }
+                if composerTop - visibleViewport.minY > 80, composerTop < visibleViewport.maxY {
+                    visibleViewport.size.height = composerTop - visibleViewport.minY
+                    viewport = visibleViewport
+                }
             }
         }
         return GeometryContext(appFrame: appFrame, bars: navBars + tabBars,
@@ -1409,7 +1424,7 @@ final class CPAQuotaAppUITests: XCTestCase {
             let match = identifier.isEmpty
                 ? buttons.matching(NSPredicate(format: "label == %@", label)).firstMatch
                 : buttons.matching(identifier: identifier).matching(NSPredicate(format: "label == %@", label)).firstMatch
-            if let matchSnap = try? match.snapshot(), matchSnap.frame == frame { return true }
+            if match.exists, let matchSnap = try? match.snapshot(), matchSnap.frame == frame { return true }
         }
         guard let viewport = context.viewport else { return false }
         return viewport.contains(center) && isVisible(frame, viewport: viewport)
@@ -1438,7 +1453,9 @@ final class CPAQuotaAppUITests: XCTestCase {
             return
         }
         let anchor = container.cells.firstMatch
-        let before = (try? anchor.snapshot()).flatMap { $0.frame.isEmpty ? nil : $0.frame } ?? .null
+        let before = anchor.exists
+            ? ((try? anchor.snapshot()).flatMap { $0.frame.isEmpty ? nil : $0.frame } ?? .null)
+            : .null
         let hasAnchor = !before.isNull
         let preferredX = hasAnchor ? before.minX + 4 : viewport.midX
         let x = min(max(preferredX, viewport.minX + 8), viewport.maxX - 8) - context.containerFrame.minX
@@ -1460,8 +1477,8 @@ final class CPAQuotaAppUITests: XCTestCase {
         } else {
             start.press(forDuration: 0.05, thenDragTo: end)
         }
-        let after = (try? anchor.snapshot())?.frame ?? .null
-        let afterSnap = try? target.snapshot()
+        let after = anchor.exists ? ((try? anchor.snapshot())?.frame ?? .null) : .null
+        let afterSnap: (any XCUIElementSnapshot)? = target.exists ? (try? target.snapshot()) : nil
         let afterFrame = afterSnap?.frame ?? .null
         let afterHittable = afterSnap != nil && target.isHittable
         print("FRONTEND_SCROLL line=\(line) upward=\(upward) viewport=\(viewport) anchorBefore=\(before) anchorAfter=\(after) targetBefore=\(targetFrame) hittableBefore=\(targetHittable) targetAfter=\(afterFrame) hittableAfter=\(afterHittable)")
