@@ -2,13 +2,15 @@
 import SwiftUI
 import CPAQuotaKit
 import CPAQuotaChat
+#if os(iOS)
+import UIKit
+#endif
 
 /// Workspace-wide chat settings: credential, default model, rules, memory, skills, search and notifications.
 struct ChatSettingsView: View {
     @Bindable var chat: ChatWorkspaceModel
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.brandPalette) private var palette
     @State private var manualKeyDraft = ""
     @State private var manualKeyRejected = false
     @State private var searchKeyDraft = ""
@@ -21,33 +23,24 @@ struct ChatSettingsView: View {
     @State private var deleteAllFailed = false
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         Form {
             credentialSection(palette)
             modelSection(palette)
 
             Section {
                 if chat.settingsLoadFailed {
-                    Label("偏好设置读取失败，已暂时停用记忆附加，请重试读取。", systemImage: "exclamationmark.triangle")
-                        .font(.footnote)
-                        .foregroundStyle(palette.statusWarn)
-                    Button {
-                        Task { await chat.retryLoadMetadata() }
-                    } label: {
-                        Label("重试读取设置", systemImage: "arrow.clockwise")
-                            .frame(minHeight: 44)
-                    }
+                    ChatStorageWarningRow(
+                        message: "偏好设置读取失败，已暂时停用记忆附加，请重试读取。",
+                        retryTitle: "重试读取设置",
+                        retryAction: { await chat.retryLoadMetadata() }
+                    )
                 }
                 if chat.unsavedSettings {
-                    Label("偏好设置未能保存到本机，重启后可能恢复旧状态。", systemImage: "exclamationmark.triangle")
-                        .font(.footnote)
-                        .foregroundStyle(palette.statusWarn)
-                    Button {
-                        Task { _ = await chat.retrySaveSettings() }
-                    } label: {
-                        Label("重试保存设置", systemImage: "arrow.clockwise")
-                            .frame(minHeight: 44)
-                    }
+                    ChatStorageWarningRow(
+                        message: "偏好设置未能保存到本机，重启后可能恢复旧状态。",
+                        retryTitle: "重试保存设置",
+                        retryAction: { _ = await chat.retrySaveSettings() }
+                    )
                 }
                 NavigationLink {
                     ChatTextEditorView(
@@ -88,6 +81,7 @@ struct ChatSettingsView: View {
                         Task { await requestNotificationAuthorization() }
                     }
                 ))
+                .disabled(notificationStatus == .denied)
                 switch notificationStatus {
                 case .notDetermined:
                     Button {
@@ -101,6 +95,14 @@ struct ChatSettingsView: View {
                     Label("系统未允许通知，可在“设置”中为 CPA Quota 开启。", systemImage: "bell.slash")
                         .font(.footnote)
                         .foregroundStyle(palette.textSecondary)
+                    #if os(iOS)
+                    if let settingsURL = URL(string: UIApplication.openSettingsURLString) {
+                        Link(destination: settingsURL) {
+                            Label("前往系统设置", systemImage: "gear")
+                                .frame(minHeight: 44)
+                        }
+                    }
+                    #endif
                 default:
                     EmptyView()
                 }
@@ -433,8 +435,7 @@ struct ChatTextEditorView: View {
     @Binding var text: String
     let footer: String
     @State private var draftText: String
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.brandPalette) private var palette
 
     init(title: String, text: Binding<String>, footer: String) {
         self.title = title
@@ -444,7 +445,6 @@ struct ChatTextEditorView: View {
     }
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         Form {
             Section {
                 TextEditor(text: $draftText)

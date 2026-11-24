@@ -6,10 +6,10 @@ import CPAQuotaChat
 /// a Codex-style discrete slider popover (or sheet at accessibility text sizes).
 struct ChatReasoningTriggerButton: View {
     let effort: ChatReasoningEffort
+    var activeResolutionNotice: String? = nil
     let onSelect: (ChatReasoningEffort) -> Void
     @State private var isPresented = false
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.brandPalette) private var palette
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var isActiveExplicit: Bool {
@@ -17,14 +17,17 @@ struct ChatReasoningTriggerButton: View {
     }
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         if dynamicTypeSize.isAccessibilitySize {
-            triggerButton(palette)
+            triggerButton
                 .sheet(isPresented: $isPresented) {
                     NavigationStack {
                         ScrollView {
-                            ChatReasoningSliderPopover(effort: effort, onSelect: onSelect)
-                                .padding(16)
+                            ChatReasoningSliderPopover(
+                                effort: effort,
+                                activeResolutionNotice: activeResolutionNotice,
+                                onSelect: onSelect
+                            )
+                            .padding(16)
                         }
                         .navigationTitle("思考等级")
                         #if os(iOS)
@@ -36,25 +39,31 @@ struct ChatReasoningTriggerButton: View {
                             }
                         }
                     }
+                    .brandPaletteEnvironment()
                     .presentationDetents([.medium])
                     .presentationDragIndicator(.visible)
                 }
         } else {
-            triggerButton(palette)
+            triggerButton
                 .popover(isPresented: $isPresented, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
-                    ChatReasoningSliderPopover(effort: effort, onSelect: onSelect)
-                        .frame(width: 288)
-                        .padding(14)
-                        .presentationCompactAdaptation(.popover)
+                    ChatReasoningSliderPopover(
+                        effort: effort,
+                        activeResolutionNotice: activeResolutionNotice,
+                        onSelect: onSelect
+                    )
+                    .frame(width: 288)
+                    .padding(14)
+                    .brandPaletteEnvironment()
+                    .presentationCompactAdaptation(.popover)
                 }
         }
     }
 
-    private func triggerButton(_ palette: BrandPalette) -> some View {
+    private var triggerButton: some View {
         Button {
             isPresented.toggle()
         } label: {
-            triggerPillLabel(palette)
+            triggerPillLabel
                 .frame(minHeight: 44)
                 .contentShape(Rectangle())
         }
@@ -62,12 +71,12 @@ struct ChatReasoningTriggerButton: View {
         .dynamicTypeSize(...DynamicTypeSize.accessibility2)
         .accessibilityLabel("思考等级")
         .accessibilityValue(effort.title)
-        .accessibilityHint("轻点调整思考等级")
+        .accessibilityHint(activeResolutionNotice ?? "轻点调整思考等级")
         .accessibilityIdentifier("chat.reasoningTrigger")
     }
 
-    private func triggerPillLabel(_ palette: BrandPalette) -> some View {
-        let borderWidth: CGFloat = contrast == .increased ? 1 : 0.75
+    private var triggerPillLabel: some View {
+        let borderWidth: CGFloat = palette.contrast == .increased ? 1 : 0.75
         return HStack(spacing: 4) {
             Image(systemName: effort.symbolName)
                 .font(.caption.weight(.semibold))
@@ -79,24 +88,35 @@ struct ChatReasoningTriggerButton: View {
         .foregroundStyle(isActiveExplicit ? palette.actionTint : palette.textSecondary)
         .padding(.horizontal, 10)
         .frame(minWidth: 72, minHeight: 36, maxHeight: 36)
-        .background(pillBackground(palette), in: Capsule())
+        .background(pillBackground, in: Capsule())
         .overlay {
             Capsule()
-                .strokeBorder(pillBorder(palette), lineWidth: borderWidth)
+                .strokeBorder(pillBorder, lineWidth: borderWidth)
                 .allowsHitTesting(false)
+        }
+        .overlay(alignment: .topTrailing) {
+            if activeResolutionNotice != nil {
+                Circle()
+                    .fill(palette.statusWarn)
+                    .frame(width: 6, height: 6)
+                    .padding(.top, 3)
+                    .padding(.trailing, 4)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
         }
     }
 
-    private func pillBackground(_ palette: BrandPalette) -> Color {
+    private var pillBackground: Color {
         if isActiveExplicit {
             return palette.accentSoft
         }
         return palette.insetSurface
     }
 
-    private func pillBorder(_ palette: BrandPalette) -> Color {
+    private var pillBorder: Color {
         if isActiveExplicit {
-            return palette.actionTint.opacity(contrast == .increased ? 0.75 : 0.32)
+            return palette.actionTint.opacity(palette.contrast == .increased ? 0.75 : 0.32)
         }
         return palette.trackBackground
     }
@@ -106,17 +126,16 @@ struct ChatReasoningTriggerButton: View {
 /// thick capsule discrete stepped slider, tappable tick labels, and brief description.
 struct ChatReasoningSliderPopover: View {
     let effort: ChatReasoningEffort
+    var activeResolutionNotice: String? = nil
     let onSelect: (ChatReasoningEffort) -> Void
     @State private var previewEffort: ChatReasoningEffort?
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.brandPalette) private var palette
 
     private var displayedEffort: ChatReasoningEffort {
         previewEffort ?? effort
     }
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         VStack(spacing: 12) {
             ZStack {
                 Text(displayedEffort == .automatic ? "思考等级" : displayedEffort.title)
@@ -164,6 +183,14 @@ struct ChatReasoningSliderPopover: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity)
                 .fixedSize(horizontal: false, vertical: true)
+
+            if let activeResolutionNotice, previewEffort == nil {
+                Label(activeResolutionNotice, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(palette.statusWarn)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("chat.reasoningPopover")
@@ -176,15 +203,13 @@ struct ChatReasoningInlineSelector: View {
     let effort: ChatReasoningEffort
     let onSelect: (ChatReasoningEffort) -> Void
     @State private var previewEffort: ChatReasoningEffort?
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.brandPalette) private var palette
 
     private var displayedEffort: ChatReasoningEffort {
         previewEffort ?? effort
     }
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("思考等级")
@@ -230,8 +255,7 @@ struct ChatSteppedReasoningSlider: View {
     var onPreview: ((ChatReasoningEffort?) -> Void)? = nil
     let onSelect: (ChatReasoningEffort) -> Void
 
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.brandPalette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isDragging = false
     @State private var dragEffort: ChatReasoningEffort?
@@ -250,9 +274,9 @@ struct ChatSteppedReasoningSlider: View {
     }
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
-        let fillColor = contrast == .increased ? palette.actionTint : palette.accent
-        let usesDarkAccentInk = palette.isDark && contrast == .increased
+        let isIncreasedContrast = palette.contrast == .increased
+        let fillColor = isIncreasedContrast ? palette.actionTint : palette.accent
+        let usesDarkAccentInk = palette.isDark && isIncreasedContrast
         let filledDotColor = usesDarkAccentInk ? palette.textOnAccent.opacity(0.65) : Color.white.opacity(0.65)
         let thumbStrokeColor = usesDarkAccentInk ? palette.textOnAccent.opacity(0.85) : Color.black.opacity(0.18)
 
@@ -278,8 +302,8 @@ struct ChatSteppedReasoningSlider: View {
                         .overlay {
                             Capsule()
                                 .strokeBorder(
-                                    contrast == .increased ? palette.textSecondary.opacity(0.45) : palette.trackBackground,
-                                    lineWidth: contrast == .increased ? 1.25 : 0.75
+                                    isIncreasedContrast ? palette.textSecondary.opacity(0.45) : palette.trackBackground,
+                                    lineWidth: isIncreasedContrast ? 1.25 : 0.75
                                 )
                         }
 
@@ -309,7 +333,7 @@ struct ChatSteppedReasoningSlider: View {
                             .fill(Color.white)
                             .overlay {
                                 Circle()
-                                    .strokeBorder(thumbStrokeColor, lineWidth: contrast == .increased ? 1.5 : 0.75)
+                                    .strokeBorder(thumbStrokeColor, lineWidth: isIncreasedContrast ? 1.5 : 0.75)
                             }
                             .shadow(color: Color.black.opacity(0.24), radius: 3, y: 1)
                             .frame(width: thumbDiameter, height: thumbDiameter)

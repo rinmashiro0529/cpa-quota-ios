@@ -8,18 +8,16 @@ struct ChatConversationOptionsView: View {
     let chat: ChatWorkspaceModel
     let conversationID: UUID
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.brandPalette) private var palette
     @State private var isConfirmingDelete = false
     @State private var titleDraft = ""
     @State private var systemPromptDraft = ""
     @State private var hasLoadedDrafts = false
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         Group {
             if let conversation = chat.conversation(conversationID) {
-                form(conversation, palette: palette)
+                form(conversation)
             } else {
                 ContentUnavailableView("对话已删除", systemImage: "trash")
             }
@@ -44,7 +42,7 @@ struct ChatConversationOptionsView: View {
         }
     }
 
-    private func form(_ conversation: ChatConversation, palette: BrandPalette) -> some View {
+    private func form(_ conversation: ChatConversation) -> some View {
         Form {
             Section("标题") {
                 TextField("新对话", text: $titleDraft)
@@ -115,9 +113,7 @@ struct ChatConversationOptionsView: View {
 
             Section {
                 if chat.failedConversationDeletions.contains(conversationID) {
-                    Label("未能从本机删除这段对话，请重试。", systemImage: "exclamationmark.triangle")
-                        .font(.footnote)
-                        .foregroundStyle(palette.statusWarn)
+                    ChatStorageWarningRow(message: "未能从本机删除这段对话，请重试。")
                 }
                 Button(role: .destructive) {
                     isConfirmingDelete = true

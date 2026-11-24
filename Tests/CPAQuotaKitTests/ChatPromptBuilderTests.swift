@@ -139,6 +139,29 @@ struct ChatSkillTests {
         #expect(workspace.skills.contains { $0.id == skill.id && $0.command == "myskill" })
     }
 
+    @Test func duplicateSkillCommandIsDetectedAndRejected() async throws {
+        let workspace = ChatWorkspaceModel(
+            persistence: ChatMemoryPersistence(), secrets: MemorySecretStore())
+        await workspace.loadIfNeeded()
+        let existing = try #require(workspace.skills.first { $0.command == "translate" })
+
+        #expect(workspace.hasConflictingSkillCommand("Translate", excluding: nil))
+        #expect(workspace.hasConflictingSkillCommand(" /TRANSLATE ", excluding: UUID()))
+        #expect(!workspace.hasConflictingSkillCommand("translate", excluding: existing.id))
+        #expect(!workspace.hasConflictingSkillCommand("unique-cmd", excluding: nil))
+
+        let initialCount = workspace.skills.count
+        let duplicate = ChatSkill(command: "/Translate", title: "冲突", prompt: "重复命令")
+        workspace.saveSkill(duplicate)
+        #expect(workspace.skills.count == initialCount)
+        #expect(!workspace.skills.contains { $0.id == duplicate.id })
+
+        var edited = existing
+        edited.title = "翻译（已更新）"
+        workspace.saveSkill(edited)
+        #expect(workspace.skills.first { $0.id == existing.id }?.title == "翻译（已更新）")
+    }
+
     @Test func defaultSkillsSeededOnFirstLoad() async {
         let workspace = ChatWorkspaceModel(
             persistence: ChatMemoryPersistence(), secrets: MemorySecretStore())

@@ -18,6 +18,9 @@ import WebKit
         config.preferences.javaScriptCanOpenWindowsAutomatically = false
         config.dataDetectorTypes = []
         super.init(frame: .zero, configuration: config)
+        isOpaque = false
+        backgroundColor = .clear
+        scrollView.backgroundColor = .clear
         navigationDelegate = self
         uiDelegate = self
         allowsLinkPreview = false
@@ -62,7 +65,7 @@ import WebKit
             <meta http-equiv="x-dns-prefetch-control" content="off">
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <meta name="color-scheme" content="light dark">
-            <style>body { font: -apple-system-body; overflow-wrap: anywhere }</style>
+            <style>:root { color-scheme: light dark; } body { font: -apple-system-body; overflow-wrap: anywhere; margin: 16px; background: #FAF8F4; color: #181715; } @media (prefers-color-scheme: dark) { body { background: #131211; color: #F4F0EA; } }</style>
             """
         permitsInitialLoad = true
         initialNavigation = loadHTMLString(head + source, baseURL: nil)

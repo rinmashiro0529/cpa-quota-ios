@@ -824,4 +824,36 @@ struct ChatReasoningCompatibilityTests {
         #expect(workspace.conversation(id2)?.modelID == "model-b")
         #expect(workspace.conversation(id2)?.reasoningEffort == .off)
     }
+
+    @Test func anthropicTextDeltaContainingMessageStopLiteralDoesNotTerminateStreamEarly() async throws {
+        // EFF-04: A truncated Anthropic stream whose text_delta quotes `"type":"message_stop"`
+        // must still throw streamInterrupted because top-level event type is `content_block_delta`.
+        let truncatedWithLiteral = [
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_lit\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-opus-4-6\",\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n",
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Example: {\\\"type\\\":\\\"message_stop\\\"}\"}}\n\n",
+        ]
+        let truncatedTransport = ScriptedReasoningTransport(steps: [.init(chunks: truncatedWithLiteral)])
+        let truncatedEngine = AnyLanguageModelChatEngine(transport: truncatedTransport)
+        let req = try makeRequest(modelID: "claude-opus-4-6", ownedBy: "anthropic", effort: .high)
+
+        do {
+            for try await _ in truncatedEngine.stream(req) {}
+            Issue.record("Expected truncated Anthropic stream quoting message_stop literal to throw streamInterrupted")
+        } catch {
+            #expect(AnyLanguageModelChatEngine.failure(for: error) == .streamInterrupted)
+        }
+
+        // Conversely, a real `message_stop` event at EOF with a single trailing newline must complete cleanly.
+        let singleNewlineEOF = Array(anthropicSuccessChunks.dropLast()) + [
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n"
+        ]
+        let cleanTransport = ScriptedReasoningTransport(steps: [.init(chunks: singleNewlineEOF)])
+        let cleanEngine = AnyLanguageModelChatEngine(transport: cleanTransport)
+        var finalText = ""
+        for try await event in cleanEngine.stream(req) {
+            if case .snapshot(let text, _) = event { finalText = text }
+        }
+        #expect(finalText == "结论")
+    }
 }

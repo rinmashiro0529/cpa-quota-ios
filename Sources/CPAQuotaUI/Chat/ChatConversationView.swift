@@ -8,8 +8,7 @@ struct ChatConversationView: View {
     @Bindable var session: CPAQuotaSession
     let conversationID: UUID
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.brandPalette) private var palette
     @State private var draft = ""
     @State private var attachments: [ChatImageAttachment] = []
     @State private var editingMessageID: UUID?
@@ -22,14 +21,16 @@ struct ChatConversationView: View {
     @State private var isPresentingSettings = false
     @State private var memoryNotice: String?
     @State private var memoryNoticeTask: Task<Void, Never>?
+    @State private var isScrolledAwayFromBottom = false
+    @State private var scrollToBottomTrigger = 0
+    @State private var emptyStateMinHeight: CGFloat = 0
 
     private var chat: ChatWorkspaceModel { session.chatWorkspace }
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         Group {
             if let conversation = chat.conversation(conversationID) {
-                content(conversation, palette: palette)
+                content(conversation)
             } else {
                 ContentUnavailableView {
                     Label("对话已删除", systemImage: "trash")
@@ -40,6 +41,7 @@ struct ChatConversationView: View {
         }
         .background(BrandCanvasBackground())
         #if os(iOS)
+        .toolbar(.hidden, for: .tabBar)
         .sheet(item: $htmlPreview) { ChatHTMLPreview(snippet: $0) }
         #endif
         .tint(palette.actionTint)
@@ -55,6 +57,7 @@ struct ChatConversationView: View {
             loadedDraftConversationID = nil
             editingMessageID = nil
             stashedDraft = nil
+            isScrolledAwayFromBottom = false
             restoreDraftIfNeeded()
         }
         .onChange(of: draft) { _, _ in
@@ -67,11 +70,14 @@ struct ChatConversationView: View {
         }
         .onDisappear {
             persistCurrentDraft(for: conversationID)
+            memoryNoticeTask?.cancel()
+            memoryNoticeTask = nil
         }
         .sheet(isPresented: $isPresentingOptions) {
             NavigationStack {
                 ChatConversationOptionsView(chat: chat, conversationID: conversationID)
             }
+            .brandPaletteEnvironment()
             .tint(palette.actionTint)
             .presentationDragIndicator(.visible)
         }
@@ -79,6 +85,7 @@ struct ChatConversationView: View {
             NavigationStack {
                 ChatSettingsView(chat: chat)
             }
+            .brandPaletteEnvironment()
             .tint(palette.actionTint)
             .presentationDragIndicator(.visible)
         }
@@ -99,34 +106,52 @@ struct ChatConversationView: View {
     }
 
     @ViewBuilder
-    private func content(_ conversation: ChatConversation, palette: BrandPalette) -> some View {
+    private func content(_ conversation: ChatConversation) -> some View {
         let isGenerating = chat.isGenerating(conversation.id)
-        let lastAssistantID = conversation.messages.last(where: { $0.role == .assistant })?.id
+        let lastAssistant = conversation.messages.last(where: { $0.role == .assistant })
+        let lastAssistantID = lastAssistant?.id
+        let activeReasoningNotice: String? = {
+            guard let resolution = lastAssistant?.reasoningResolution,
+                  resolution.outcome != .applied,
+                  resolution.requested == conversation.reasoningEffort,
+                  lastAssistant?.modelID == conversation.modelID
+            else { return nil }
+            return resolution.noticeText
+        }()
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
-                    if conversation.messages.isEmpty {
+                if conversation.messages.isEmpty {
+                    VStack(spacing: 0) {
+                        Spacer(minLength: 0)
                         ChatConversationEmptyState(conversation: conversation)
-                            .padding(.top, 40)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
                     }
-                    let canRerun = chat.generationBlocker(for: conversation.id) == nil
-                    ForEach(conversation.messages) { message in
-                        ChatMessageView(
-                            message: message,
-                            isLatestAssistant: message.id == lastAssistantID,
-                            isConversationGenerating: isGenerating,
-                            canRerun: canRerun,
-                            actions: actions(for: message, in: conversation)
-                        )
-                        .id(message.id)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, minHeight: max(0, emptyStateMinHeight))
+                } else {
+                    LazyVStack(alignment: .leading, spacing: 18) {
+                        let canRerun = chat.generationBlocker(for: conversation.id) == nil
+                        ForEach(conversation.messages) { message in
+                            ChatMessageView(
+                                message: message,
+                                isLatestAssistant: message.id == lastAssistantID,
+                                isConversationGenerating: isGenerating,
+                                canRerun: canRerun,
+                                actions: actions(for: message)
+                            )
+                            .equatable()
+                            .id(message.id)
+                        }
+                        Color.clear
+                            .frame(height: 1)
+                            .padding(.bottom, 12)
+                            .id(Self.bottomAnchor)
                     }
-                    Color.clear
-                        .frame(height: 1)
-                        .padding(.bottom, 12)
-                        .id(Self.bottomAnchor)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
             }
             .scrollDismissesKeyboard(.interactively)
             .modifier(ChatScrollEdgeModifier())
@@ -135,8 +160,38 @@ struct ChatConversationView: View {
                 bottomAnchor: Self.bottomAnchor,
                 isGenerating: isGenerating,
                 messageCount: conversation.messages.count,
-                latestTextLength: conversation.messages.last?.text.count ?? 0
+                latestTextLength: conversation.messages.last?.text.count ?? 0,
+                scrollToBottomTrigger: scrollToBottomTrigger,
+                isScrolledAwayFromBottom: $isScrolledAwayFromBottom,
+                visibleViewportHeight: $emptyStateMinHeight
             ))
+            .overlay(alignment: .bottomTrailing) {
+                if isScrolledAwayFromBottom, !conversation.messages.isEmpty {
+                    Button {
+                        scrollToBottomTrigger &+= 1
+                    } label: {
+                        Image(systemName: "arrow.down")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(palette.textPrimary)
+                            .frame(width: 36, height: 36)
+                            .background(.regularMaterial, in: Circle())
+                            .overlay {
+                                Circle()
+                                    .strokeBorder(palette.trackBackground, lineWidth: 0.75)
+                                    .allowsHitTesting(false)
+                            }
+                            .shadow(color: Color.black.opacity(0.12), radius: 4, y: 2)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 8)
+                    .accessibilityLabel("回到底部")
+                    .accessibilityIdentifier("chat.scrollToBottom")
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                }
+            }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
                     if chat.unsavedConversations.contains(conversation.id) {
@@ -163,13 +218,14 @@ struct ChatConversationView: View {
                     ChatComposerView(
                         chat: chat,
                         conversation: conversation,
+                        activeReasoningNotice: activeReasoningNotice,
                         draft: $draft,
                         attachments: $attachments,
                         editingMessageID: $editingMessageID,
                         onOpenSettings: { isPresentingSettings = true },
                         onCancelEdit: endEditing,
-                        onContinue: { request(.continueReply($0), in: conversation) },
-                        onSubmit: { submit(in: conversation) }
+                        onContinue: { request(.continueReply($0)) },
+                        onSubmit: { submit() }
                     )
                 }
                 .accessibilityElement(children: .contain)
@@ -208,20 +264,21 @@ struct ChatConversationView: View {
 
     private static let bottomAnchor = "chat.bottom"
 
-    private func submit(in conversation: ChatConversation) {
+    private func submit() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         if let editingMessageID {
             guard !text.isEmpty else { return }
-            request(.edit(editingMessageID, text), in: conversation)
+            request(.edit(editingMessageID, text))
         } else {
             guard !text.isEmpty || !attachments.isEmpty else { return }
-            request(.send(text, attachments), in: conversation)
+            request(.send(text, attachments))
         }
     }
 
     /// Asks first when the action would send this history to another server
     /// or delete messages after the rerun point; otherwise performs it directly.
-    private func request(_ action: PendingAction, in conversation: ChatConversation) {
+    private func request(_ action: PendingAction) {
+        guard let conversation = chat.conversation(conversationID) else { return }
         let change = chat.serverChange(for: conversation.id)
         let removed = laterMessageCount(for: action, in: conversation)
         let replacesInterrupted: Bool
@@ -277,6 +334,8 @@ struct ChatConversationView: View {
             chat.continueReply(target, confirmingServerChange: serverChange)
         case .regenerate(let messageID):
             chat.regenerate(messageID, in: conversationID, confirmingServerChange: serverChange)
+        case .deleteMessage(let messageID):
+            chat.deleteMessage(messageID, in: conversationID)
         }
     }
 
@@ -284,7 +343,7 @@ struct ChatConversationView: View {
     private func laterMessageCount(for action: PendingAction, in conversation: ChatConversation) -> Int {
         let messages = conversation.messages
         switch action {
-        case .send, .continueReply:
+        case .send, .continueReply, .deleteMessage:
             return 0
         case .regenerate(let id):
             guard let index = messages.firstIndex(where: { $0.id == id }) else { return 0 }
@@ -337,12 +396,12 @@ struct ChatConversationView: View {
         persistCurrentDraft(for: conversationID)
     }
 
-    private func actions(for message: ChatMessage, in conversation: ChatConversation) -> ChatMessageActions {
+    private func actions(for message: ChatMessage) -> ChatMessageActions {
         ChatMessageActions(
             copy: { ChatClipboard.copy(message.text) },
             previewHTML: { htmlPreview = $0 },
             regenerate: message.role == .assistant
-                ? { request(.regenerate(message.id), in: conversation) } : nil,
+                ? { request(.regenerate(message.id)) } : nil,
             edit: message.role == .user ? { beginEditing(message) } : nil,
             remember: {
                 chat.addMemory(message.text)
@@ -356,7 +415,18 @@ struct ChatConversationView: View {
                     withAnimation { memoryNotice = nil }
                 }
             },
-            delete: { chat.deleteMessage(message.id, in: conversation.id) }
+            delete: {
+                pendingConfirmation = PendingConfirmation(
+                    action: .deleteMessage(message.id),
+                    serverChange: nil,
+                    title: "删除这条消息？",
+                    message: "删除后无法恢复。",
+                    confirmTitle: "删除",
+                    isDestructive: true
+                )
+            },
+            openSettings: { isPresentingSettings = true },
+            refreshModels: { Task { await chat.refreshModels() } }
         )
     }
 }
@@ -366,6 +436,7 @@ private enum PendingAction {
     case send(String, [ChatImageAttachment])
     case edit(UUID, String)
     case regenerate(UUID)
+    case deleteMessage(UUID)
 }
 
 private struct PendingConfirmation {
@@ -380,11 +451,9 @@ private struct PendingConfirmation {
 /// States which server this history came from before anything is sent to the current one.
 private struct ChatServerChangeNotice: View {
     let change: ChatServerChange
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.brandPalette) private var palette
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         Label(text, systemImage: "server.rack")
             .font(.footnote)
             .foregroundStyle(palette.textSecondary)
@@ -403,11 +472,9 @@ private struct ChatServerChangeNotice: View {
 
 private struct ChatConversationEmptyState: View {
     let conversation: ChatConversation
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.brandPalette) private var palette
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         VStack(spacing: 10) {
             Image(systemName: "bubble.left.and.text.bubble.right")
                 .font(.largeTitle)
@@ -424,6 +491,7 @@ private struct ChatConversationEmptyState: View {
                 .foregroundStyle(palette.textMuted)
         }
         .multilineTextAlignment(.center)
+        .padding(.vertical, 12)
         .frame(maxWidth: .infinity)
     }
 }
@@ -433,11 +501,9 @@ struct ChatModelMenu: View {
     let chat: ChatWorkspaceModel
     let conversation: ChatConversation
     let onOpenSettings: () -> Void
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.brandPalette) private var palette
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         Menu {
             Picker("模型", selection: Binding(
                 get: { conversation.modelID },
@@ -515,6 +581,9 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
     let isGenerating: Bool
     let messageCount: Int
     let latestTextLength: Int
+    let scrollToBottomTrigger: Int
+    @Binding var isScrolledAwayFromBottom: Bool
+    @Binding var visibleViewportHeight: CGFloat
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isPinnedToBottom = true
     @State private var isUserScrolling = false
@@ -522,16 +591,27 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        let base = content.onChange(of: messageCount) { oldCount, newCount in
-            guard newCount > oldCount, !isUserScrolling else { return }
-            isPinnedToBottom = true
-            scheduleFollow()
-        }
+        let base = content
+            .onChange(of: messageCount) { oldCount, newCount in
+                guard newCount > oldCount, !isUserScrolling else { return }
+                isPinnedToBottom = true
+                isScrolledAwayFromBottom = false
+                scheduleFollow()
+            }
+            .onChange(of: scrollToBottomTrigger) { _, _ in
+                cancelFollow()
+                isPinnedToBottom = true
+                isScrolledAwayFromBottom = false
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+                    proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                }
+            }
         if #available(iOS 18.0, macOS 15.0, *) {
             base
-                // Explicit follow requests own size changes, including when the keyboard is open.
-                .defaultScrollAnchor(.bottom, for: .initialOffset)
-                .defaultScrollAnchor(.bottom, for: .alignment)
+                // Anchor empty conversations to the top so AX5/landscape content scrolls downward
+                // cleanly instead of colliding with the navigation bar; active threads anchor bottom.
+                .defaultScrollAnchor(messageCount == 0 ? .top : .bottom, for: .initialOffset)
+                .defaultScrollAnchor(messageCount == 0 ? .top : .bottom, for: .alignment)
                 .onScrollPhaseChange { oldPhase, newPhase, context in
                     let wasScrolling = oldPhase == .interacting || oldPhase == .decelerating
                     let isScrolling = newPhase == .interacting || newPhase == .decelerating
@@ -540,11 +620,17 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
                         cancelFollow()
                     }
                     if wasScrolling || isScrolling {
-                        isPinnedToBottom = ScrollMetrics(context.geometry).distanceFromBottom <= 24
+                        let distance = ScrollMetrics(context.geometry).distanceFromBottom
+                        isPinnedToBottom = distance <= 24
+                        updateScrolledAwayState(distance: distance)
                     }
                 }
                 .onScrollGeometryChange(for: ScrollMetrics.self) { ScrollMetrics($0) } action: { oldValue, newValue in
-                    if oldValue.bottomOffset != newValue.bottomOffset, newValue.distanceFromBottom > 1 {
+                    if abs(visibleViewportHeight - newValue.visibleHeight) >= 1 {
+                        visibleViewportHeight = newValue.visibleHeight
+                    }
+                    updateScrolledAwayState(distance: newValue.distanceFromBottom)
+                    if messageCount > 0, oldValue.bottomOffset != newValue.bottomOffset, newValue.distanceFromBottom > 1 {
                         scheduleFollow()
                     }
                 }
@@ -556,8 +642,16 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
                 .onDisappear(perform: cancelFollow)
         } else {
             base
-                .defaultScrollAnchor(.bottom)
+                .defaultScrollAnchor(messageCount == 0 ? .top : .bottom)
                 .onDisappear(perform: cancelFollow)
+        }
+    }
+
+    private func updateScrolledAwayState(distance: CGFloat) {
+        let shouldShow = isScrolledAwayFromBottom ? distance > 48 : distance > 120
+        guard shouldShow != isScrolledAwayFromBottom else { return }
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
+            isScrolledAwayFromBottom = shouldShow
         }
     }
 
@@ -583,6 +677,7 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
     private struct ScrollMetrics: Equatable, Sendable {
         let bottomOffset: CGFloat
         let distanceFromBottom: CGFloat
+        let visibleHeight: CGFloat
 
         @available(iOS 18.0, macOS 15.0, *)
         init(_ geometry: ScrollGeometry) {
@@ -591,6 +686,7 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
                 geometry.contentSize.height + geometry.contentInsets.bottom - geometry.containerSize.height
             )
             distanceFromBottom = max(0, bottomOffset - geometry.contentOffset.y)
+            visibleHeight = max(0, (geometry.containerSize.height - geometry.contentInsets.top - geometry.contentInsets.bottom).rounded(.down))
         }
     }
 }

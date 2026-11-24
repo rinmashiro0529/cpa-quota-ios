@@ -5,6 +5,9 @@ import CPAQuotaChat
 #if canImport(SwiftStreamingMarkdown)
 import SwiftStreamingMarkdown
 #endif
+#if canImport(ImageIO)
+import ImageIO
+#endif
 #if os(iOS)
 import UIKit
 #elseif os(macOS)
@@ -18,46 +21,63 @@ struct ChatMessageActions {
     let edit: (() -> Void)?
     let remember: () -> Void
     let delete: () -> Void
+    let openSettings: (() -> Void)?
+    let refreshModels: (() -> Void)?
 }
 
-struct ChatMessageView: View {
+struct ChatMessageView: View, Equatable {
     let message: ChatMessage
     let isLatestAssistant: Bool
     let isConversationGenerating: Bool
     /// Regenerate needs a usable key and model; a disabled entry never truncates.
     let canRerun: Bool
     let actions: ChatMessageActions
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.brandPalette) private var palette
+    @State private var justCopied = false
+    @State private var copyFeedbackTask: Task<Void, Never>?
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.message == rhs.message
+            && lhs.isLatestAssistant == rhs.isLatestAssistant
+            && lhs.isConversationGenerating == rhs.isConversationGenerating
+            && lhs.canRerun == rhs.canRerun
+    }
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         Group {
             switch message.role {
             case .user:
-                VStack(alignment: .trailing, spacing: 0) {
-                    userBody(palette)
+                HStack(alignment: .bottom, spacing: 4) {
+                    Spacer(minLength: actions.edit == nil ? 40 : 0)
                     if let edit = actions.edit {
                         Button(action: edit) {
                             Label("编辑并重新发送", systemImage: "pencil")
                                 .labelStyle(.iconOnly)
-                                .frame(minWidth: 44, minHeight: 44)
+                                .font(.subheadline)
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.borderless)
-                        .foregroundStyle(palette.textSecondary)
+                        .foregroundStyle(palette.textMuted)
                         .disabled(isConversationGenerating)
                         .accessibilityIdentifier("chat.edit")
                     }
+                    userBody
                 }
-            case .assistant: assistantBody(palette)
+            case .assistant:
+                assistantBody
             }
         }
         .contextMenu { menu }
+        .onDisappear {
+            copyFeedbackTask?.cancel()
+            copyFeedbackTask = nil
+        }
     }
 
     // MARK: User
 
-    private func userBody(_ palette: BrandPalette) -> some View {
+    private var userBody: some View {
         VStack(alignment: .trailing, spacing: 8) {
             if !message.attachments.isEmpty {
                 ChatAttachmentStrip(attachments: message.attachments)
@@ -72,8 +92,6 @@ struct ChatMessageView: View {
                     .background(palette.accentSoft, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
         }
-        .frame(maxWidth: .infinity, alignment: .trailing)
-        .padding(.leading, 40)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(userAccessibilityLabel)
         .accessibilityIdentifier("chat.message.user")
@@ -90,7 +108,7 @@ struct ChatMessageView: View {
 
     // MARK: Assistant
 
-    private func assistantBody(_ palette: BrandPalette) -> some View {
+    private var assistantBody: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
                 Image(systemName: "sparkles")
@@ -122,7 +140,11 @@ struct ChatMessageView: View {
                 #if os(iOS)
                 // Earlier WebKit versions cannot veto the system file picker.
                 if #available(iOS 18.4, *) {
-                    ChatHTMLSnippetButtons(text: message.text, open: actions.previewHTML)
+                    ChatHTMLSnippetButtons(
+                        text: message.text,
+                        isStreaming: message.status == .streaming,
+                        open: actions.previewHTML
+                    )
                 }
                 #endif
             }
@@ -131,24 +153,29 @@ struct ChatMessageView: View {
                 ChatSourcesView(sources: message.searchSources)
             }
 
-            statusFooter(palette)
+            statusFooter
 
             if message.status != .streaming {
-                actionBar(palette)
+                actionBar
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
-    private func statusFooter(_ palette: BrandPalette) -> some View {
+    private var statusFooter: some View {
         if message.status == .stopped {
             Label("已停止生成", systemImage: "stop.circle")
                 .font(.footnote)
                 .foregroundStyle(palette.textSecondary)
         }
         if let failure = message.failure {
-            ChatFailureNotice(failure: failure)
+            ChatFailureNotice(
+                failure: failure,
+                onOpenSettings: actions.openSettings,
+                onRefreshModels: actions.refreshModels,
+                onRegenerate: (isLatestAssistant && !isConversationGenerating && canRerun) ? actions.regenerate : nil
+            )
         }
         if let omitted = message.omittedHistoryCount, omitted > 0 {
             Label("较早的 \(omitted) 条消息未随本轮发送", systemImage: "text.badge.minus")
@@ -181,14 +208,20 @@ struct ChatMessageView: View {
         return parts.joined(separator: " · ") + " Token"
     }
 
-    private func actionBar(_ palette: BrandPalette) -> some View {
+    private var actionBar: some View {
         HStack(spacing: 4) {
             if !message.text.isEmpty {
-                Button(action: actions.copy) {
-                    Label("复制", systemImage: "doc.on.doc")
+                Button {
+                    actions.copy()
+                    triggerCopyFeedback()
+                } label: {
+                    Label(justCopied ? "已复制" : "复制",
+                          systemImage: justCopied ? "checkmark" : "doc.on.doc")
                         .frame(minWidth: 44, minHeight: 44)
                         .contentShape(Rectangle())
                 }
+                .foregroundStyle(justCopied ? palette.statusOK : palette.textSecondary)
+                .accessibilityIdentifier("doc.on.doc")
             }
             if let regenerate = actions.regenerate, isLatestAssistant, !isConversationGenerating {
                 Button(action: regenerate) {
@@ -207,12 +240,25 @@ struct ChatMessageView: View {
         .frame(minHeight: 44)
     }
 
+    private func triggerCopyFeedback() {
+        justCopied = true
+        copyFeedbackTask?.cancel()
+        copyFeedbackTask = Task {
+            try? await Task.sleep(for: .milliseconds(1500))
+            guard !Task.isCancelled else { return }
+            justCopied = false
+        }
+    }
+
     // MARK: Menu
 
     @ViewBuilder
     private var menu: some View {
         if !message.text.isEmpty {
-            Button(action: actions.copy) {
+            Button {
+                actions.copy()
+                triggerCopyFeedback()
+            } label: {
                 Label("复制", systemImage: "doc.on.doc")
             }
         }
@@ -241,17 +287,29 @@ struct ChatMessageView: View {
     }
 }
 
-/// Collapsed by default once the answer starts, so long reasoning does not push the reply away.
+/// Collapsed by default once the answer starts, while still allowing the user to collapse
+/// or expand manually at any time during streaming.
 struct ChatReasoningView: View {
     let reasoning: String
     let isStreaming: Bool
-    @State private var isExpanded = false
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    @State private var isExpanded: Bool
+    @State private var hasUserToggled = false
+    @Environment(\.brandPalette) private var palette
+
+    init(reasoning: String, isStreaming: Bool) {
+        self.reasoning = reasoning
+        self.isStreaming = isStreaming
+        _isExpanded = State(initialValue: isStreaming)
+    }
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
-        DisclosureGroup(isExpanded: Binding(get: { isExpanded || isStreaming }, set: { isExpanded = $0 })) {
+        DisclosureGroup(isExpanded: Binding(
+            get: { isExpanded },
+            set: { newValue in
+                hasUserToggled = true
+                isExpanded = newValue
+            }
+        )) {
             Text(reasoning)
                 .font(.subheadline)
                 .foregroundStyle(palette.textSecondary)
@@ -265,16 +323,19 @@ struct ChatReasoningView: View {
         }
         .padding(12)
         .background(palette.insetSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .onChange(of: isStreaming) { _, nowStreaming in
+            if !hasUserToggled {
+                isExpanded = nowStreaming
+            }
+        }
     }
 }
 
 struct ChatSourcesView: View {
     let sources: [ChatSearchSource]
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.brandPalette) private var palette
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         DisclosureGroup {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(Array(sources.enumerated()), id: \.element.id) { index, source in
@@ -306,31 +367,67 @@ struct ChatSourcesView: View {
 
 struct ChatFailureNotice: View {
     let failure: ChatFailure
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.colorSchemeContrast) private var contrast
+    var onOpenSettings: (() -> Void)? = nil
+    var onRefreshModels: (() -> Void)? = nil
+    var onRegenerate: (() -> Void)? = nil
+    @Environment(\.brandPalette) private var palette
 
     var body: some View {
-        let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         let presentation = ChatFailurePresentation(failure)
-        VStack(alignment: .leading, spacing: 4) {
-            Label {
-                Text(presentation.title).foregroundStyle(palette.textPrimary)
-            } icon: {
-                Image(systemName: presentation.symbolName).foregroundStyle(tint(presentation.severity, palette))
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
+                Label {
+                    Text(presentation.title).foregroundStyle(palette.textPrimary)
+                } icon: {
+                    Image(systemName: presentation.symbolName).foregroundStyle(tint(presentation.severity))
+                }
+                .font(.subheadline.weight(.semibold))
+                Text(presentation.summary)
+                    .font(.footnote)
+                    .foregroundStyle(palette.textSecondary)
             }
-            .font(.subheadline.weight(.semibold))
-            Text(presentation.summary)
-                .font(.footnote)
-                .foregroundStyle(palette.textSecondary)
+            .accessibilityElement(children: .combine)
+
+            recoveryButton
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .quotaContentSurface(cornerRadius: 14)
         .fixedSize(horizontal: false, vertical: true)
-        .accessibilityElement(children: .combine)
     }
 
-    private func tint(_ severity: ErrorSeverityLevel, _ palette: BrandPalette) -> Color {
+    @ViewBuilder
+    private var recoveryButton: some View {
+        switch failure.recoveryAction {
+        case .openSettings(let title):
+            if let onOpenSettings {
+                actionButton(title: title, symbol: "slider.horizontal.3", action: onOpenSettings)
+            }
+        case .refreshModels:
+            if let onRefreshModels {
+                actionButton(title: "刷新模型列表", symbol: "arrow.clockwise", action: onRefreshModels)
+            }
+        case .regenerate:
+            if let onRegenerate {
+                actionButton(title: "重新生成", symbol: "arrow.clockwise", action: onRegenerate)
+            }
+        case nil:
+            EmptyView()
+        }
+    }
+
+    private func actionButton(title: String, symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: symbol)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(palette.actionTint)
+                .frame(minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func tint(_ severity: ErrorSeverityLevel) -> Color {
         switch severity {
         case .neutral: palette.textSecondary
         case .warning: palette.statusWarn
@@ -408,26 +505,133 @@ struct ChatAttachmentStrip: View {
     }
 }
 
+#if os(iOS) || os(macOS)
+private final class ChatThumbnailCache: @unchecked Sendable {
+    static let shared = ChatThumbnailCache()
+
+    #if os(iOS)
+    typealias PlatformImage = UIImage
+    #else
+    typealias PlatformImage = NSImage
+    #endif
+
+    private let cache: NSCache<NSUUID, PlatformImage> = {
+        let cache = NSCache<NSUUID, PlatformImage>()
+        cache.countLimit = 128
+        return cache
+    }()
+
+    func cachedImage(for id: UUID) -> PlatformImage? {
+        cache.object(forKey: id as NSUUID)
+    }
+
+    func store(_ image: PlatformImage, for id: UUID) {
+        cache.setObject(image, forKey: id as NSUUID)
+    }
+
+    nonisolated static func decodeThumbnail(from data: Data, maxPixelSize: Int = 216) -> PlatformImage? {
+        #if canImport(ImageIO)
+        let sourceOptions: [CFString: Any] = [kCGImageSourceShouldCache: false]
+        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions as CFDictionary) else {
+            return fallbackImage(from: data)
+        }
+        let thumbnailOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary) else {
+            return fallbackImage(from: data)
+        }
+        #if os(iOS)
+        return UIImage(cgImage: cgImage)
+        #else
+        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+        #endif
+        #else
+        return fallbackImage(from: data)
+        #endif
+    }
+
+    private nonisolated static func fallbackImage(from data: Data) -> PlatformImage? {
+        #if os(iOS)
+        UIImage(data: data)
+        #else
+        NSImage(data: data)
+        #endif
+    }
+}
+#endif
+
 struct ChatAttachmentThumbnail: View {
     let attachment: ChatImageAttachment
-    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.brandPalette) private var palette
+    @State private var decodedImage: Image?
+    @State private var decodeFailed = false
+
+    private var cachedImage: Image? {
+        #if os(iOS)
+        ChatThumbnailCache.shared.cachedImage(for: attachment.id).map { Image(uiImage: $0) }
+        #elseif os(macOS)
+        ChatThumbnailCache.shared.cachedImage(for: attachment.id).map { Image(nsImage: $0) }
+        #else
+        nil
+        #endif
+    }
 
     var body: some View {
         Group {
-            if let image = Self.image(from: attachment.data) {
+            if let image = decodedImage ?? cachedImage {
                 image
                     .resizable()
                     .scaledToFill()
-            } else {
+            } else if decodeFailed {
                 Image(systemName: "photo")
-                    .foregroundStyle(BrandPalette(colorScheme: colorScheme).textMuted)
+                    .foregroundStyle(palette.textMuted)
+            } else {
+                Color.clear
             }
         }
         .frame(width: 72, height: 72)
-        .background(BrandPalette(colorScheme: colorScheme).insetSurface)
+        .background(palette.insetSurface)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .accessibilityLabel("图片附件")
+        .task(id: attachment.id) {
+            #if os(iOS) || os(macOS)
+            if let cached = ChatThumbnailCache.shared.cachedImage(for: attachment.id) {
+                decodedImage = Self.swiftUIImage(cached)
+                decodeFailed = false
+                return
+            }
+            let id = attachment.id
+            let data = attachment.data
+            let decoded = await Task.detached(priority: .userInitiated) {
+                ChatThumbnailCache.decodeThumbnail(from: data)
+            }.value
+            guard !Task.isCancelled else { return }
+            if let decoded {
+                ChatThumbnailCache.shared.store(decoded, for: id)
+                decodedImage = Self.swiftUIImage(decoded)
+                decodeFailed = false
+            } else {
+                decodeFailed = true
+            }
+            #else
+            decodeFailed = true
+            #endif
+        }
     }
+
+    #if os(iOS) || os(macOS)
+    private static func swiftUIImage(_ image: ChatThumbnailCache.PlatformImage) -> Image {
+        #if os(iOS)
+        Image(uiImage: image)
+        #else
+        Image(nsImage: image)
+        #endif
+    }
+    #endif
 
     static func image(from data: Data) -> Image? {
         #if os(iOS)

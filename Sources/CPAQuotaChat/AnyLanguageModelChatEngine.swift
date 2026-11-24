@@ -465,57 +465,30 @@ private struct CompletionCheckedChunks: AsyncSequence {
 
     struct Iterator: AsyncIteratorProtocol {
         var upstream: HTTPResponseBody.AsyncIterator
-        let mode: StreamCompletionMode
         let live: LiveChatSnapshots?
-        private var reasoningEvents = VisibleReasoningEvents()
-        private var line = [UInt8]()
-        private var exceedsMarkerLength = false
+        private var scanner: SSEStreamScanner
         private var sawCompletion = false
 
         init(upstream: HTTPResponseBody.AsyncIterator, mode: StreamCompletionMode, live: LiveChatSnapshots?) {
             self.upstream = upstream
-            self.mode = mode
             self.live = live
+            self.scanner = SSEStreamScanner(mode: mode)
         }
 
         mutating func next() async throws -> Data? {
             try Task.checkCancellation()
             if sawCompletion { return nil }
             guard let chunk = try await upstream.next() else {
+                if scanner.finish(into: live) {
+                    sawCompletion = true
+                    return nil
+                }
                 throw IncompleteChatStream()
             }
-            // A marker can be split across network chunks. Keep only a bounded
-            // line prefix so ordinary long JSON events need no extra buffering.
-            for byte in chunk {
-                switch byte {
-                case 10, 13: // LF and CR (including CRLF)
-                    if !exceedsMarkerLength {
-                        let text = String(decoding: line, as: UTF8.self)
-                        if isCompletionLine(text) {
-                            sawCompletion = true
-                        }
-                    }
-                    line.removeAll(keepingCapacity: true)
-                    exceedsMarkerLength = false
-                default:
-                    if line.count < 96 { line.append(byte) }
-                    else { exceedsMarkerLength = true }
-                }
+            if scanner.consume(chunk, into: live) {
+                sawCompletion = true
             }
-            if let live { reasoningEvents.consume(chunk, into: live) }
             return chunk
-        }
-
-        private func isCompletionLine(_ text: String) -> Bool {
-            switch mode {
-            case .openAIDoneMarker:
-                guard text.hasPrefix("data:") else { return false }
-                return text.dropFirst(5).trimmingCharacters(in: .whitespaces) == "[DONE]"
-            case .anthropicMessageStop:
-                guard text.hasPrefix("data:") else { return false }
-                let payload = text.dropFirst(5).trimmingCharacters(in: .whitespaces)
-                return payload.contains("\"type\":\"message_stop\"") || payload.contains("\"type\": \"message_stop\"")
-            }
         }
     }
 }
@@ -582,15 +555,30 @@ private struct VisibleReasoningChunk: Decodable {
     let choices: [Choice]
 }
 
-/// Reads complete SSE data events without consuming the SDK's body a second time.
-private struct VisibleReasoningEvents {
+private struct AnthropicEventEnvelope: Decodable {
+    let type: String
+}
+
+/// Single-pass SSE frame scanner that detects stream completion markers and extracts
+/// visible reasoning deltas while reusing one `JSONDecoder` across the stream.
+private struct SSEStreamScanner {
+    private let mode: StreamCompletionMode
+    private let decoder = JSONDecoder()
+    private let dataPrefix = Data("data:".utf8)
+    private let doneMarker = Data("[DONE]".utf8)
     private var line = Data()
     private var data = Data()
     private var skipEvent = false
     private var skipLF = false
-    private let prefix = Data("data:".utf8)
+    private var sawCompletion = false
 
-    mutating func consume(_ chunk: Data, into snapshots: LiveChatSnapshots) {
+    init(mode: StreamCompletionMode) {
+        self.mode = mode
+    }
+
+    /// Scans `chunk` once, publishing any visible reasoning deltas and returning
+    /// `true` once the protocol's completion marker has been observed.
+    mutating func consume(_ chunk: Data, into snapshots: LiveChatSnapshots?) -> Bool {
         for byte in chunk {
             if skipLF {
                 skipLF = false
@@ -599,27 +587,85 @@ private struct VisibleReasoningEvents {
             if byte == 10 || byte == 13 {
                 skipLF = byte == 13
                 if line.isEmpty {
-                    if !skipEvent, !data.isEmpty,
-                       let event = try? JSONDecoder().decode(VisibleReasoningChunk.self, from: data),
-                       let first = event.choices.first {
-                        snapshots.append(first.delta)
-                    }
-                    data.removeAll(keepingCapacity: true)
-                    skipEvent = false
-                } else if !skipEvent, line.starts(with: prefix) {
-                    var value = line.dropFirst(prefix.count)
-                    if value.first == 32 { value = value.dropFirst() }
-                    if !data.isEmpty { data.append(10) }
-                    data.append(contentsOf: value)
+                    finishEvent(into: snapshots)
+                } else {
+                    processLine()
                 }
                 line.removeAll(keepingCapacity: true)
-            } else if line.count + data.count < 1024 * 1024 {
+            } else if line.count < 1024 * 1024 {
                 line.append(byte)
             } else {
-                // A large event still goes to the SDK, including its final transcript.
                 skipEvent = true
-                if line.isEmpty { line.append(byte) }
             }
         }
+        return sawCompletion
+    }
+
+    /// Flushes any trailing SSE event at EOF that was not followed by a blank line.
+    mutating func finish(into snapshots: LiveChatSnapshots?) -> Bool {
+        if !line.isEmpty {
+            processLine()
+            line.removeAll(keepingCapacity: true)
+        }
+        finishEvent(into: snapshots)
+        return sawCompletion
+    }
+
+    private mutating func processLine() {
+        guard line.starts(with: dataPrefix) else { return }
+        var value = line.dropFirst(dataPrefix.count)
+        if value.first == 32 { value = value.dropFirst() }
+        if mode == .openAIDoneMarker, matchesTrimmedDone(value) {
+            sawCompletion = true
+        } else if !skipEvent {
+            if !data.isEmpty { data.append(10) }
+            if data.count + value.count <= 1024 * 1024 {
+                data.append(contentsOf: value)
+            } else {
+                skipEvent = true
+            }
+        }
+    }
+
+    private mutating func finishEvent(into snapshots: LiveChatSnapshots?) {
+        defer {
+            data.removeAll(keepingCapacity: true)
+            skipEvent = false
+        }
+        guard !skipEvent, !data.isEmpty else { return }
+        switch mode {
+        case .openAIDoneMarker:
+            if matchesTrimmedDone(data) {
+                sawCompletion = true
+                return
+            }
+            if let snapshots,
+               let event = try? decoder.decode(VisibleReasoningChunk.self, from: data),
+               let first = event.choices.first {
+                snapshots.append(first.delta)
+            }
+        case .anthropicMessageStop:
+            if let envelope = try? decoder.decode(AnthropicEventEnvelope.self, from: data),
+               envelope.type == "message_stop" {
+                sawCompletion = true
+            }
+        }
+    }
+
+    private func matchesTrimmedDone(_ slice: Data.SubSequence) -> Bool {
+        var start = slice.startIndex
+        var end = slice.endIndex
+        while start < end, slice[start] == 32 || slice[start] == 9 {
+            start = slice.index(after: start)
+        }
+        while end > start {
+            let prev = slice.index(before: end)
+            if slice[prev] == 32 || slice[prev] == 9 {
+                end = prev
+            } else {
+                break
+            }
+        }
+        return slice[start..<end].elementsEqual(doneMarker)
     }
 }
