@@ -19,6 +19,7 @@ public actor CPAClient {
     private let clock: @Sendable () -> Date
     private let cacheLifetime: TimeInterval
     private let limiter: CPAManagementRequestCoordinator
+    private let onQuotaFlightSelected: (@Sendable () -> Void)?
     private var entries: [AccountEntry] = []
     private var records: [String: QuotaRecord] = [:]
     private var pluginProviders: Set<String> = []
@@ -86,17 +87,20 @@ public actor CPAClient {
         self.clock = { Date() }
         self.cacheLifetime = 60
         self.limiter = coordinator ?? CPAManagementRequestCoordinator()
+        self.onQuotaFlightSelected = nil
     }
 
     init(server: CPAServer, managementKey: ManagementKey, transport: any HTTPTransport,
          cacheLifetime: TimeInterval = 60, clock: @escaping @Sendable () -> Date = { Date() },
-         coordinator: CPAManagementRequestCoordinator? = nil) {
+         coordinator: CPAManagementRequestCoordinator? = nil,
+         onQuotaFlightSelected: (@Sendable () -> Void)? = nil) {
         self.server = server
         self.key = managementKey
         self.transport = transport
         self.clock = clock
         self.cacheLifetime = cacheLifetime
         self.limiter = coordinator ?? CPAManagementRequestCoordinator(clock: clock)
+        self.onQuotaFlightSelected = onQuotaFlightSelected
     }
 
     public func makeCAPUsageClient() -> CAPUsageClient {
@@ -265,6 +269,7 @@ public actor CPAClient {
             flights[accountID] = flight
         }
         scope?.register(flight.task)
+        onQuotaFlightSelected?()
         do {
             let snapshot = try await withTaskCancellationHandler {
                 try await flight.task.value

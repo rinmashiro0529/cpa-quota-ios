@@ -99,12 +99,16 @@ public struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     /// On a reply: how many earlier messages were left out of its request to
     /// stay within the history budget. `nil` when nothing was left out.
     public var omittedHistoryCount: Int?
+    /// Non-nil when the requested reasoning effort was downgraded or omitted
+    /// for compatibility with the target model or endpoint.
+    public var reasoningResolution: ChatReasoningResolution?
 
     public init(
         id: UUID = UUID(), role: Role, text: String, reasoning: String? = nil,
         attachments: [ChatImageAttachment] = [], modelID: String? = nil, usage: ChatTokenUsage? = nil,
         searchSources: [ChatSearchSource] = [], status: Status = .complete, failure: ChatFailure? = nil,
-        createdAt: Date = Date(), omittedHistoryCount: Int? = nil
+        createdAt: Date = Date(), omittedHistoryCount: Int? = nil,
+        reasoningResolution: ChatReasoningResolution? = nil
     ) {
         self.id = id
         self.role = role
@@ -118,16 +122,50 @@ public struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
         self.failure = failure
         self.createdAt = createdAt
         self.omittedHistoryCount = omittedHistoryCount
+        self.reasoningResolution = reasoningResolution
     }
 }
 
 public enum ChatReasoningEffort: String, CaseIterable, Codable, Identifiable, Sendable {
     case automatic
+    case off
     case low
     case medium
     case high
+    case xhigh
+    case max
 
     public var id: String { rawValue }
+
+    /// Explicit discrete slider stops ordered from off to max.
+    public static let explicitLevels: [ChatReasoningEffort] = [
+        .off, .low, .medium, .high, .xhigh, .max
+    ]
+}
+
+public struct ChatReasoningResolution: Codable, Equatable, Sendable {
+    public enum Outcome: String, Codable, Equatable, Sendable {
+        case applied
+        case downgraded
+        case omitted
+    }
+
+    public let requested: ChatReasoningEffort
+    public let applied: ChatReasoningEffort?
+    public let outcome: Outcome
+    public let usedFallbackProtocol: Bool
+
+    public init(
+        requested: ChatReasoningEffort,
+        applied: ChatReasoningEffort?,
+        outcome: Outcome,
+        usedFallbackProtocol: Bool = false
+    ) {
+        self.requested = requested
+        self.applied = applied
+        self.outcome = outcome
+        self.usedFallbackProtocol = usedFallbackProtocol
+    }
 }
 
 public struct ChatConversation: Identifiable, Codable, Equatable, Sendable {
@@ -240,10 +278,24 @@ public struct ChatSettings: Codable, Equatable, Sendable {
         set { modelStrategy = newValue }
     }
     public private(set) var recentModelIDs: [String: String]?
+    /// Per-server, per-model last explicit reasoning selection.
+    /// Optional storage keeps settings written before this preference existed readable.
+    public private(set) var recentReasoningEfforts: [String: [String: ChatReasoningEffort]]?
 
     mutating func rememberModel(_ id: String, for server: String) {
         if recentModelIDs == nil { recentModelIDs = [:] }
         recentModelIDs?[server] = id
+    }
+
+    mutating func rememberReasoningEffort(_ effort: ChatReasoningEffort, for modelID: String, server: String) {
+        if recentReasoningEfforts == nil { recentReasoningEfforts = [:] }
+        var perServer = recentReasoningEfforts?[server] ?? [:]
+        perServer[modelID] = effort
+        recentReasoningEfforts?[server] = perServer
+    }
+
+    func rememberedReasoningEffort(for modelID: String, server: String) -> ChatReasoningEffort? {
+        recentReasoningEfforts?[server]?[modelID]
     }
     public var searchProvider: ChatSearchProvider?
     public var notifiesOnBackgroundCompletion: Bool

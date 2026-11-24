@@ -6,11 +6,14 @@ import AnyLanguageModel
 import HTTPTypes
 import CPAQuotaKit
 
-/// `ChatEngine` on AnyLanguageModel's `OpenAILanguageModel` in Chat Completions
-/// mode against `{baseURL}chat/completions`. Each request builds a fresh
-/// `LanguageModelSession` from the request's transcript.
+/// `ChatEngine` backed by AnyLanguageModel's OpenAI Chat Completions and Anthropic
+/// Messages clients, with cross-provider reasoning effort mapping, zero-output
+/// compatibility fallback, and session-scoped capability caching.
 public struct AnyLanguageModelChatEngine: ChatEngine {
+    // Budget for one protocol change, four explicit efforts, and a final request at the provider default.
+    private static let maximumAttempts = 6
     private let transport: any AnyLanguageModel.HTTPTransport
+    private let capabilityCache: ChatReasoningCapabilityCache
 
     public init() {
         let configuration = URLSessionConfiguration.ephemeral
@@ -25,8 +28,16 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
                                        delegate: RedirectRefusingDelegate(), delegateQueue: nil))
     }
 
-    init(transport: any AnyLanguageModel.HTTPTransport) {
+    init(
+        transport: any AnyLanguageModel.HTTPTransport,
+        capabilityCache: ChatReasoningCapabilityCache = ChatReasoningCapabilityCache()
+    ) {
         self.transport = transport
+        self.capabilityCache = capabilityCache
+    }
+
+    public func resetReasoningCapabilities() {
+        capabilityCache.reset()
     }
 
     private final class RedirectRefusingDelegate: NSObject, URLSessionTaskDelegate {
@@ -42,22 +53,7 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let live = LiveChatSnapshots(continuation)
-                    let session = makeSession(for: request, live: live)
-                    let response = session.streamResponse(to: makePrompt(for: request),
-                                                          options: makeOptions(for: request, streaming: true))
-                    for try await snapshot in response {
-                        live.publish(text: snapshot.content,
-                                     transcriptReasoning: Self.reasoningText(snapshot.transcriptEntries))
-                        let usage = snapshot.usage
-                        if usage.input.totalTokenCount > 0 || usage.output.totalTokenCount > 0
-                            || usage.output.reasoningTokenCount > 0 {
-                            continuation.yield(.usage(ChatTokenUsage(
-                                inputTokens: usage.input.totalTokenCount,
-                                outputTokens: usage.output.totalTokenCount,
-                                reasoningTokens: usage.output.reasoningTokenCount)))
-                        }
-                    }
+                    try await self.runStreamWithFallback(request, continuation: continuation)
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -68,35 +64,223 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
     }
 
     public func complete(_ request: ChatEngineRequest) async throws -> String {
-        let session = makeSession(for: request)
-        let response = try await session.respond(to: makePrompt(for: request),
-                                                 options: makeOptions(for: request))
-        return response.content
-    }
+        let serverKey = ChatReasoningPolicy.serverKey(for: request.baseURL)
+        var plan = initialPlan(for: request, serverKey: serverKey)
 
-    private func makeSession(for request: ChatEngineRequest, live: LiveChatSnapshots? = nil) -> LanguageModelSession {
-        let model = OpenAILanguageModel(
-            baseURL: request.baseURL,
-            apiKey: request.apiKey.exposedValue,
-            model: request.modelID,
-            apiVariant: .chatCompletions,
-            transport: CompletionCheckingTransport(base: transport, live: live))
-        return LanguageModelSession(model: model, transcript: Self.makeTranscript(for: request))
-    }
-
-    private func makeOptions(for request: ChatEngineRequest, streaming: Bool = false) -> GenerationOptions {
-        var options = GenerationOptions()
-        let effort: OpenAILanguageModel.CustomGenerationOptions.ReasoningEffort? = switch request.reasoningEffort {
-        case .automatic: nil
-        case .low: .low
-        case .medium: .medium
-        case .high: .high
+        for attempt in 0..<Self.maximumAttempts {
+            try Task.checkCancellation()
+            do {
+                let session = makeSession(for: request, plan: plan, live: nil)
+                let response = try await session.respond(
+                    to: makePrompt(for: request),
+                    options: makeOptions(for: request, plan: plan, streaming: false)
+                )
+                return response.content
+            } catch {
+                guard let nextPlan = resolveFallback(
+                    for: error, from: plan, serverKey: serverKey, modelID: request.modelID, attempt: attempt
+                ) else {
+                    throw error
+                }
+                plan = nextPlan
+            }
         }
-        if streaming || effort != nil {
-            // AnyLanguageModel 1.3.0 only requests usage automatically on OpenAI's own host.
-            options[custom: OpenAILanguageModel.self] = .init(
-                reasoningEffort: effort,
-                extraBody: streaming ? ["stream_options": .object(["include_usage": .bool(true)])] : nil)
+        preconditionFailure("Fallback loop must return or throw before exit")
+    }
+
+    private func runStreamWithFallback(
+        _ request: ChatEngineRequest,
+        continuation: AsyncThrowingStream<ChatEngineEvent, any Error>.Continuation
+    ) async throws {
+        let serverKey = ChatReasoningPolicy.serverKey(for: request.baseURL)
+        var plan = initialPlan(for: request, serverKey: serverKey)
+        var usedFallbackProtocol = false
+
+        for attempt in 0..<Self.maximumAttempts {
+            try Task.checkCancellation()
+            let live = LiveChatSnapshots(continuation)
+            do {
+                let session = makeSession(for: request, plan: plan, live: live)
+                let response = session.streamResponse(
+                    to: makePrompt(for: request),
+                    options: makeOptions(for: request, plan: plan, streaming: true)
+                )
+                for try await snapshot in response {
+                    live.publish(text: snapshot.content,
+                                 transcriptReasoning: Self.reasoningText(snapshot.transcriptEntries))
+                    let usage = snapshot.usage
+                    if usage.input.totalTokenCount > 0 || usage.output.totalTokenCount > 0
+                        || usage.output.reasoningTokenCount > 0 {
+                        live.markEmitted()
+                        continuation.yield(.usage(ChatTokenUsage(
+                            inputTokens: usage.input.totalTokenCount,
+                            outputTokens: usage.output.totalTokenCount,
+                            reasoningTokens: usage.output.reasoningTokenCount)))
+                    }
+                }
+                continuation.yield(.reasoningResolution(plan.resolution(usedFallbackProtocol: usedFallbackProtocol)))
+                return
+            } catch {
+                // Never retry after any output reached the caller: avoids duplicate billing or spliced text.
+                guard !live.hasEmitted,
+                      let nextPlan = resolveFallback(
+                        for: error, from: plan, serverKey: serverKey, modelID: request.modelID, attempt: attempt
+                      ) else {
+                    throw error
+                }
+                if nextPlan.protocolKind != plan.protocolKind {
+                    usedFallbackProtocol = true
+                }
+                plan = nextPlan
+            }
+        }
+    }
+
+    private func initialPlan(for request: ChatEngineRequest, serverKey: String) -> ChatReasoningWirePlan {
+        ChatReasoningPolicy.makePlan(
+            requested: request.reasoningEffort,
+            protocolKind: ChatReasoningPolicy.initialProtocol(for: request, cache: capabilityCache),
+            modelID: request.modelID,
+            profile: capabilityCache.profile(for: serverKey, modelID: request.modelID)
+        )
+    }
+
+    /// Updates capability cache for a zero-output rejection and returns the next plan
+    /// when a strictly different retry plan is available; otherwise returns `nil`.
+    private func resolveFallback(
+        for error: any Error,
+        from plan: ChatReasoningWirePlan,
+        serverKey: String,
+        modelID: String,
+        attempt: Int
+    ) -> ChatReasoningWirePlan? {
+        guard attempt + 1 < Self.maximumAttempts,
+              let rejection = ChatReasoningPolicy.classifyError(error, plan: plan) else {
+            return nil
+        }
+        ChatReasoningPolicy.recordRejection(
+            rejection,
+            for: plan,
+            server: serverKey,
+            modelID: modelID,
+            cache: capabilityCache
+        )
+        let nextProtocol: ChatAPIProtocol = rejection == .anthropicEndpointUnsupported
+            ? .openAIChatCompletions
+            : plan.protocolKind
+        var nextProfile = capabilityCache.profile(for: serverKey, modelID: modelID)
+        if attempt + 2 == Self.maximumAttempts {
+            // Reserve the last attempt for the provider default without caching untested restrictions.
+            nextProfile.reasoningUnsupported = true
+        }
+        let nextPlan = ChatReasoningPolicy.makePlan(
+            requested: plan.requested,
+            protocolKind: nextProtocol,
+            modelID: modelID,
+            profile: nextProfile
+        )
+        return nextPlan != plan ? nextPlan : nil
+    }
+
+    private func makeSession(
+        for request: ChatEngineRequest,
+        plan: ChatReasoningWirePlan,
+        live: LiveChatSnapshots?
+    ) -> LanguageModelSession {
+        switch plan.protocolKind {
+        case .anthropicMessages:
+            let model = AnthropicLanguageModel(
+                baseURL: ChatReasoningPolicy.anthropicBaseURL(from: request.baseURL),
+                apiKey: request.apiKey.exposedValue,
+                model: request.modelID,
+                transport: CompletionCheckingTransport(base: transport, mode: .anthropicMessageStop, live: nil)
+            )
+            return LanguageModelSession(
+                model: model,
+                transcript: Self.makeTranscript(for: request, includeInstructions: false)
+            )
+        case .openAIChatCompletions:
+            let model = OpenAILanguageModel(
+                baseURL: request.baseURL,
+                apiKey: request.apiKey.exposedValue,
+                model: request.modelID,
+                apiVariant: .chatCompletions,
+                transport: CompletionCheckingTransport(base: transport, mode: .openAIDoneMarker, live: live)
+            )
+            return LanguageModelSession(
+                model: model,
+                transcript: Self.makeTranscript(for: request, includeInstructions: true)
+            )
+        case .openAIResponses:
+            let model = OpenAILanguageModel(
+                baseURL: request.baseURL,
+                apiKey: request.apiKey.exposedValue,
+                model: request.modelID,
+                apiVariant: .responses,
+                transport: CompletionCheckingTransport(base: transport, mode: .openAIDoneMarker, live: live)
+            )
+            return LanguageModelSession(
+                model: model,
+                transcript: Self.makeTranscript(for: request, includeInstructions: true)
+            )
+        }
+    }
+
+    private func makeOptions(
+        for request: ChatEngineRequest,
+        plan: ChatReasoningWirePlan,
+        streaming: Bool
+    ) -> GenerationOptions {
+        var options = GenerationOptions()
+        switch plan.protocolKind {
+        case .openAIChatCompletions:
+            var extraBody: [String: JSONValue] = [:]
+            if streaming {
+                // AnyLanguageModel 1.3.0 only requests usage automatically on OpenAI's own host.
+                extraBody["stream_options"] = .object(["include_usage": .bool(true)])
+            }
+            if let wireEffort = plan.openAIWireEffort {
+                // Use extraBody so levels beyond the SDK enum (`xhigh`, `max`) pass through cleanly.
+                extraBody["reasoning_effort"] = .string(wireEffort)
+            }
+            if !extraBody.isEmpty {
+                options[custom: OpenAILanguageModel.self] = .init(extraBody: extraBody)
+            }
+
+        case .openAIResponses:
+            var extraBody: [String: JSONValue] = [:]
+            if let reasoningObj = plan.openAIResponsesReasoningObject {
+                extraBody["reasoning"] = .object(reasoningObj)
+            }
+            if !extraBody.isEmpty {
+                options[custom: OpenAILanguageModel.self] = .init(extraBody: extraBody)
+            }
+
+        case .anthropicMessages:
+            options.maximumResponseTokens = plan.anthropicMaxTokens ?? ChatReasoningPolicy.defaultAnthropicMaxTokens
+            let thinking: AnthropicLanguageModel.CustomGenerationOptions.Thinking? = switch plan.anthropicStyle {
+            case .adaptive:
+                .adaptive()
+            case .budget:
+                plan.anthropicBudgetTokens.map { .enabled(budgetTokens: $0) }
+            case nil:
+                nil
+            }
+            let effort: AnthropicLanguageModel.CustomGenerationOptions.Effort? = plan.anthropicEffort.flatMap {
+                AnthropicLanguageModel.CustomGenerationOptions.Effort(rawValue: $0)
+            }
+            var extraBody: [String: JSONValue] = [:]
+            if !request.instructions.isEmpty {
+                // Send system prompt as top-level `system` rather than an extra user turn.
+                extraBody["system"] = .string(request.instructions)
+            }
+            if thinking != nil || effort != nil || !extraBody.isEmpty {
+                options[custom: AnthropicLanguageModel.self] = .init(
+                    thinking: thinking,
+                    extraBody: extraBody.isEmpty ? nil : extraBody,
+                    effort: effort
+                )
+            }
         }
         return options
     }
@@ -111,9 +295,9 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
         }
     }
 
-    static func makeTranscript(for request: ChatEngineRequest) -> Transcript {
+    static func makeTranscript(for request: ChatEngineRequest, includeInstructions: Bool = true) -> Transcript {
         var entries: [Transcript.Entry] = []
-        if !request.instructions.isEmpty {
+        if includeInstructions, !request.instructions.isEmpty {
             entries.append(.instructions(Transcript.Instructions(
                 segments: [.text(Transcript.TextSegment(content: request.instructions))],
                 toolDefinitions: [])))
@@ -194,9 +378,15 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
     }
 }
 
-/// AnyLanguageModel 1.3.0 treats EOF as success even if CPA didn't finish the SSE stream.
+private enum StreamCompletionMode: Sendable {
+    case openAIDoneMarker
+    case anthropicMessageStop
+}
+
+/// AnyLanguageModel 1.3.0 treats EOF as success even if the upstream didn't finish the SSE stream.
 private struct CompletionCheckingTransport: AnyLanguageModel.HTTPTransport {
     let base: any AnyLanguageModel.HTTPTransport
+    let mode: StreamCompletionMode
     let live: LiveChatSnapshots?
 
     func send<Return>(request: HTTPRequest, body: Data?, timeout: Duration?,
@@ -205,7 +395,10 @@ private struct CompletionCheckingTransport: AnyLanguageModel.HTTPTransport {
             guard request.headerFields[.accept] == "text/event-stream", response.status.kind == .successful else {
                 return try await responseHandler(response, chunks)
             }
-            return try await responseHandler(response, HTTPResponseBody(CompletionCheckedChunks(body: chunks, live: live)))
+            return try await responseHandler(
+                response,
+                HTTPResponseBody(CompletionCheckedChunks(body: chunks, mode: mode, live: live))
+            )
         }
     }
 }
@@ -214,20 +407,23 @@ private struct IncompleteChatStream: Error {}
 
 private struct CompletionCheckedChunks: AsyncSequence {
     let body: HTTPResponseBody
+    let mode: StreamCompletionMode
     let live: LiveChatSnapshots?
 
-    func makeAsyncIterator() -> Iterator { Iterator(upstream: body.makeAsyncIterator(), live: live) }
+    func makeAsyncIterator() -> Iterator { Iterator(upstream: body.makeAsyncIterator(), mode: mode, live: live) }
 
     struct Iterator: AsyncIteratorProtocol {
         var upstream: HTTPResponseBody.AsyncIterator
+        let mode: StreamCompletionMode
         let live: LiveChatSnapshots?
         private var reasoningEvents = VisibleReasoningEvents()
         private var line = [UInt8]()
         private var exceedsMarkerLength = false
         private var sawCompletion = false
 
-        init(upstream: HTTPResponseBody.AsyncIterator, live: LiveChatSnapshots?) {
+        init(upstream: HTTPResponseBody.AsyncIterator, mode: StreamCompletionMode, live: LiveChatSnapshots?) {
             self.upstream = upstream
+            self.mode = mode
             self.live = live
         }
 
@@ -244,23 +440,35 @@ private struct CompletionCheckedChunks: AsyncSequence {
                 case 10, 13: // LF and CR (including CRLF)
                     if !exceedsMarkerLength {
                         let text = String(decoding: line, as: UTF8.self)
-                        if text.hasPrefix("data:"),
-                           text.dropFirst(5).trimmingCharacters(in: .whitespaces) == "[DONE]" {
+                        if isCompletionLine(text) {
                             sawCompletion = true
                         }
                     }
                     line.removeAll(keepingCapacity: true)
                     exceedsMarkerLength = false
                 default:
-                    if line.count < 64 { line.append(byte) }
+                    if line.count < 96 { line.append(byte) }
                     else { exceedsMarkerLength = true }
                 }
             }
             if let live { reasoningEvents.consume(chunk, into: live) }
             return chunk
         }
+
+        private func isCompletionLine(_ text: String) -> Bool {
+            switch mode {
+            case .openAIDoneMarker:
+                guard text.hasPrefix("data:") else { return false }
+                return text.dropFirst(5).trimmingCharacters(in: .whitespaces) == "[DONE]"
+            case .anthropicMessageStop:
+                guard text.hasPrefix("data:") else { return false }
+                let payload = text.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                return payload.contains("\"type\":\"message_stop\"") || payload.contains("\"type\": \"message_stop\"")
+            }
+        }
     }
 }
+
 /// Combines the SDK's cumulative answer with visible reasoning from the same request.
 /// The transport and the SDK consume on different tasks; publish each pair under one lock.
 private final class LiveChatSnapshots: @unchecked Sendable {
@@ -269,9 +477,18 @@ private final class LiveChatSnapshots: @unchecked Sendable {
     private var text = ""
     private var reasoning = ""
     private var reasoningContent = ""
+    private var emitted = false
 
     init(_ output: AsyncThrowingStream<ChatEngineEvent, any Error>.Continuation) {
         self.output = output
+    }
+
+    var hasEmitted: Bool {
+        lock.withLock { emitted }
+    }
+
+    func markEmitted() {
+        lock.withLock { emitted = true }
     }
 
     func append(_ delta: VisibleReasoningChunk.Choice.Delta) {
@@ -279,6 +496,7 @@ private final class LiveChatSnapshots: @unchecked Sendable {
         lock.withLock {
             reasoning += delta.reasoning ?? ""
             reasoningContent += delta.reasoning_content ?? ""
+            emitted = true
             output.yield(.snapshot(text: text, reasoning: visibleReasoning))
         }
     }
@@ -286,7 +504,11 @@ private final class LiveChatSnapshots: @unchecked Sendable {
     func publish(text: String, transcriptReasoning: String?) {
         lock.withLock {
             self.text = text
-            output.yield(.snapshot(text: text, reasoning: transcriptReasoning ?? visibleReasoning))
+            let combinedReasoning = transcriptReasoning ?? visibleReasoning
+            if !text.isEmpty || combinedReasoning?.isEmpty == false {
+                emitted = true
+            }
+            output.yield(.snapshot(text: text, reasoning: combinedReasoning))
         }
     }
 

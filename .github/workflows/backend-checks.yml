@@ -67,17 +67,22 @@ jobs:
             major: '27'
             runtime: '27.0'
             device: 'iPhone 18 Pro'
+            preparation_seconds: 300
             layout: standard-iphone
             evidence: xcode27-iphone18pro
           - runner: xcode-27
             xcode: '27.1'
             major: '27'
             runtime: '27.1'
+            # Cold Duo boots have used about 296 seconds, including verification.
             device: 'iPhone Duo'
+            preparation_seconds: 420
             layout: duo-adaptive
             evidence: xcode27-duo
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 75
+    # A cold hosted runner reached the 75-minute limit with UI tests still
+    # passing. Allow time for the remaining tests, Release build and evidence.
+    timeout-minutes: 105
     env:
       DEVELOPER_DIR: /Applications/Xcode_${{ matrix.xcode }}.app/Contents/Developer
     steps:
@@ -128,7 +133,7 @@ jobs:
           python3 -I ci/prepare_simulator.py
           --selection "$RUNNER_TEMP/FrontendEvidence/simulator.json"
           --report "$RUNNER_TEMP/FrontendEvidence/simulator-readiness.json"
-          --timeout-seconds 300
+          --timeout-seconds ${{ matrix.preparation_seconds }}
       - name: Run native unit and UI regression tests
         shell: bash
         env:

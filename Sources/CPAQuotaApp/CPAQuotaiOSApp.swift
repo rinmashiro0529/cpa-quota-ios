@@ -84,7 +84,7 @@ private struct UITestWorkspace: View {
                     .safeAreaInset(edge: .top) {
                         VStack(spacing: 2) {
                             #if os(iOS)
-                            if ProcessInfo.processInfo.arguments.contains("--ui-test-chat-html"), gatedChat.generation > 0,
+                            if ProcessInfo.processInfo.arguments.contains("--ui-test-chat-html-copy-check"), gatedChat.generation > 0,
                                !gatedChat.isWaiting {
                                 Button(copyCheck) {
                                     switch UIPasteboard.general.string {
@@ -321,7 +321,14 @@ private struct UITestChatModelCatalog: ChatModelCatalog {
     }
 
     func releaseAnswer() {
-        let answer = ProcessInfo.processInfo.arguments.contains("--ui-test-chat-html") ? Self.htmlFixture : "放行后的正文"
+        let answer: String
+        if ProcessInfo.processInfo.arguments.contains("--ui-test-chat-html") {
+            answer = Self.htmlFixture
+        } else if !paragraphs.isEmpty {
+            answer = paragraphs.joined(separator: "\n\n")
+        } else {
+            answer = "放行后的正文"
+        }
         current?.yield(.snapshot(text: answer, reasoning: "可见推理片段"))
         current?.finish()
         current = nil
@@ -336,9 +343,10 @@ private struct UITestChatModelCatalog: ChatModelCatalog {
         ordinary code
         ~~~
         ~~~html
+        <p>Second fragment
         """
-    static let htmlFixture = firstHTMLChunk + "\n" + """
-        <p>Second fragment</p>
+    static let htmlFixture = firstHTMLChunk + """
+        </p>
         ~~~
         ~~~html
         <p>incomplete
@@ -374,6 +382,19 @@ private actor UITestChatEngine: ChatEngine {
     nonisolated func stream(_ request: ChatEngineRequest) -> AsyncThrowingStream<ChatEngineEvent, any Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
+                if ProcessInfo.processInfo.arguments.contains("--ui-test-chat-reasoning") {
+                    continuation.yield(.snapshot(text: "已按思考等级「\(request.reasoningEffort.rawValue)」回复", reasoning: nil))
+                    if ProcessInfo.processInfo.arguments.contains("--ui-test-chat-reasoning-fallback"),
+                       request.reasoningEffort == .max {
+                        continuation.yield(.reasoningResolution(ChatReasoningResolution(
+                            requested: .max,
+                            applied: .high,
+                            outcome: .downgraded
+                        )))
+                    }
+                    continuation.finish()
+                    return
+                }
                 let attempt = await self.nextAttempt()
                 if attempt == 1 {
                     continuation.yield(.snapshot(text: "第一段夹具回复", reasoning: nil))

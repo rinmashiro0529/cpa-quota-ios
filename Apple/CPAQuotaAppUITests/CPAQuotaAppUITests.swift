@@ -6,6 +6,10 @@ import notify
 /// transport fixtures. Screenshots accompany assertions; they are not treated
 /// as proof of a pass by themselves.
 final class CPAQuotaAppUITests: XCTestCase {
+    // WebKit's accessibility tree can take nearly 15 seconds on a hosted
+    // simulator, even after the preview itself appears.
+    private let htmlPreviewContentTimeout: TimeInterval = 30
+
     override func setUpWithError() throws {
         continueAfterFailure = false
     }
@@ -378,9 +382,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         expectExists(input, in: app)
         input.tap()
         input.typeText("Fixture question")
-        let send = element("chat.send", in: app)
-        expectExists(send, in: app)
-        send.tap()
+        tapChatSend(in: app)
         let partial = textContaining("第一段夹具回复", in: app)
         expectExists(partial, in: app)
         let stop = element("chat.stop", in: app)
@@ -608,7 +610,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         let input = element("chat.input", in: app)
         input.tap()
         input.typeText("S1")
-        element("chat.send", in: app).tap()
+        tapChatSend(in: app)
         let reasoning = app.staticTexts["可见推理片段"]
         expectExists(reasoning, in: app)
         XCTAssertTrue(reasoning.isHittable)
@@ -627,7 +629,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         let input = element("chat.input", in: app)
         input.tap()
         input.typeText("B4")
-        element("chat.send", in: app).tap()
+        tapChatSend(in: app)
         let checkpoint = element("ui-test.chat.checkpoint", in: app)
         expectExists(checkpoint, in: app)
         checkpoint.tap()
@@ -741,7 +743,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         let input = element("chat.input", in: app)
         input.tap()
         input.typeText("Reading anchor")
-        element("chat.send", in: app).tap()
+        tapChatSend(in: app)
         let extend = element("ui-test.chat.extend", in: app)
         extend.tap()
         let last = textContaining("阅读段落 18", in: app)
@@ -757,6 +759,17 @@ final class CPAQuotaAppUITests: XCTestCase {
         expectExists(textContaining("阅读段落 36", in: app), in: app)
         XCTAssertTrue(viewport.contains(CGPoint(x: first.frame.midX, y: first.frame.midY)))
         XCTAssertEqual(first.frame.midY, originalY, accuracy: 30)
+
+        let firstParagraph = textContaining("阅读段落 1", in: app)
+        let edit = element("chat.edit", in: app)
+        expectExists(firstParagraph, in: app)
+        XCTAssertFalse(edit.isEnabled)
+        let replyOffset = firstParagraph.frame.minY - first.frame.minY
+        element("ui-test.chat.release", in: app).tap()
+        expectExists(edit, in: app)
+        XCTAssertTrue(edit.isEnabled)
+        XCTAssertTrue(viewport.contains(CGPoint(x: first.frame.midX, y: first.frame.midY)))
+        XCTAssertEqual(firstParagraph.frame.minY - first.frame.minY, replyOffset, accuracy: 2)
     }
 
     @MainActor
@@ -768,7 +781,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         let input = element("chat.input", in: app)
         input.tap()
         input.typeText("Earlier")
-        element("chat.send", in: app).tap()
+        tapChatSend(in: app)
         element("ui-test.chat.release", in: app).tap()
         expectExists(textContaining("放行后的正文", in: app), in: app)
         input.tap()
@@ -814,6 +827,9 @@ final class CPAQuotaAppUITests: XCTestCase {
             _ = await rotateDeviceAndWaitForWindow(in: app, policy: layoutPolicy(in: app))
             XCTAssertTrue(menu.isHittable)
             XCTAssertTrue(element("chat.attach", in: app).isHittable)
+            let reasoning = element("chat.reasoningTrigger", in: app)
+            XCTAssertTrue(reasoning.isHittable)
+            XCTAssertLessThanOrEqual(element("chat.input", in: app).frame.maxY, reasoning.frame.minY + 2)
             XCTAssertTrue(app.frame.contains(CGPoint(x: send.frame.midX, y: send.frame.midY)))
             attach(app, name: "chat-large-landscape-" + appearance)
         }
@@ -831,8 +847,11 @@ final class CPAQuotaAppUITests: XCTestCase {
         let input = element("chat.input", in: app)
         input.tap()
         input.typeText("M1")
-        element("chat.send", in: app).tap()
-        element("ui-test.chat.release", in: app).tap()
+        tapChatSend(in: app)
+        expectExists(element("chat.stop", in: app), in: app)
+        let release = element("ui-test.chat.release", in: app)
+        expectExists(release, in: app)
+        release.tap()
         expectExists(textContaining("放行后的正文", in: app), in: app)
         let backButton = element("BackButton", in: app)
         expectExists(backButton, in: app)
@@ -860,7 +879,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         let next = element("chat.input", in: removed)
         next.tap()
         next.typeText("M4")
-        element("chat.send", in: removed).tap()
+        tapChatSend(in: removed)
         expectExists(element("chat.stop", in: removed), in: removed)
     }
 
@@ -875,15 +894,176 @@ final class CPAQuotaAppUITests: XCTestCase {
     }
 
     @MainActor
+    func testChatReasoningPickerSelectsPersistsAndShowsFallbackNotice() {
+        let args = [
+            "--ui-test-chat-store=\(UUID().uuidString)",
+            "--ui-test-chat-reasoning",
+            "--ui-test-chat-reasoning-fallback",
+            "--ui-test-theme=dark",
+        ]
+        let app = launch(connected: true, arguments: args)
+        defer { app.terminate() }
+        selectTab("chat", title: "AI 对话", in: app)
+        element("chat.emptyNew", in: app).tap()
+
+        let trigger = element("chat.reasoningTrigger", in: app)
+        let input = element("chat.input", in: app)
+        expectExists(trigger, in: app)
+        expectExists(input, in: app)
+        XCTAssertEqual(trigger.value as? String, "自动")
+        let attachment = element("chat.attach", in: app)
+        let send = element("chat.send", in: app)
+        // A side tab bar can reduce the space available to the composer.
+        // The accessory group and Send keep the same horizontal placement in both layouts.
+        let availableFieldWidth = send.frame.minX - trigger.frame.maxX - 8
+        XCTAssertEqual(attachment.frame.midY, trigger.frame.midY, accuracy: 4)
+        XCTAssertEqual(send.frame.midY, trigger.frame.midY, accuracy: 4)
+        if availableFieldWidth >= 142 {
+            XCTAssertEqual(trigger.frame.midY, input.frame.midY, accuracy: 4)
+        } else if availableFieldWidth < 138 {
+            XCTAssertLessThan(input.frame.maxY, trigger.frame.minY)
+        }
+
+        trigger.tap()
+        let slider = element("chat.reasoningSlider", in: app)
+        expectExists(slider, in: app)
+        let xhighOption = element("chat.reasoningOption.xhigh", in: app)
+        expectExists(xhighOption, in: app)
+        xhighOption.tap()
+        let activeTitle = element("chat.reasoningActiveTitle", in: app)
+        expectExists(activeTitle, in: app)
+        expectPredicate(NSPredicate(format: "label == %@", "极高"), on: activeTitle, in: app,
+                        message: "Selecting xhigh must update the popover header.",
+                        finalCheck: { activeTitle.label == "极高" })
+        attach(app, name: "chat-reasoning-popover-dark")
+
+        element("chat.reasoningOption.max", in: app).tap()
+        expectPredicate(NSPredicate(format: "label == %@", "最大"), on: activeTitle, in: app,
+                        message: "Selecting max must update the popover header.",
+                        finalCheck: { activeTitle.label == "最大" })
+        if slider.exists {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2)).tap()
+            expectPredicate(NSPredicate(format: "exists == false"), on: slider, in: app,
+                            message: "Tapping outside must dismiss the reasoning popover.",
+                            finalCheck: { !slider.exists })
+        }
+        expectPredicate(NSPredicate(format: "value == %@", "最大"), on: trigger, in: app,
+                        message: "Composer trigger must display the chosen max reasoning level.",
+                        finalCheck: { trigger.value as? String == "最大" })
+
+        input.tap()
+        input.typeText("测试思考等级")
+        tapChatSend(in: app)
+        expectExists(textContaining("已按思考等级「max」回复", in: app), in: app)
+        let notice = element("chat.message.reasoningNotice", in: app)
+        expectExists(notice, in: app)
+        XCTAssertTrue(notice.label.contains("已按「高」发送"))
+
+        // New conversation remembers `.max` for `fixture-chat-default`.
+        let backButton = element("BackButton", in: app)
+        expectExists(backButton, in: app)
+        backButton.tap()
+        element("chat.new", in: app).tap()
+        expectExists(trigger, in: app)
+        expectPredicate(NSPredicate(format: "value == %@", "最大"), on: trigger, in: app,
+                        message: "A new conversation must recall the model's last reasoning effort.",
+                        finalCheck: { trigger.value as? String == "最大" })
+
+        // Switching to another model in an empty conversation adopts its own preference (`.automatic`).
+        element("chat.modelMenu", in: app).tap()
+        textContaining("fixture-chat-alternate", in: app).tap()
+        expectPredicate(NSPredicate(format: "value == %@", "自动"), on: trigger, in: app,
+                        message: "Switching to an unconfigured model in an empty conversation must default to automatic.",
+                        finalCheck: { trigger.value as? String == "自动" })
+
+        // Conversation options sync with the composer trigger.
+        element("chat.options", in: app).tap()
+        let offOption = element("chat.reasoningOption.off", in: app)
+        if !offOption.isHittable { reveal(offOption, in: app) }
+        offOption.tap()
+        app.buttons["完成"].tap()
+        expectExists(trigger, in: app)
+        expectPredicate(NSPredicate(format: "value == %@", "关闭"), on: trigger, in: app,
+                        message: "Changing reasoning effort in conversation options must sync to the composer trigger.",
+                        finalCheck: { trigger.value as? String == "关闭" })
+    }
+
+    @MainActor
+    func testChatTranscriptStaysVisibleWhenSendingAgainWithKeyboardOpen() throws {
+        guard #available(iOS 18.4, *) else { throw XCTSkip("The HTML preview buttons require WebKit file-panel cancellation.") }
+        let app = launch(connected: true, arguments: [
+            "--ui-test-chat-gate", "--ui-test-chat-html", "--ui-test-theme=dark",
+            "--ui-test-chat-store=\(UUID().uuidString)"
+        ])
+        defer { app.terminate() }
+        selectTab("chat", title: "AI 对话", in: app)
+        element("chat.emptyNew", in: app).tap()
+
+        let input = element("chat.input", in: app)
+        let keyboard = app.keyboards.firstMatch
+        let release = element("ui-test.chat.release", in: app)
+        let reasoning = element("chat.reasoningTrigger", in: app)
+        reasoning.tap()
+        element("chat.reasoningOption.high", in: app).tap()
+        if element("chat.reasoningSlider", in: app).exists {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2)).tap()
+        }
+        XCTAssertEqual(reasoning.value as? String, "高")
+        input.tap()
+        expectExists(keyboard, in: app)
+        input.typeText("Marc")
+        tapChatSend(in: app)
+        expectExists(release, in: app)
+        let reasoningHeader = textContaining("思考过程", in: app)
+        expectExists(reasoningHeader, in: app)
+        if reasoningHeader.isHittable {
+            reasoningHeader.tap()
+            expectExists(app.staticTexts["可见推理片段"], in: app)
+        }
+        release.tap()
+        expectExists(element("chat.html.snippet.2", in: app), in: app)
+        let copy = app.buttons.matching(identifier: "doc.on.doc").firstMatch
+        expectExists(copy, in: app)
+        copy.tap()
+
+        let model = element("chat.modelMenu", in: app)
+        model.tap()
+        textContaining("fixture-chat-alternate", in: app).tap()
+        XCTAssertTrue(model.label.contains("fixture-chat-alternate"))
+        expectExists(keyboard, in: app)
+        input.typeText("Eir")
+        tapChatSend(in: app)
+        expectExists(release, in: app)
+        let streamedCode = app.staticTexts["<p>Second fragment"].firstMatch
+        expectExists(streamedCode, in: app)
+        let composer = element("chat.composer", in: app)
+        func transcriptViewport() -> CGRect {
+            let top = app.navigationBars.firstMatch.frame.maxY
+            return CGRect(x: composer.frame.minX, y: top, width: composer.frame.width,
+                          height: max(0, composer.frame.minY - top))
+        }
+        verify(transcriptViewport().contains(CGPoint(x: streamedCode.frame.midX, y: streamedCode.frame.midY)), in: app,
+               "The incomplete HTML source must be visible while the second reply streams.")
+        release.tap()
+        expectExists(element("chat.send", in: app), in: app)
+        expectExists(keyboard, in: app)
+        let previews = app.buttons.matching(identifier: "chat.html.snippet.2")
+        let latestPreview = previews.allElementsBoundByIndex.last
+        let viewport = transcriptViewport()
+        verify(latestPreview.map { viewport.contains(CGPoint(x: $0.frame.midX, y: $0.frame.midY)) } ?? false,
+               in: app, "A completed reply must remain in the transcript viewport.")
+    }
+
+    @MainActor
     func testHTMLFallbackCopiesOriginalMixedFences() {
-        let app = launch(connected: true, arguments: ["--ui-test-chat-gate", "--ui-test-chat-html"])
+        let app = launch(connected: true, arguments: ["--ui-test-chat-gate", "--ui-test-chat-html", "--ui-test-chat-html-copy-check"])
         defer { app.terminate() }
         selectTab("chat", title: "AI 对话", in: app)
         element("chat.emptyNew", in: app).tap()
         let input = element("chat.input", in: app)
         input.tap()
         input.typeText("HTML")
-        element("chat.send", in: app).tap()
+        tapChatSend(in: app)
         element("ui-test.chat.release", in: app).tap()
         let copy = app.buttons.matching(identifier: "doc.on.doc").firstMatch
         reveal(copy, in: app)
@@ -903,7 +1083,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         var token: Int32 = 0
         XCTAssertEqual(notify_register_dispatch(name + ".released", &token, .main) { _ in released.fulfill() }, UInt32(NOTIFY_STATUS_OK))
         defer { notify_cancel(token) }
-        let app = launch(connected: true, arguments: ["--ui-test-chat-gate", "--ui-test-chat-html", "--ui-test-theme=light"],
+        let app = launch(connected: true, arguments: ["--ui-test-chat-gate", "--ui-test-chat-html", "--ui-test-chat-html-copy-check", "--ui-test-theme=light"],
                          environment: ["CPA_UI_HTML_GATE": gate])
         defer { app.terminate() }
         selectTab("chat", title: "AI 对话", in: app)
@@ -911,7 +1091,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         let input = element("chat.input", in: app)
         input.tap()
         input.typeText("HTML")
-        element("chat.send", in: app).tap()
+        tapChatSend(in: app)
         let first = element("chat.html.snippet.1", in: app)
         let second = element("chat.html.snippet.2", in: app)
         reveal(first, in: app)
@@ -920,7 +1100,7 @@ final class CPAQuotaAppUITests: XCTestCase {
         let web = app.webViews.firstMatch
         let start = app.webViews.staticTexts["First fragment"].firstMatch
         let end = app.webViews.staticTexts["First fixture end"].firstMatch
-        expectExists(start, in: app, timeout: 15)
+        expectExists(start, in: app, timeout: htmlPreviewContentTimeout)
         web.swipeUp()
         let y = end.frame.midY
         XCTAssertTrue(web.frame.contains(CGPoint(x: end.frame.midX, y: y)))
@@ -932,15 +1112,15 @@ final class CPAQuotaAppUITests: XCTestCase {
         app.buttons["源码"].tap()
         expectExists(textContaining("<p style=", in: app), in: app)
         app.buttons["刷新"].tap()
-        expectExists(start, in: app, timeout: 15)
+        expectExists(start, in: app, timeout: htmlPreviewContentTimeout)
         XCTAssertTrue(web.frame.contains(CGPoint(x: start.frame.midX, y: start.frame.minY + 2)))
         app.buttons["关闭"].tap()
         reveal(second, in: app)
         XCTAssertFalse(element("chat.html.snippet.3", in: app).exists)
         second.tap()
-        let secondFragment = app.webViews.staticTexts["Second fragment"].firstMatch
-        expectExists(secondFragment, in: app, timeout: 15)
-        XCTAssertFalse(app.webViews.staticTexts["First fragment"].exists)
+        let secondFragment = web.staticTexts["Second fragment"].firstMatch
+        expectExists(secondFragment, in: app, timeout: htmlPreviewContentTimeout)
+        XCTAssertFalse(web.staticTexts["First fragment"].exists)
         app.buttons["源码"].tap()
         app.buttons["复制源码"].tap()
         app.buttons["关闭"].tap()
@@ -962,18 +1142,18 @@ final class CPAQuotaAppUITests: XCTestCase {
         let input = element("chat.input", in: app)
         input.tap()
         input.typeText("HTML")
-        element("chat.send", in: app).tap()
+        tapChatSend(in: app)
         element("ui-test.chat.release", in: app).tap()
         let second = element("chat.html.snippet.2", in: app)
         reveal(second, in: app, upward: false)
         second.tap()
         let secondFragment = app.webViews.staticTexts["Second fragment"].firstMatch
-        expectExists(secondFragment, in: app, timeout: 15)
+        expectExists(secondFragment, in: app, timeout: htmlPreviewContentTimeout)
         _ = await rotateDeviceAndWaitForWindow(in: app, policy: layoutPolicy(in: app))
         app.buttons["源码"].tap()
         expectExists(textContaining("<p>Second fragment</p>", in: app), in: app)
         app.buttons["预览"].tap()
-        expectExists(secondFragment, in: app, timeout: 15)
+        expectExists(secondFragment, in: app, timeout: htmlPreviewContentTimeout)
         attach(app, name: "html-preview-dark-landscape")
         app.buttons["关闭"].tap()
         expectExists(input, in: app)
@@ -1224,6 +1404,24 @@ final class CPAQuotaAppUITests: XCTestCase {
         let afterFrame = afterExists ? target.frame : .null
         let afterHittable = afterExists && target.isHittable
         print("FRONTEND_SCROLL line=\(line) upward=\(upward) viewport=\(viewport) anchorBefore=\(before) anchorAfter=\(after) targetBefore=\(targetFrame) hittableBefore=\(targetHittable) targetAfter=\(afterFrame) hittableAfter=\(afterHittable)")
+    }
+
+    @MainActor
+    private func tapChatSend(in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        // Wait for the composer to enable Send after the keyboard delivers the draft.
+        let send = app.buttons["chat.send"]
+        expectPredicate(NSPredicate(format: "exists == true AND enabled == true"),
+                        on: send, in: app, message: "Send must be enabled after typing.",
+                        finalCheck: { send.exists && send.isEnabled }, file: file, line: line)
+        // XCUITest can report an invalid activation point during the keyboard
+        // transition. Use the center of the actual button for one tap.
+        let button = send.frame
+        let center = CGPoint(x: button.midX, y: button.midY)
+        let window = app.frame
+        verify(!button.isEmpty && window.contains(center), in: app,
+               "Send must be within the app window.", file: file, line: line)
+        app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: center.x - window.minX, dy: center.y - window.minY)).tap()
     }
 
     @MainActor

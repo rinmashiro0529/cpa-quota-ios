@@ -43,6 +43,8 @@ public final class ChatWorkspaceModel {
     public private(set) var keyDiscoveryError: CPAError?
     private var activeKey: CPAClientAPIKey?
     private var temporaryRecentModelID: String?
+    private var temporaryRecentReasoningEfforts: [String: ChatReasoningEffort] = [:]
+    @ObservationIgnored private var manualReasoningConversationIDs = Set<UUID>()
     @ObservationIgnored private var catalogRequest = UUID()
     @ObservationIgnored private var credentialRevision: UInt64 = 0
     @ObservationIgnored private var keyWriteTail: Task<Void, any Error>?
@@ -119,6 +121,8 @@ public final class ChatWorkspaceModel {
         advanceCredentialRevision()
         server = nil
         temporaryRecentModelID = nil
+        temporaryRecentReasoningEfforts.removeAll()
+        manualReasoningConversationIDs.removeAll()
         persistsKey = true
         discoveryFactory = nil
         activeKey = nil
@@ -127,6 +131,7 @@ public final class ChatWorkspaceModel {
         keyRemovalFailed = false
         models = []
         modelListState = .idle
+        engine.resetReasoningCapabilities()
     }
 
     private func advanceCredentialRevision() {
@@ -196,6 +201,7 @@ public final class ChatWorkspaceModel {
         if persistsKey { keyRemovalFailed = false }
         models = []
         modelListState = .idle
+        engine.resetReasoningCapabilities()
         do {
             if persistsKey { try await saveStoredKey(key, manual: manual, for: server) }
         } catch {
@@ -301,6 +307,7 @@ public final class ChatWorkspaceModel {
             guard isCurrent(revision), catalogRequest == request else { return }
             models = refreshed
             modelListState = .loaded
+            engine.resetReasoningCapabilities()
             assignDefaultModelWhereMissing()
         } catch let error as CPAError {
             guard isCurrent(revision), catalogRequest == request else { return }
@@ -489,21 +496,33 @@ public final class ChatWorkspaceModel {
     /// resetting per-conversation settings so nothing leaks across servers.
     @discardableResult
     public func createConversation() -> UUID {
+        let modelID = defaultModelID
+        let effort = preferredReasoningEffort(for: modelID)
         if let index = conversations.firstIndex(where: { $0.messages.isEmpty && generationTasks[$0.id] == nil }) {
             var reused = conversations.remove(at: index)
             reused.title = ""
             reused.systemPrompt = ""
-            reused.reasoningEffort = .automatic
+            reused.reasoningEffort = effort
             reused.isWebSearchEnabled = false
             reused.serverIdentifier = server?.identifier
-            reused.modelID = defaultModelID
+            reused.modelID = modelID
             reused.updatedAt = Date()
+            manualReasoningConversationIDs.remove(reused.id)
             conversations.insert(reused, at: 0)
             return reused.id
         }
-        let conversation = ChatConversation(modelID: defaultModelID, serverIdentifier: server?.identifier)
+        let conversation = ChatConversation(modelID: modelID, reasoningEffort: effort,
+                                            serverIdentifier: server?.identifier)
         conversations.insert(conversation, at: 0)
         return conversation.id
+    }
+
+    private func preferredReasoningEffort(for modelID: String?) -> ChatReasoningEffort {
+        guard let server, let modelID else { return .automatic }
+        if persistsKey {
+            return settings.rememberedReasoningEffort(for: modelID, server: server.identifier) ?? .automatic
+        }
+        return temporaryRecentReasoningEfforts[modelID] ?? .automatic
     }
 
     private var preferredModelID: String? {
@@ -526,11 +545,16 @@ public final class ChatWorkspaceModel {
     /// Conversations opened before the model list arrived get the default model.
     private func assignDefaultModelWhereMissing() {
         guard let server, let modelID = defaultModelID else { return }
+        let rememberedEffort = preferredReasoningEffort(for: modelID)
         for index in conversations.indices where conversations[index].messages.isEmpty
             && (conversations[index].serverIdentifier == nil || conversations[index].serverIdentifier == server.identifier)
             && !isAvailableModel(conversations[index].modelID) {
             conversations[index].serverIdentifier = server.identifier
             conversations[index].modelID = modelID
+            if !manualReasoningConversationIDs.contains(conversations[index].id),
+               conversations[index].reasoningEffort == .automatic {
+                conversations[index].reasoningEffort = rememberedEffort
+            }
         }
     }
 
@@ -544,12 +568,33 @@ public final class ChatWorkspaceModel {
 
     /// Only explicit selections in the conversation menu update the server preference.
     public func selectModel(_ id: String, in conversationID: UUID) {
-        guard let server, isAvailableModel(id), conversation(conversationID) != nil else { return }
-        updateConversation(conversationID) { $0.modelID = id }
+        guard let server, isAvailableModel(id), let existing = conversation(conversationID) else { return }
+        let shouldAdoptRememberedEffort = existing.messages.isEmpty
+            && !manualReasoningConversationIDs.contains(conversationID)
+        let rememberedEffort = shouldAdoptRememberedEffort ? preferredReasoningEffort(for: id) : nil
+        updateConversation(conversationID) {
+            $0.modelID = id
+            if let rememberedEffort {
+                $0.reasoningEffort = rememberedEffort
+            }
+        }
         if persistsKey, !settingsLoadFailed {
             settings.rememberModel(id, for: server.identifier)
         } else {
             temporaryRecentModelID = id
+        }
+    }
+
+    /// Updates a conversation's reasoning effort and remembers the preference for its active model.
+    public func selectReasoningEffort(_ effort: ChatReasoningEffort, in conversationID: UUID) {
+        guard let existing = conversation(conversationID) else { return }
+        manualReasoningConversationIDs.insert(conversationID)
+        updateConversation(conversationID) { $0.reasoningEffort = effort }
+        guard let server, let modelID = existing.modelID else { return }
+        if persistsKey, !settingsLoadFailed {
+            settings.rememberReasoningEffort(effort, for: modelID, server: server.identifier)
+        } else {
+            temporaryRecentReasoningEfforts[modelID] = effort
         }
     }
 
@@ -579,6 +624,7 @@ public final class ChatWorkspaceModel {
             return false
         }
         conversations.removeAll { $0.id == id }
+        manualReasoningConversationIDs.remove(id)
         unsavedConversations.remove(id)
         failedConversationDeletions.remove(id)
         return true
@@ -818,9 +864,13 @@ public final class ChatWorkspaceModel {
         let context = ChatPromptBuilder.continuationContext(
             earlier: eligibleHistory(conversation), question: question, reply: reply, effectivePrompt: effectivePrompt)
         reply.omittedHistoryCount = context.omitted > 0 ? context.omitted : nil
-        mutateAssistant(saved.id, in: id) { $0.omittedHistoryCount = reply.omittedHistoryCount }
+        let modelOwnedBy = models.first(where: { $0.id == target.modelID })?.ownedBy
+        mutateAssistant(saved.id, in: id) {
+            $0.omittedHistoryCount = reply.omittedHistoryCount
+            $0.reasoningResolution = nil
+        }
         let request = ChatEngineRequest(baseURL: server.baseURL.appendingPathComponent("v1"), apiKey: apiKey,
-                                       modelID: target.modelID,
+                                       modelID: target.modelID, modelOwnedBy: modelOwnedBy,
                                        instructions: ChatPromptBuilder.instructions(settings: settings,
                                                                                     memories: effectiveMemoriesForPrompt,
                                                                                     conversation: conversation),
@@ -1008,10 +1058,12 @@ public final class ChatWorkspaceModel {
         let prompt = sources.isEmpty
             ? modelPrompt
             : ChatPromptBuilder.searchInjectedPrompt(modelPrompt, sources: sources)
+        let modelOwnedBy = models.first(where: { $0.id == modelID })?.ownedBy
         let request = ChatEngineRequest(
             baseURL: baseURL,
             apiKey: apiKey,
             modelID: modelID,
+            modelOwnedBy: modelOwnedBy,
             instructions: instructions,
             history: history,
             prompt: prompt,
@@ -1133,6 +1185,10 @@ public final class ChatWorkspaceModel {
                                                  outputTokens: previousUsage.outputTokens + usage.outputTokens,
                                                  reasoningTokens: previousUsage.reasoningTokens + usage.reasoningTokens)
                     }
+                case .reasoningResolution(let resolution):
+                    mutateAssistant(assistantID, in: conversationID) {
+                        $0.reasoningResolution = resolution.outcome == .applied ? nil : resolution
+                    }
                 }
             }
             // A cancelled consumer may see the stream end normally.
@@ -1213,7 +1269,9 @@ public final class ChatWorkspaceModel {
                 baseURL: request.baseURL,
                 apiKey: request.apiKey,
                 modelID: request.modelID,
-                prompt: "用不超过 12 个字概括以下对话的主题，只输出标题：\n\(userText)\n\(String(reply.prefix(500)))")
+                modelOwnedBy: request.modelOwnedBy,
+                prompt: "用不超过 12 个字概括以下对话的主题，只输出标题：\n\(userText)\n\(String(reply.prefix(500)))",
+                reasoningEffort: .automatic)
             guard let raw = try? await engine.complete(titleRequest), isCurrent(revision) else { return }
             var title = raw.trimmingCharacters(in: Self.titleTrimming)
             title = String(title.prefix(30))

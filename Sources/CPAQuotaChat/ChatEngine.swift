@@ -7,6 +7,12 @@ public protocol ChatEngine: Sendable {
     func stream(_ request: ChatEngineRequest) -> AsyncThrowingStream<ChatEngineEvent, any Error>
     /// One-shot completion used for background work such as title generation.
     func complete(_ request: ChatEngineRequest) async throws -> String
+    /// Clears any session-scoped protocol or reasoning capability cache.
+    func resetReasoningCapabilities()
+}
+
+public extension ChatEngine {
+    func resetReasoningCapabilities() {}
 }
 
 public struct ChatEngineRequest: Sendable {
@@ -14,6 +20,8 @@ public struct ChatEngineRequest: Sendable {
     public var baseURL: URL
     public var apiKey: CPAClientAPIKey
     public var modelID: String
+    /// Optional `owned_by` metadata from `/v1/models` for protocol detection.
+    public var modelOwnedBy: String?
     public var instructions: String
     public var history: [ChatMessage]
     public var prompt: String
@@ -21,13 +29,14 @@ public struct ChatEngineRequest: Sendable {
     public var reasoningEffort: ChatReasoningEffort
 
     public init(
-        baseURL: URL, apiKey: CPAClientAPIKey, modelID: String, instructions: String = "",
-        history: [ChatMessage] = [], prompt: String, images: [ChatImageAttachment] = [],
-        reasoningEffort: ChatReasoningEffort = .automatic
+        baseURL: URL, apiKey: CPAClientAPIKey, modelID: String, modelOwnedBy: String? = nil,
+        instructions: String = "", history: [ChatMessage] = [], prompt: String,
+        images: [ChatImageAttachment] = [], reasoningEffort: ChatReasoningEffort = .automatic
     ) {
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.modelID = modelID
+        self.modelOwnedBy = modelOwnedBy
         self.instructions = instructions
         self.history = history
         self.prompt = prompt
@@ -39,6 +48,7 @@ public struct ChatEngineRequest: Sendable {
 public enum ChatEngineEvent: Sendable {
     case snapshot(text: String, reasoning: String?)
     case usage(ChatTokenUsage)
+    case reasoningResolution(ChatReasoningResolution)
 }
 
 /// `GET /v1/models` sources; `CPAModelCatalogClient` conforms so tests can fake it.

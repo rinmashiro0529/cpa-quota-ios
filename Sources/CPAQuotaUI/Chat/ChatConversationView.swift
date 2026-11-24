@@ -100,12 +100,12 @@ struct ChatConversationView: View {
                     }
                     Color.clear
                         .frame(height: 1)
+                        .padding(.bottom, 12)
                         .id(Self.bottomAnchor)
                 }
                 .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.top, 12)
             }
-            .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
             .modifier(ChatScrollEdgeModifier())
             .modifier(ChatStreamingAutoScrollModifier(
@@ -471,65 +471,83 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
     let isGenerating: Bool
     let messageCount: Int
     let latestTextLength: Int
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isPinnedToBottom = true
     @State private var isUserScrolling = false
-    @State private var distanceFromBottom: CGFloat = 0
+    @State private var pendingFollow: Task<Void, Never>?
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        let base = content
-            .onChange(of: messageCount) { oldCount, newCount in
-                guard newCount > oldCount else { return }
-                isPinnedToBottom = true
-                withAnimation(.easeOut(duration: 0.2)) {
-                    proxy.scrollTo(bottomAnchor, anchor: .bottom)
-                }
-            }
+        let base = content.onChange(of: messageCount) { oldCount, newCount in
+            guard newCount > oldCount, !isUserScrolling else { return }
+            isPinnedToBottom = true
+            scheduleFollow()
+        }
         if #available(iOS 18.0, macOS 15.0, *) {
             base
-                .onScrollPhaseChange { oldPhase, newPhase in
-                    let wasUser = oldPhase == .interacting || oldPhase == .decelerating
-                    let isUser = newPhase == .interacting || newPhase == .decelerating
-                    isUserScrolling = isUser
-                    if isUser || wasUser {
-                        isPinnedToBottom = distanceFromBottom <= 24
+                // Explicit follow requests own size changes, including when the keyboard is open.
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
+                .defaultScrollAnchor(.bottom, for: .alignment)
+                .onScrollPhaseChange { oldPhase, newPhase, context in
+                    let wasScrolling = oldPhase == .interacting || oldPhase == .decelerating
+                    let isScrolling = newPhase == .interacting || newPhase == .decelerating
+                    isUserScrolling = newPhase == .tracking || isScrolling
+                    if isUserScrolling {
+                        cancelFollow()
+                    }
+                    if wasScrolling || isScrolling {
+                        isPinnedToBottom = ScrollMetrics(context.geometry).distanceFromBottom <= 24
                     }
                 }
-                .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
-                    let maxOffsetY = max(
-                        -geometry.contentInsets.top,
-                        geometry.contentSize.height + geometry.contentInsets.bottom - geometry.containerSize.height
-                    )
-                    let distance = max(0, maxOffsetY - geometry.contentOffset.y)
-                    return ScrollMetrics(
-                        contentHeight: geometry.contentSize.height,
-                        bottomInset: geometry.contentInsets.bottom,
-                        distanceFromBottom: distance
-                    )
-                } action: { oldValue, newValue in
-                    distanceFromBottom = newValue.distanceFromBottom
-                    if isUserScrolling {
-                        isPinnedToBottom = newValue.distanceFromBottom <= 24
-                    } else if isPinnedToBottom,
-                              (newValue.contentHeight > oldValue.contentHeight + 1
-                               || newValue.bottomInset > oldValue.bottomInset + 1),
-                              newValue.distanceFromBottom > 1 {
-                        proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                .onScrollGeometryChange(for: ScrollMetrics.self) { ScrollMetrics($0) } action: { oldValue, newValue in
+                    if oldValue.bottomOffset != newValue.bottomOffset, newValue.distanceFromBottom > 1 {
+                        scheduleFollow()
                     }
                 }
                 .onChange(of: latestTextLength) { oldLength, newLength in
-                    guard isGenerating, isPinnedToBottom, !isUserScrolling, newLength > oldLength else { return }
-                    proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                    if isGenerating, newLength > oldLength {
+                        scheduleFollow()
+                    }
                 }
+                .onDisappear(perform: cancelFollow)
         } else {
             base
+                .defaultScrollAnchor(.bottom)
+                .onDisappear(perform: cancelFollow)
         }
     }
 
+    private func scheduleFollow() {
+        guard isPinnedToBottom, !isUserScrolling, pendingFollow == nil else { return }
+        // A text change and its layout can arrive in the same update. Let both use one request.
+        pendingFollow = Task { @MainActor in
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            pendingFollow = nil
+            guard isPinnedToBottom, !isUserScrolling else { return }
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
+                proxy.scrollTo(bottomAnchor, anchor: .bottom)
+            }
+        }
+    }
+
+    private func cancelFollow() {
+        pendingFollow?.cancel()
+        pendingFollow = nil
+    }
+
     private struct ScrollMetrics: Equatable, Sendable {
-        let contentHeight: CGFloat
-        let bottomInset: CGFloat
+        let bottomOffset: CGFloat
         let distanceFromBottom: CGFloat
+
+        @available(iOS 18.0, macOS 15.0, *)
+        init(_ geometry: ScrollGeometry) {
+            bottomOffset = max(
+                -geometry.contentInsets.top,
+                geometry.contentSize.height + geometry.contentInsets.bottom - geometry.containerSize.height
+            )
+            distanceFromBottom = max(0, bottomOffset - geometry.contentOffset.y)
+        }
     }
 }
 #endif

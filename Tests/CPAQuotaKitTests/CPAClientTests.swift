@@ -82,11 +82,30 @@ struct CPAClientTests {
 
     @Test func concurrentRefreshesForOneAccountShareARequest() async throws {
         let transport = try ScenarioTransport(accounts: [FixtureAccount("a")])
-        await transport.setDelay(.milliseconds(40))
-        let client = try client(transport)
+        let gate = TestGate()
+        await transport.setGate(gate, for: "index-a")
+        let (selections, signal) = AsyncStream<Void>.makeStream()
+        let client = CPAClient(server: try CPAServer(baseURL: "https://cpa.example"),
+                               managementKey: try ManagementKey("fixture-key"), transport: transport,
+                               onQuotaFlightSelected: { signal.yield() })
         _ = try await client.loadAccounts()
+        let callers = 12
         try await withThrowingTaskGroup(of: QuotaSnapshot.self) { group in
-            for _ in 0..<12 { group.addTask { try await client.refreshQuota(for: "a", force: true) } }
+            for _ in 0..<callers {
+                group.addTask {
+                    // Unblock the test if a caller returns or throws before selecting a flight.
+                    defer { signal.finish() }
+                    return try await client.refreshQuota(for: "a", force: true)
+                }
+            }
+            // Hold the response until every caller has selected a flight, regardless of scheduling.
+            var iterator = selections.makeAsyncIterator()
+            for _ in 0..<callers {
+                let selection = await iterator.next()
+                #expect(selection != nil)
+                if selection == nil { break }
+            }
+            await gate.open()
             for try await result in group { #expect(result.windows.count == 2) }
         }
         #expect(await transport.quotaRequestCount() == 1)

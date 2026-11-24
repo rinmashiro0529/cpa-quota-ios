@@ -110,24 +110,17 @@ struct ChatComposerView: View {
                 }
             }
 
-            if dynamicTypeSize.isAccessibilitySize {
-                VStack(alignment: .leading, spacing: 8) {
-                    field(palette)
-                    HStack(spacing: 8) {
-                        accessoryButtons(palette)
-                        Spacer(minLength: 0)
-                        sendButton(palette)
-                    }
-                }
-            } else {
-                HStack(alignment: .bottom, spacing: 8) {
+            ChatComposerLayout(prefersStackedRows: dynamicTypeSize.isAccessibilitySize) {
+                field(palette)
+                HStack(spacing: 4) {
                     accessoryButtons(palette)
-                    field(palette)
-                    sendButton(palette)
+                    reasoningButton
                 }
+                sendButton
             }
         }
-        .padding(12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
         .modifier(ChatComposerSurface())
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
@@ -185,8 +178,9 @@ struct ChatComposerView: View {
             .font(.body)
             .foregroundStyle(palette.textPrimary)
             .focused($isFocused)
-            .padding(.vertical, 10)
-            .frame(minHeight: 44)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .accessibilityIdentifier("chat.input")
     }
 
@@ -245,17 +239,22 @@ struct ChatComposerView: View {
         .accessibilityIdentifier("chat.webSearch")
     }
 
+    private var reasoningButton: some View {
+        ChatReasoningTriggerButton(effort: conversation.reasoningEffort) { effort in
+            chat.selectReasoningEffort(effort, in: conversation.id)
+        }
+    }
+
     @ViewBuilder
-    private func sendButton(_ palette: BrandPalette) -> some View {
+    private var sendButton: some View {
         if isGenerating {
             Button {
                 chat.stop(conversation.id)
             } label: {
                 Image(systemName: "stop.fill")
                     .font(.headline)
-                    .frame(width: 44, height: 44)
             }
-            .modifier(ChatRoundButtonStyle(prominent: false))
+            .buttonStyle(ChatRoundButtonStyle(prominent: false))
             .accessibilityLabel("停止生成")
             .accessibilityIdentifier("chat.stop")
         } else if let target = continuation {
@@ -265,9 +264,8 @@ struct ChatComposerView: View {
             } label: {
                 Image(systemName: target.isRetry ? "arrow.clockwise" : "arrow.up.right")
                     .font(.headline.weight(.bold))
-                    .frame(width: 44, height: 44)
             }
-            .modifier(ChatRoundButtonStyle(prominent: true))
+            .buttonStyle(ChatRoundButtonStyle(prominent: true))
             .disabled(continuationCooldown)
             .accessibilityLabel(target.isRetry ? "重试生成回复" : "续写上一条回复")
             .accessibilityHint("发起一次新的生成请求，可能产生额外用量")
@@ -276,9 +274,8 @@ struct ChatComposerView: View {
             Button(action: onSubmit) {
                 Image(systemName: editingMessageID == nil ? "arrow.up" : "checkmark")
                     .font(.headline.weight(.bold))
-                    .frame(width: 44, height: 44)
             }
-            .modifier(ChatRoundButtonStyle(prominent: true))
+            .buttonStyle(ChatRoundButtonStyle(prominent: true))
             .disabled(!canSend)
             .keyboardShortcut(.return, modifiers: .command)
             .accessibilityLabel(editingMessageID == nil ? "发送" : "发送修改")
@@ -353,6 +350,46 @@ struct ChatComposerView: View {
     #endif
 }
 
+/// Keep the field and buttons mounted when the keyboard or available width changes.
+private struct ChatComposerLayout: Layout {
+    let prefersStackedRows: Bool
+
+    private let spacing: CGFloat = 4
+    private let minimumFieldWidth: CGFloat = 140
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        metrics(width: proposal.width, subviews: subviews).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let row = metrics(width: bounds.width, subviews: subviews)
+        let fieldX = bounds.minX + (row.stacked ? 0 : row.controls.width + spacing)
+        let fieldY = row.stacked ? bounds.minY : bounds.maxY - row.fieldHeight
+        subviews[0].place(at: CGPoint(x: fieldX, y: fieldY), anchor: .topLeading,
+                          proposal: ProposedViewSize(width: row.fieldWidth, height: nil))
+        let controlsCenterY = bounds.maxY - max(row.controls.height, row.send.height) / 2
+        subviews[1].place(at: CGPoint(x: bounds.minX, y: controlsCenterY),
+                          anchor: .leading, proposal: .unspecified)
+        subviews[2].place(at: CGPoint(x: bounds.maxX, y: controlsCenterY),
+                          anchor: .trailing, proposal: .unspecified)
+    }
+
+    private func metrics(width: CGFloat?, subviews: Subviews) -> (
+        size: CGSize, fieldWidth: CGFloat, fieldHeight: CGFloat, controls: CGSize, send: CGSize, stacked: Bool
+    ) {
+        let controls = subviews[1].sizeThatFits(.unspecified)
+        let send = subviews[2].sizeThatFits(.unspecified)
+        let buttonsWidth = controls.width + send.width + 2 * spacing
+        let width = width ?? buttonsWidth + minimumFieldWidth
+        let stacked = prefersStackedRows || width - buttonsWidth < minimumFieldWidth
+        let fieldWidth = stacked ? width : width - buttonsWidth
+        let fieldHeight = subviews[0].sizeThatFits(ProposedViewSize(width: fieldWidth, height: nil)).height
+        let buttonsHeight = max(controls.height, send.height)
+        let height = stacked ? fieldHeight + spacing + buttonsHeight : max(fieldHeight, buttonsHeight)
+        return (CGSize(width: width, height: height), fieldWidth, fieldHeight, controls, send, stacked)
+    }
+}
+
 /// Images are downscaled and re-encoded before they are stored or sent.
 enum ChatImageEncoder {
     static let maximumPixelLength: CGFloat = 1536
@@ -399,35 +436,34 @@ private struct ChatComposerSurface: ViewModifier {
     }
 }
 
-private struct ChatRoundButtonStyle: ViewModifier {
+private struct ChatRoundButtonStyle: ButtonStyle {
     let prominent: Bool
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.isEnabled) private var isEnabled
 
-    @ViewBuilder
-    func body(content: Content) -> some View {
+    func makeBody(configuration: Configuration) -> some View {
         let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
-        if #available(iOS 26.0, macOS 26.0, *) {
-            if prominent {
-                content
-                    .buttonStyle(.glassProminent)
-                    .buttonBorderShape(.circle)
-                    .tint(palette.accent)
-                    .foregroundStyle(palette.textOnAccent)
-            } else {
-                content
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.circle)
+        let isProminent = prominent && isEnabled
+        configuration.label
+            .foregroundStyle(isProminent ? palette.textOnAccent : palette.textPrimary)
+            .frame(width: 36, height: 36)
+            .background {
+                if #available(iOS 26.0, macOS 26.0, *) {
+                    let glass = isProminent ? Glass.regular.tint(palette.accent) : Glass.regular
+                    // Keep the glass decorative so the button owns the press as its enabled state changes.
+                    Circle().fill(.clear)
+                        .glassEffect(glass, in: Circle())
+                        .allowsHitTesting(false)
+                } else {
+                    Circle().fill(isProminent ? palette.accent : palette.insetSurface)
+                        .allowsHitTesting(false)
+                }
             }
-        } else {
-            // Same fallback as the primary button style: a readable foreground
-            // on a bordered control instead of white on the light accent.
-            content
-                .buttonStyle(.bordered)
-                .buttonBorderShape(.circle)
-                .tint(prominent ? palette.actionTint : palette.textSecondary)
-                .foregroundStyle(palette.textPrimary)
-        }
+            .opacity(isEnabled ? (configuration.isPressed ? 0.75 : 1) : 0.55)
+            // Match the composer row's hit area without increasing the visible circle.
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
     }
 }
 #endif
