@@ -219,6 +219,17 @@ extension ChatConversation {
     }
 }
 
+extension ChatConversationSummary {
+    var displayTitle: String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "新对话" : trimmed
+    }
+
+    var displayPreviewText: String {
+        previewText.isEmpty ? "暂无消息" : previewText
+    }
+}
+
 enum ChatDeletionCopy {
     static func message(isGenerating: Bool) -> String {
         isGenerating

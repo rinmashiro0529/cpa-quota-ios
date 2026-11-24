@@ -31,6 +31,9 @@ struct ChatConversationView: View {
         Group {
             if let conversation = chat.conversation(conversationID) {
                 content(conversation)
+            } else if chat.hasConversation(conversationID) {
+                ProgressView("正在读取对话")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ContentUnavailableView {
                     Label("对话已删除", systemImage: "trash")
@@ -45,7 +48,10 @@ struct ChatConversationView: View {
         .sheet(item: $htmlPreview) { ChatHTMLPreview(snippet: $0) }
         #endif
         .tint(palette.actionTint)
-        .onChange(of: chat.conversation(conversationID) == nil) { _, deleted in
+        .task(id: conversationID) {
+            _ = await chat.loadConversationIfNeeded(conversationID)
+        }
+        .onChange(of: !chat.hasConversation(conversationID)) { _, deleted in
             // Deleting from the options sheet returns to the list instead of an empty page.
             if deleted { dismiss() }
         }
@@ -368,7 +374,7 @@ struct ChatConversationView: View {
     }
 
     private func persistCurrentDraft(for id: UUID) {
-        guard chat.conversation(id) != nil else {
+        guard chat.hasConversation(id) else {
             chat.clearDraft(for: id)
             return
         }
@@ -620,16 +626,16 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
                         cancelFollow()
                     }
                     if wasScrolling || isScrolling {
-                        let distance = ScrollMetrics(context.geometry).distanceFromBottom
-                        isPinnedToBottom = distance <= 24
-                        updateScrolledAwayState(distance: distance)
+                        let metrics = ScrollMetrics(context.geometry)
+                        isPinnedToBottom = metrics.distanceFromBottom <= 24
+                        updateScrolledAwayState(distance: metrics.visibleDistanceFromBottom)
                     }
                 }
                 .onScrollGeometryChange(for: ScrollMetrics.self) { ScrollMetrics($0) } action: { oldValue, newValue in
                     if abs(visibleViewportHeight - newValue.visibleHeight) >= 1 {
                         visibleViewportHeight = newValue.visibleHeight
                     }
-                    updateScrolledAwayState(distance: newValue.distanceFromBottom)
+                    updateScrolledAwayState(distance: newValue.visibleDistanceFromBottom)
                     if messageCount > 0, oldValue.bottomOffset != newValue.bottomOffset, newValue.distanceFromBottom > 1 {
                         scheduleFollow()
                     }
@@ -677,6 +683,7 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
     private struct ScrollMetrics: Equatable, Sendable {
         let bottomOffset: CGFloat
         let distanceFromBottom: CGFloat
+        let visibleDistanceFromBottom: CGFloat
         let visibleHeight: CGFloat
 
         @available(iOS 18.0, macOS 15.0, *)
@@ -686,6 +693,8 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
                 geometry.contentSize.height + geometry.contentInsets.bottom - geometry.containerSize.height
             )
             distanceFromBottom = max(0, bottomOffset - geometry.contentOffset.y)
+            // Use `visibleRect` for the scroll-to-bottom button so bottom-aligned short conversations never trigger it.
+            visibleDistanceFromBottom = max(0, geometry.contentSize.height - geometry.visibleRect.maxY)
             visibleHeight = max(0, (geometry.containerSize.height - geometry.contentInsets.top - geometry.contentInsets.bottom).rounded(.down))
         }
     }

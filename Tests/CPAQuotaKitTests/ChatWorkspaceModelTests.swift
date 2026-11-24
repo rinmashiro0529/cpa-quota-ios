@@ -2399,6 +2399,142 @@ struct ChatWorkspaceModelTests {
         #expect(fixture.workspace.conversation(older.id)?.updatedAt == olderTime)
         #expect(fixture.workspace.conversations.map(\.id) == [newer.id, older.id])
     }
+
+    @Test @MainActor func fileBackedWorkspaceLoadsSummariesLazilyHydratesAndEvictsInactive() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ChatLazyWorkspaceTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let seedStore = ChatFilePersistence(directory: directory)
+        let img = ChatImageAttachment(mimeType: "image/jpeg", data: Data(repeating: 0x33, count: 1024))
+        var c1 = ChatConversation(title: "一", updatedAt: Date(timeIntervalSince1970: 100))
+        c1.messages.append(ChatMessage(role: .user, text: "第一段带唯一关键词：星云坐标", attachments: [img]))
+        var c2 = ChatConversation(title: "二", updatedAt: Date(timeIntervalSince1970: 200))
+        c2.messages.append(ChatMessage(role: .user, text: "第二段普通文本"))
+        var c3 = ChatConversation(title: "三", updatedAt: Date(timeIntervalSince1970: 300))
+        c3.messages.append(ChatMessage(role: .user, text: "第三段普通文本"))
+        try await seedStore.saveConversation(c1)
+        try await seedStore.saveConversation(c2)
+        try await seedStore.saveConversation(c3)
+
+        let workspace = ChatWorkspaceModel(
+            persistence: ChatFilePersistence(directory: directory),
+            secrets: MemorySecretStore(),
+            engine: FakeChatEngine(),
+            modelCatalog: { _, _ in FakeModelCatalog(result: .success([CPAModel(id: "m")])) },
+            backgroundRunner: FakeBackgroundRunner(),
+            maxHydratedConversations: 2
+        )
+        await workspace.loadIfNeeded()
+
+        // Indexed startup must populate summaries without eagerly hydrating full conversations.
+        #expect(workspace.conversationSummaries.map(\.id) == [c3.id, c2.id, c1.id])
+        #expect(workspace.conversations.isEmpty)
+        #expect(workspace.hasConversation(c1.id))
+
+        // Full-text search locates unhydrated conversations without hydrating them.
+        let searchHits = await workspace.searchConversationIDs(matching: "星云坐标")
+        #expect(searchHits == [c1.id])
+        #expect(workspace.conversations.isEmpty)
+
+        // Hydrating 3 conversations with cap 2 keeps the 2 most recently used in memory
+        // while preserving all 3 summaries and allowing re-hydration on demand.
+        let loaded1 = try #require(await workspace.loadConversationIfNeeded(c1.id))
+        #expect(loaded1.messages.first?.attachments == [img])
+        #expect(workspace.conversations.count == 1)
+
+        _ = await workspace.loadConversationIfNeeded(c2.id)
+        #expect(workspace.conversations.count == 2)
+
+        _ = await workspace.loadConversationIfNeeded(c3.id)
+        #expect(workspace.conversations.count == 2)
+        #expect(workspace.conversation(c1.id) == nil)
+        #expect(workspace.conversationSummaries.count == 3)
+
+        let reloaded1 = try #require(await workspace.loadConversationIfNeeded(c1.id))
+        #expect(reloaded1.messages.first?.attachments == [img])
+
+        // Renaming an unhydrated conversation updates its summary immediately and persists to disk.
+        let unhydrated = workspace.conversationSummaries.first { workspace.conversation($0.id) == nil }
+        let renameTarget = try #require(unhydrated)
+        workspace.renameConversation(renameTarget.id, title: "未水合重命名")
+        #expect(workspace.summary(for: renameTarget.id)?.title == "未水合重命名")
+        let persistedRename = await waitUntil {
+            (try? await seedStore.loadConversation(renameTarget.id))?.title == "未水合重命名"
+        }
+        #expect(persistedRename)
+    }
+
+    @Test @MainActor func fileBackedWorkspaceRecoversInterruptedStreamingReplyOnIndexedLaunch() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ChatLazyRecoveryTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let seedStore = ChatFilePersistence(directory: directory)
+        var interrupted = ChatConversation(title: "中断恢复", modelID: "m")
+        interrupted.messages.append(ChatMessage(role: .user, text: "写一段话"))
+        interrupted.messages.append(ChatMessage(role: .assistant, text: "已写一半", modelID: "m", status: .streaming))
+        try await seedStore.saveConversation(interrupted)
+
+        let workspace = ChatWorkspaceModel(
+            persistence: ChatFilePersistence(directory: directory),
+            secrets: MemorySecretStore(),
+            engine: FakeChatEngine(),
+            modelCatalog: { _, _ in FakeModelCatalog(result: .success([CPAModel(id: "m")])) },
+            backgroundRunner: FakeBackgroundRunner()
+        )
+        await workspace.loadIfNeeded()
+
+        let recovered = try #require(workspace.conversation(interrupted.id))
+        #expect(recovered.messages.last?.status == .interrupted)
+        #expect(recovered.messages.last?.failure == .generationInterrupted)
+        #expect(workspace.summary(for: interrupted.id)?.hasStreamingMessage == false)
+    }
+
+    @Test @MainActor func webSearchKeychainReadFailureReportsSearchFailedInsteadOfNotConfigured() async throws {
+        actor FailingSearchSecretStore: ChatSecretStore {
+            private var values: [String: String] = [:]
+            func loadSecret(account: String) async throws -> String? {
+                if account.contains("search") {
+                    throw CPAError(.secureStorageFailure)
+                }
+                return values[account]
+            }
+            func saveSecret(_ value: String, account: String) async throws { values[account] = value }
+            func removeSecret(account: String) async throws { values.removeValue(forKey: account) }
+        }
+
+        let search = FakeSearchClient()
+        let engine = FakeChatEngine()
+        engine.respond(with: [.snapshot(text: "无搜索回答", reasoning: nil)])
+        let workspace = ChatWorkspaceModel(
+            persistence: ChatMemoryPersistence(),
+            secrets: FailingSearchSecretStore(),
+            engine: engine,
+            searchClient: { _ in search },
+            modelCatalog: { _, _ in FakeModelCatalog(result: .success([CPAModel(id: "test-model")])) },
+            backgroundRunner: FakeBackgroundRunner()
+        )
+        workspace.settings.generatesTitles = false
+        await workspace.loadIfNeeded()
+        await workspace.bind(server: server) { nil }
+        #expect(await workspace.useManualKey("test-client-key-0001"))
+
+        let id = workspace.createConversation()
+        workspace.settings.searchProvider = .tavily
+        workspace.updateConversation(id) { $0.isWebSearchEnabled = true }
+        #expect(workspace.send("查一下", attachments: [], in: id))
+        let finished = await waitUntil { await MainActor.run { !workspace.isGenerating(id) } }
+        #expect(finished)
+
+        let reply = workspace.conversation(id)?.messages.last
+        #expect(reply?.status == .complete)
+        #expect(reply?.failure == .searchFailed)
+        #expect(search.queries.isEmpty)
+        #expect(engine.streamRequests.count == 1)
+    }
 }
 private actor StreamObservation {
     var requests = 0
