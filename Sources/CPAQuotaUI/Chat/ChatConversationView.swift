@@ -594,6 +594,7 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
     @State private var isPinnedToBottom = true
     @State private var isUserScrolling = false
     @State private var pendingFollow: Task<Void, Never>?
+    @State private var remainingAnimationFollows = 0
 
     @ViewBuilder
     func body(content: Content) -> some View {
@@ -602,12 +603,14 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
                 guard newCount > oldCount, !isUserScrolling else { return }
                 isPinnedToBottom = true
                 isScrolledAwayFromBottom = false
+                remainingAnimationFollows = 2
                 scheduleFollow()
             }
             .onChange(of: scrollToBottomTrigger) { _, _ in
                 cancelFollow()
                 isPinnedToBottom = true
                 isScrolledAwayFromBottom = false
+                remainingAnimationFollows = 2
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
                     proxy.scrollTo(bottomAnchor, anchor: .bottom)
                 }
@@ -623,12 +626,23 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
                     let isScrolling = newPhase == .interacting || newPhase == .decelerating
                     isUserScrolling = newPhase == .tracking || isScrolling
                     if isUserScrolling {
+                        remainingAnimationFollows = 0
                         cancelFollow()
                     }
                     if wasScrolling || isScrolling {
                         let distance = ScrollMetrics(context.geometry).distanceFromBottom
                         isPinnedToBottom = distance <= 24
                         updateScrolledAwayState(distance: distance)
+                    } else if oldPhase == .animating, newPhase == .idle,
+                              isPinnedToBottom, !isUserScrolling,
+                              messageCount > 0, remainingAnimationFollows > 0 {
+                        // Multi-pass Markdown layout can finish expanding after the first animated scroll;
+                        // re-snap once or twice if still short of the true bottom.
+                        let distance = ScrollMetrics(context.geometry).distanceFromBottom
+                        if distance > 4 {
+                            remainingAnimationFollows -= 1
+                            scheduleFollow()
+                        }
                     }
                 }
                 .onScrollGeometryChange(for: ScrollMetrics.self) { ScrollMetrics($0) } action: { oldValue, newValue in
@@ -637,11 +651,13 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
                     }
                     updateScrolledAwayState(distance: newValue.distanceFromBottom)
                     if messageCount > 0, oldValue.bottomOffset != newValue.bottomOffset, newValue.distanceFromBottom > 1 {
+                        remainingAnimationFollows = 2
                         scheduleFollow()
                     }
                 }
                 .onChange(of: latestTextLength) { oldLength, newLength in
                     if isGenerating, newLength > oldLength {
+                        remainingAnimationFollows = 2
                         scheduleFollow()
                     }
                 }
