@@ -1150,7 +1150,12 @@ final class CPAQuotaAppUITests: XCTestCase {
         guard #available(iOS 18.4, *) else { throw XCTSkip("The static HTML preview requires WebKit file-panel cancellation.") }
         let app = launch(connected: true, largeText: true,
                          arguments: ["--ui-test-chat-gate", "--ui-test-chat-html", "--ui-test-theme=dark"])
-        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        defer {
+            XCUIDevice.shared.orientation = .portrait
+            if app.state != .notRunning {
+                app.terminate()
+            }
+        }
         selectTab("chat", title: "AI 对话", in: app)
         element("chat.new", in: app).tap()
         let input = element("chat.input", in: app)
@@ -1170,6 +1175,10 @@ final class CPAQuotaAppUITests: XCTestCase {
         expectExists(secondFragment, in: app, timeout: htmlPreviewContentTimeout)
         attach(app, name: "html-preview-dark-landscape")
         app.buttons["关闭"].tap()
+        let web = app.webViews.firstMatch
+        expectPredicate(NSPredicate(format: "exists == false"), on: web, in: app,
+                        message: "Closing the HTML preview must dismiss the WebView sheet.",
+                        finalCheck: { !web.exists })
         expectExists(input, in: app)
     }
 
