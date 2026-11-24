@@ -464,6 +464,7 @@ private struct ChatRoundButtonStyle: ButtonStyle {
     let prominent: Bool
     @Environment(\.brandPalette) private var palette
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeBody(configuration: Configuration) -> some View {
         let isProminent = prominent && isEnabled
@@ -482,7 +483,9 @@ private struct ChatRoundButtonStyle: ButtonStyle {
                         .allowsHitTesting(false)
                 }
             }
+            .scaleEffect(isEnabled && configuration.isPressed && !reduceMotion ? 0.92 : 1)
             .opacity(isEnabled ? (configuration.isPressed ? 0.75 : 1) : 0.55)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
             // Match the composer row's hit area without increasing the visible circle.
             .frame(width: 44, height: 44)
             .contentShape(Rectangle())

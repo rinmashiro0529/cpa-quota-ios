@@ -65,7 +65,7 @@ struct ChatSettingsView: View {
             } header: {
                 Text("规则、记忆与技能")
             } footer: {
-                Text("发送时依次附加全局规则、记忆和本对话设定。记忆可以在消息菜单中“加入记忆”，也可以在这里手动添加。")
+                Text("发送时依次附加全局规则、记忆和本对话设定。全局规则与记忆作用于所有已连接的 CPA 服务；切换服务时如不希望附带，可先关闭“使用记忆”。")
             }
             .listRowBackground(palette.contentSurface)
 
@@ -130,7 +130,7 @@ struct ChatSettingsView: View {
                     Label((deleteAllFailed || chat.deleteAllStateUnknown) ? "重试删除全部对话" : "删除全部对话", systemImage: "trash")
                         .frame(minHeight: 44)
                 }
-                .disabled((chat.conversations.isEmpty && !deleteAllFailed && !chat.deleteAllStateUnknown) || isDeletingAll)
+                .disabled((chat.conversationSummaries.isEmpty && !deleteAllFailed && !chat.deleteAllStateUnknown) || isDeletingAll)
             } footer: {
                 Text("对话、记忆与技能只保存在本机，不会上传到 CPA 以外的服务。")
             }
@@ -257,7 +257,7 @@ struct ChatSettingsView: View {
                 }
             }
         } header: {
-            Text("API Key").font(QuotaTypography.brandHeadline)
+            Text("API Key")
         } footer: {
             Text(chat.persistsKey
                  ? "读取 Key 列表使用已保存的 CPA 管理密钥；对话请求只使用所选的客户端 API Key。所选 Key 存入仅限本设备的系统钥匙串，界面只显示末尾 4 位。"
@@ -394,7 +394,9 @@ struct ChatSettingsView: View {
         } header: {
             Text("联网搜索")
         } footer: {
-            Text("搜索由所选的第三方服务完成，需要该服务自己的 API Key；搜索词会发送给该服务。在对话中点按地球图标开启。")
+            Text(chat.settings.searchProvider == .serpAPI
+                 ? "搜索由所选的第三方服务完成，需要该服务自己的 API Key；搜索词会发送给该服务。注意：SerpAPI 接口要求通过 URL 查询参数传递 API Key，可能出现在代理或服务端访问日志中。在对话中点按地球图标开启。"
+                 : "搜索由所选的第三方服务完成，需要该服务自己的 API Key；搜索词会发送给该服务。在对话中点按地球图标开启。")
         }
         .listRowBackground(palette.contentSurface)
     }

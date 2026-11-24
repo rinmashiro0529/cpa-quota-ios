@@ -1,6 +1,23 @@
 import Foundation
 import CPAQuotaKit
 
+enum ChatAttachmentCoding {
+    /// Maps attachment UUID -> external file name under `Attachments/`.
+    /// When present in `JSONEncoder.userInfo`, attachments serialize as external
+    /// file references instead of inline base64 data.
+    static let externalFileNamesKey = CodingUserInfoKey(
+        rawValue: "icu.nahida.cpaquota.chat.attachmentExternalFileNames")!
+    /// Base `Attachments/` directory URL for resolving externalized attachment files.
+    static let attachmentsDirectoryKey = CodingUserInfoKey(
+        rawValue: "icu.nahida.cpaquota.chat.attachmentsDirectory")!
+
+    static func isSafeFileName(_ name: String) -> Bool {
+        guard !name.isEmpty, name != ".", name != "..",
+              !name.contains("/"), !name.contains("\\") else { return false }
+        return URL(fileURLWithPath: name).lastPathComponent == name
+    }
+}
+
 public struct ChatImageAttachment: Identifiable, Codable, Equatable, Sendable {
     public let id: UUID
     public let mimeType: String
@@ -10,6 +27,44 @@ public struct ChatImageAttachment: Identifiable, Codable, Equatable, Sendable {
         self.id = id
         self.mimeType = mimeType
         self.data = data
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case mimeType
+        case data
+        case fileName
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        mimeType = try container.decode(String.self, forKey: .mimeType)
+        if let fileName = try container.decodeIfPresent(String.self, forKey: .fileName),
+           ChatAttachmentCoding.isSafeFileName(fileName),
+           let directory = decoder.userInfo[ChatAttachmentCoding.attachmentsDirectoryKey] as? URL {
+            let fileURL = directory.appendingPathComponent(fileName, isDirectory: false)
+            if let externalData = try? Data(contentsOf: fileURL) {
+                data = externalData
+            } else {
+                data = try container.decodeIfPresent(Data.self, forKey: .data) ?? Data()
+            }
+        } else {
+            data = try container.decode(Data.self, forKey: .data)
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(mimeType, forKey: .mimeType)
+        if let fileMap = encoder.userInfo[ChatAttachmentCoding.externalFileNamesKey] as? [UUID: String],
+           let fileName = fileMap[id],
+           ChatAttachmentCoding.isSafeFileName(fileName) {
+            try container.encode(fileName, forKey: .fileName)
+        } else {
+            try container.encode(data, forKey: .data)
+        }
     }
 }
 
@@ -198,6 +253,60 @@ public struct ChatConversation: Identifiable, Codable, Equatable, Sendable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt ?? createdAt
         self.serverIdentifier = serverIdentifier
+    }
+}
+
+/// Lightweight conversation metadata used to render, sort, and maintain the
+/// conversation list without loading full transcripts or image attachments.
+public struct ChatConversationSummary: Identifiable, Codable, Equatable, Sendable {
+    public let id: UUID
+    public var title: String
+    public var modelID: String?
+    public var serverIdentifier: String?
+    public let createdAt: Date
+    public var updatedAt: Date
+    public var messageCount: Int
+    public var previewText: String
+    public var hasStreamingMessage: Bool
+
+    public init(
+        id: UUID,
+        title: String = "",
+        modelID: String? = nil,
+        serverIdentifier: String? = nil,
+        createdAt: Date = Date(),
+        updatedAt: Date? = nil,
+        messageCount: Int = 0,
+        previewText: String = "",
+        hasStreamingMessage: Bool = false
+    ) {
+        self.id = id
+        self.title = title
+        self.modelID = modelID
+        self.serverIdentifier = serverIdentifier
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt ?? createdAt
+        self.messageCount = messageCount
+        self.previewText = previewText
+        self.hasStreamingMessage = hasStreamingMessage
+    }
+
+    public init(from conversation: ChatConversation) {
+        self.id = conversation.id
+        self.title = conversation.title
+        self.modelID = conversation.modelID
+        self.serverIdentifier = conversation.serverIdentifier
+        self.createdAt = conversation.createdAt
+        self.updatedAt = conversation.updatedAt
+        self.messageCount = conversation.messages.count
+        self.previewText = Self.previewText(for: conversation.messages)
+        self.hasStreamingMessage = conversation.messages.contains { $0.status == .streaming }
+    }
+
+    static func previewText(for messages: [ChatMessage]) -> String {
+        guard let last = messages.last(where: { !$0.text.isEmpty }) else { return "" }
+        let flattened = last.text.replacingOccurrences(of: "\n", with: " ")
+        return String(flattened.prefix(80))
     }
 }
 

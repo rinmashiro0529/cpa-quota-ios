@@ -14,11 +14,12 @@ public struct ChatWorkspaceView: View {
     @Environment(\.brandPalette) private var palette
     @State private var searchText = ""
     @State private var debouncedSearchText = ""
+    @State private var searchMatchIDs: Set<UUID>?
     @State private var isPresentingSettings = false
     @State private var fallbackConversation: UUID?
-    @State private var renaming: ChatConversation?
+    @State private var renaming: ChatConversationSummary?
     @State private var renameDraft = ""
-    @State private var pendingDeletion: ChatConversation?
+    @State private var pendingDeletion: ChatConversationSummary?
 
     public init(session: CPAQuotaSession) {
         self.session = session
@@ -32,21 +33,28 @@ public struct ChatWorkspaceView: View {
 
     private var chat: ChatWorkspaceModel { session.chatWorkspace }
 
-    private var visibleConversations: [ChatConversation] {
+    private var visibleConversations: [ChatConversationSummary] {
         let query = debouncedSearchText
-        guard !query.isEmpty else { return chat.conversations }
-        return chat.conversations.filter {
-            $0.displayTitle.localizedCaseInsensitiveContains(query)
-                || $0.messages.contains { $0.text.localizedCaseInsensitiveContains(query) }
+        guard !query.isEmpty else { return chat.conversationSummaries }
+        return chat.conversationSummaries.filter { summary in
+            if let searchMatchIDs, searchMatchIDs.contains(summary.id) { return true }
+            if summary.displayTitle.localizedCaseInsensitiveContains(query)
+                || summary.previewText.localizedCaseInsensitiveContains(query) {
+                return true
+            }
+            if let hydrated = chat.conversation(summary.id) {
+                return hydrated.messages.contains { $0.text.localizedCaseInsensitiveContains(query) }
+            }
+            return false
         }
     }
 
     public var body: some View {
-        // Filtered once per render; message text is only scanned after search debounce settles.
+        // Filtered once per render; full-text disk search runs only after search debounce settles.
         let visible = visibleConversations
         let hasBannerSections = !isCredentialReady || !chat.failedConversationDeletions.isEmpty
-        let showsFullEmptyOverlay = chat.isLoaded && chat.conversations.isEmpty && !hasBannerSections
-        let showsSearchEmptyOverlay = chat.isLoaded && !chat.conversations.isEmpty && visible.isEmpty && !hasBannerSections
+        let showsFullEmptyOverlay = chat.isLoaded && chat.conversationSummaries.isEmpty && !hasBannerSections
+        let showsSearchEmptyOverlay = chat.isLoaded && !chat.conversationSummaries.isEmpty && visible.isEmpty && !hasBannerSections
         listContent(
             visible: visible,
             hasBannerSections: hasBannerSections,
@@ -62,7 +70,7 @@ public struct ChatWorkspaceView: View {
     }
 
     private func listContent(
-        visible: [ChatConversation],
+        visible: [ChatConversationSummary],
         hasBannerSections: Bool,
         showsFullEmptyOverlay: Bool,
         showsSearchEmptyOverlay: Bool
@@ -80,7 +88,7 @@ public struct ChatWorkspaceView: View {
                     .quotaPrimaryButtonStyle()
                     .accessibilityIdentifier("chat.chooseKey")
                 } header: {
-                    Text("对话凭据").font(QuotaTypography.brandHeadline)
+                    Text("对话凭据")
                 } footer: {
                     Text("对话使用 CPA 客户端 API Key 调用模型，与管理密钥分开保存。")
                 }
@@ -100,7 +108,7 @@ public struct ChatWorkspaceView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .listRowBackground(palette.contentSurface)
-            } else if chat.conversations.isEmpty {
+            } else if chat.conversationSummaries.isEmpty {
                 if hasBannerSections {
                     Section {
                         emptyConversationsView()
@@ -119,7 +127,7 @@ public struct ChatWorkspaceView: View {
                 Section {
                     ForEach(visible) { conversation in
                         NavigationLink(value: ChatDestination.conversation(conversation.id)) {
-                            ChatConversationRow(conversation: conversation,
+                            ChatConversationRow(summary: conversation,
                                                 isGenerating: chat.isGenerating(conversation.id))
                         }
                         .accessibilityIdentifier("chat.conversation.\(conversation.id.uuidString)")
@@ -168,11 +176,21 @@ public struct ChatWorkspaceView: View {
             let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
                 debouncedSearchText = ""
+                searchMatchIDs = nil
                 return
             }
             try? await Task.sleep(for: .milliseconds(150))
             guard !Task.isCancelled else { return }
             debouncedSearchText = trimmed
+        }
+        .task(id: debouncedSearchText) {
+            guard !debouncedSearchText.isEmpty else {
+                searchMatchIDs = nil
+                return
+            }
+            let matches = await chat.searchConversationIDs(matching: debouncedSearchText)
+            guard !Task.isCancelled else { return }
+            searchMatchIDs = matches
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -235,7 +253,7 @@ public struct ChatWorkspaceView: View {
             guard let id = chat.requestedConversationID else { return }
             await chat.loadIfNeeded()
             chat.requestedConversationID = nil
-            if chat.conversation(id) != nil {
+            if chat.hasConversation(id) {
                 openConversation(id, replaceStack: true)
             }
         }
@@ -301,14 +319,14 @@ private struct ChatFallbackNavigationDestinationModifier: ViewModifier {
 }
 
 struct ChatConversationRow: View {
-    let conversation: ChatConversation
+    let summary: ChatConversationSummary
     let isGenerating: Bool
     @Environment(\.brandPalette) private var palette
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(conversation.displayTitle)
+                Text(summary.displayTitle)
                     .font(.headline)
                     .foregroundStyle(palette.textPrimary)
                     .lineLimit(1)
@@ -318,16 +336,16 @@ struct ChatConversationRow: View {
                         .controlSize(.small)
                         .accessibilityLabel("正在生成")
                 } else {
-                    Text(conversation.updatedAt, format: .relative(presentation: .named))
+                    Text(summary.updatedAt, format: .relative(presentation: .named))
                         .font(.caption)
                         .foregroundStyle(palette.textMuted)
                 }
             }
-            Text(conversation.previewText)
+            Text(summary.displayPreviewText)
                 .font(.subheadline)
                 .foregroundStyle(palette.textSecondary)
                 .lineLimit(2)
-            if let model = conversation.modelID {
+            if let model = summary.modelID {
                 Text(model)
                     .font(QuotaTypography.dataDetail)
                     .foregroundStyle(palette.textMuted)

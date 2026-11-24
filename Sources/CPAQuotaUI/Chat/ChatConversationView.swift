@@ -31,6 +31,9 @@ struct ChatConversationView: View {
         Group {
             if let conversation = chat.conversation(conversationID) {
                 content(conversation)
+            } else if chat.hasConversation(conversationID) {
+                ProgressView("正在读取对话")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ContentUnavailableView {
                     Label("对话已删除", systemImage: "trash")
@@ -45,7 +48,10 @@ struct ChatConversationView: View {
         .sheet(item: $htmlPreview) { ChatHTMLPreview(snippet: $0) }
         #endif
         .tint(palette.actionTint)
-        .onChange(of: chat.conversation(conversationID) == nil) { _, deleted in
+        .task(id: conversationID) {
+            _ = await chat.loadConversationIfNeeded(conversationID)
+        }
+        .onChange(of: !chat.hasConversation(conversationID)) { _, deleted in
             // Deleting from the options sheet returns to the list instead of an empty page.
             if deleted { dismiss() }
         }
@@ -368,7 +374,7 @@ struct ChatConversationView: View {
     }
 
     private func persistCurrentDraft(for id: UUID) {
-        guard chat.conversation(id) != nil else {
+        guard chat.hasConversation(id) else {
             chat.clearDraft(for: id)
             return
         }
