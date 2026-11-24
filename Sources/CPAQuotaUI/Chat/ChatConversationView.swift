@@ -23,6 +23,7 @@ struct ChatConversationView: View {
     @State private var memoryNoticeTask: Task<Void, Never>?
     @State private var isScrolledAwayFromBottom = false
     @State private var scrollToBottomTrigger = 0
+    @State private var emptyStateMinHeight: CGFloat = 0
 
     private var chat: ChatWorkspaceModel { session.chatWorkspace }
 
@@ -119,11 +120,18 @@ struct ChatConversationView: View {
         }()
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
-                    if conversation.messages.isEmpty {
+                if conversation.messages.isEmpty {
+                    VStack(spacing: 0) {
+                        Spacer(minLength: 0)
                         ChatConversationEmptyState(conversation: conversation)
-                            .containerRelativeFrame(.vertical, alignment: .center)
-                    } else {
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, minHeight: max(0, emptyStateMinHeight))
+                } else {
+                    LazyVStack(alignment: .leading, spacing: 18) {
                         let canRerun = chat.generationBlocker(for: conversation.id) == nil
                         ForEach(conversation.messages) { message in
                             ChatMessageView(
@@ -141,9 +149,9 @@ struct ChatConversationView: View {
                             .padding(.bottom, 12)
                             .id(Self.bottomAnchor)
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
             }
             .scrollDismissesKeyboard(.interactively)
             .modifier(ChatScrollEdgeModifier())
@@ -154,7 +162,8 @@ struct ChatConversationView: View {
                 messageCount: conversation.messages.count,
                 latestTextLength: conversation.messages.last?.text.count ?? 0,
                 scrollToBottomTrigger: scrollToBottomTrigger,
-                isScrolledAwayFromBottom: $isScrolledAwayFromBottom
+                isScrolledAwayFromBottom: $isScrolledAwayFromBottom,
+                visibleViewportHeight: $emptyStateMinHeight
             ))
             .overlay(alignment: .bottomTrailing) {
                 if isScrolledAwayFromBottom, !conversation.messages.isEmpty {
@@ -482,7 +491,7 @@ private struct ChatConversationEmptyState: View {
                 .foregroundStyle(palette.textMuted)
         }
         .multilineTextAlignment(.center)
-        .padding(.vertical, 24)
+        .padding(.vertical, 12)
         .frame(maxWidth: .infinity)
     }
 }
@@ -574,6 +583,7 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
     let latestTextLength: Int
     let scrollToBottomTrigger: Int
     @Binding var isScrolledAwayFromBottom: Bool
+    @Binding var visibleViewportHeight: CGFloat
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isPinnedToBottom = true
     @State private var isUserScrolling = false
@@ -598,9 +608,10 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
             }
         if #available(iOS 18.0, macOS 15.0, *) {
             base
-                // Explicit follow requests own size changes, including when the keyboard is open.
-                .defaultScrollAnchor(.bottom, for: .initialOffset)
-                .defaultScrollAnchor(.bottom, for: .alignment)
+                // Anchor empty conversations to the top so AX5/landscape content scrolls downward
+                // cleanly instead of colliding with the navigation bar; active threads anchor bottom.
+                .defaultScrollAnchor(messageCount == 0 ? .top : .bottom, for: .initialOffset)
+                .defaultScrollAnchor(messageCount == 0 ? .top : .bottom, for: .alignment)
                 .onScrollPhaseChange { oldPhase, newPhase, context in
                     let wasScrolling = oldPhase == .interacting || oldPhase == .decelerating
                     let isScrolling = newPhase == .interacting || newPhase == .decelerating
@@ -615,8 +626,11 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
                     }
                 }
                 .onScrollGeometryChange(for: ScrollMetrics.self) { ScrollMetrics($0) } action: { oldValue, newValue in
+                    if abs(visibleViewportHeight - newValue.visibleHeight) >= 1 {
+                        visibleViewportHeight = newValue.visibleHeight
+                    }
                     updateScrolledAwayState(distance: newValue.distanceFromBottom)
-                    if oldValue.bottomOffset != newValue.bottomOffset, newValue.distanceFromBottom > 1 {
+                    if messageCount > 0, oldValue.bottomOffset != newValue.bottomOffset, newValue.distanceFromBottom > 1 {
                         scheduleFollow()
                     }
                 }
@@ -628,7 +642,7 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
                 .onDisappear(perform: cancelFollow)
         } else {
             base
-                .defaultScrollAnchor(.bottom)
+                .defaultScrollAnchor(messageCount == 0 ? .top : .bottom)
                 .onDisappear(perform: cancelFollow)
         }
     }
@@ -663,6 +677,7 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
     private struct ScrollMetrics: Equatable, Sendable {
         let bottomOffset: CGFloat
         let distanceFromBottom: CGFloat
+        let visibleHeight: CGFloat
 
         @available(iOS 18.0, macOS 15.0, *)
         init(_ geometry: ScrollGeometry) {
@@ -671,6 +686,7 @@ private struct ChatStreamingAutoScrollModifier: ViewModifier {
                 geometry.contentSize.height + geometry.contentInsets.bottom - geometry.containerSize.height
             )
             distanceFromBottom = max(0, bottomOffset - geometry.contentOffset.y)
+            visibleHeight = max(0, (geometry.containerSize.height - geometry.contentInsets.top - geometry.contentInsets.bottom).rounded(.down))
         }
     }
 }
