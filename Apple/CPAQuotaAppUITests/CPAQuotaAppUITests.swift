@@ -766,7 +766,17 @@ final class CPAQuotaAppUITests: XCTestCase {
         expectExists(last, in: app)
         let viewport = CGRect(x: 0, y: app.navigationBars.firstMatch.frame.maxY,
                               width: app.frame.width, height: max(0, input.frame.minY - app.navigationBars.firstMatch.frame.maxY))
-        XCTAssertTrue(viewport.contains(CGPoint(x: last.frame.midX, y: last.frame.midY)), "U1 bottom \(last.frame) viewport \(viewport)")
+        // Wait briefly for the animated streaming auto-scroll to finish settling into the viewport.
+        let settleDeadline = Date().addingTimeInterval(3)
+        var lastFrame = last.frame
+        while !viewport.contains(CGPoint(x: lastFrame.midX, y: lastFrame.midY)), Date() < settleDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            if last.exists, let snap = try? last.snapshot() {
+                lastFrame = snap.frame
+            }
+        }
+        XCTAssertTrue(viewport.contains(CGPoint(x: lastFrame.midX, y: lastFrame.midY)),
+                      "U1 bottom \(lastFrame) viewport \(viewport)")
         let first = element("chat.message.user", in: app)
         reveal(first, in: app, upward: false, requiresHitTarget: false)
         let originalY = first.frame.midY
