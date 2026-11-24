@@ -228,6 +228,9 @@ final class CPAQuotaAppUITests: XCTestCase {
         let cancel = app.buttons["cap.range.cancel"]
         expectExists(cancel, in: app, timeout: 5)
         cancel.tap()
+        expectPredicate(NSPredicate(format: "exists == false"), on: cancel, in: app,
+                        message: "Canceling the CAP range panel must dismiss the sheet.",
+                        finalCheck: { !cancel.exists })
         let quickState = textContaining("查看近 30 分钟用量", in: app)
         reveal(quickState, in: app, requiresHitTarget: false)
         verify(quickState.label.contains("查看近 30 分钟用量"), in: app,
@@ -265,6 +268,10 @@ final class CPAQuotaAppUITests: XCTestCase {
         verify(option.exists && option.isHittable, in: app,
                "Scrolling back must make the 3-hour option selectable again.")
         option.tap()
+        let sheetCancel = app.buttons["cap.range.cancel"]
+        expectPredicate(NSPredicate(format: "exists == false"), on: sheetCancel, in: app,
+                        message: "Selecting a CAP hour range must dismiss the sheet.",
+                        finalCheck: { !sheetCancel.exists })
         let hourState = textContaining("查看近 3 小时用量", in: app)
         reveal(hourState, in: app, requiresHitTarget: false)
         verify(hourState.label.contains("查看近 3 小时用量"), in: app,
@@ -299,6 +306,10 @@ final class CPAQuotaAppUITests: XCTestCase {
         let monthOption = app.buttons["1 个月"]
         reveal(monthOption, in: app)
         monthOption.tap()
+        let sheetCancel = app.buttons["cap.range.cancel"]
+        expectPredicate(NSPredicate(format: "exists == false"), on: sheetCancel, in: app,
+                        message: "Selecting a CAP month range must dismiss the sheet.",
+                        finalCheck: { !sheetCancel.exists })
         let monthState = textContaining("查看按月模型汇总", in: app)
         reveal(monthState, in: app, requiresHitTarget: false)
         verify(monthState.label.contains("查看按月模型汇总"), in: app,
@@ -1196,12 +1207,13 @@ final class CPAQuotaAppUITests: XCTestCase {
         // target exists, move toward its center instead of blindly sweeping.
         for attempt in 0...30 {
             let context = geometry(in: app, scrollingTo: element)
-            let exists = element.exists
-            let frame = exists ? element.frame : .null
+            let snap = try? element.snapshot()
+            let exists = snap != nil
+            let frame = snap?.frame ?? .null
             let hittable = exists && element.isHittable
-            if exists {
-                if hasVisibleTapCenter(element, frame: frame, hittable: hittable, context: context) { return }
-                if isVisible(frame, viewport: context.viewport) && (!requiresHitTarget || !element.isEnabled) { return }
+            if let snap {
+                if hasVisibleTapCenter(snapshot: snap, hittable: hittable, context: context) { return }
+                if isVisible(frame, viewport: context.viewport) && (!requiresHitTarget || !snap.isEnabled) { return }
             }
             guard attempt < 30 else { break }
             var direction = attempt < 15 ? upward : !upward
@@ -1289,26 +1301,37 @@ final class CPAQuotaAppUITests: XCTestCase {
     }
 
     /// Capture geometry once per attempt, then refresh it after each gesture.
+    /// Uses atomic `snapshot()` calls so transient elements (such as a dismissing
+    /// sheet's navigation bar) never trigger fatal indexed-snapshot errors.
     @MainActor
     private func geometry(in app: XCUIApplication, scrollingTo target: XCUIElement? = nil) -> GeometryContext {
         let appFrame = app.frame
-        let navBars = app.navigationBars.allElementsBoundByIndex.filter { $0.exists }
-        let tabBars = app.tabBars.allElementsBoundByIndex.filter { $0.exists }
-        let navFrames = navBars.map { $0.frame.intersection(appFrame) }
-        let tabFrames = tabBars.map { $0.frame.intersection(appFrame) }
-        let keyboard = app.keyboards.firstMatch
-        let keyboardFrame: CGRect? = keyboard.exists ? keyboard.frame : nil
+        let navBarEntries: [(element: XCUIElement, frame: CGRect)] =
+            app.navigationBars.allElementsBoundByIndex.compactMap { bar in
+                guard let snap = try? bar.snapshot() else { return nil }
+                return (bar, snap.frame.intersection(appFrame))
+            }
+        let tabBarEntries: [(element: XCUIElement, frame: CGRect)] =
+            app.tabBars.allElementsBoundByIndex.compactMap { bar in
+                guard let snap = try? bar.snapshot() else { return nil }
+                return (bar, snap.frame.intersection(appFrame))
+            }
+        let navBars = navBarEntries.map(\.element)
+        let tabBars = tabBarEntries.map(\.element)
+        let navFrames = navBarEntries.map(\.frame)
+        let tabFrames = tabBarEntries.map(\.frame)
+        let keyboardFrame: CGRect? = (try? app.keyboards.firstMatch.snapshot())?.frame
         let containers = app.collectionViews.allElementsBoundByIndex
             + app.tables.allElementsBoundByIndex + app.scrollViews.allElementsBoundByIndex
-        let candidates: [(element: XCUIElement, frame: CGRect, viewport: CGRect)] = containers.compactMap { container in
-            guard container.exists else { return nil }
-            let frame = container.frame
+        let candidates: [(element: XCUIElement, identifier: String, frame: CGRect, viewport: CGRect)] = containers.compactMap { container in
+            guard let snap = try? container.snapshot() else { return nil }
+            let frame = snap.frame
             let viewport = visibleContentFrame(frame, appFrame: appFrame, navFrames: navFrames,
                                                tabFrames: tabFrames, keyboardFrame: keyboardFrame)
             guard !viewport.isNull, viewport.width > 44, viewport.height > 80 else { return nil }
-            return (container, frame, viewport)
+            return (container, snap.identifier, frame, viewport)
         }
-        let detailForms = candidates.filter { $0.element.identifier == "quota.detail.form" }
+        let detailForms = candidates.filter { $0.identifier == "quota.detail.form" }
         let selected = (detailForms.isEmpty ? candidates : detailForms).max {
             $0.viewport.width * $0.viewport.height < $1.viewport.width * $1.viewport.height
         }
@@ -1317,21 +1340,19 @@ final class CPAQuotaAppUITests: XCTestCase {
             "chat.composer", "chat.input", "chat.send", "chat.stop",
             "chat.continue", "chat.retry", "chat.attach", "chat.webSearch", "chat.searchUnavailable"
         ]
-        let isComposerTarget = target.map { $0.exists && composerIDs.contains($0.identifier) } ?? false
-        if !isComposerTarget, var visibleViewport = viewport {
-            let chatInput = app.textFields.matching(identifier: "chat.input").firstMatch
-            if chatInput.exists {
-                let composer = element("chat.composer", in: app)
-                let composerTop: CGFloat
-                if composer.exists, !composer.frame.isEmpty {
-                    composerTop = min(composer.frame.minY, chatInput.frame.minY)
-                } else {
-                    composerTop = chatInput.frame.minY
-                }
-                if composerTop - visibleViewport.minY > 80, composerTop < visibleViewport.maxY {
-                    visibleViewport.size.height = composerTop - visibleViewport.minY
-                    viewport = visibleViewport
-                }
+        let isComposerTarget = target.flatMap { try? $0.snapshot() }.map { composerIDs.contains($0.identifier) } ?? false
+        if !isComposerTarget, var visibleViewport = viewport,
+           let inputSnap = try? app.textFields.matching(identifier: "chat.input").firstMatch.snapshot() {
+            let composerSnap = try? element("chat.composer", in: app).snapshot()
+            let composerTop: CGFloat
+            if let composerSnap, !composerSnap.frame.isEmpty {
+                composerTop = min(composerSnap.frame.minY, inputSnap.frame.minY)
+            } else {
+                composerTop = inputSnap.frame.minY
+            }
+            if composerTop - visibleViewport.minY > 80, composerTop < visibleViewport.maxY {
+                visibleViewport.size.height = composerTop - visibleViewport.minY
+                viewport = visibleViewport
             }
         }
         return GeometryContext(appFrame: appFrame, bars: navBars + tabBars,
@@ -1359,19 +1380,20 @@ final class CPAQuotaAppUITests: XCTestCase {
     /// Hittable alone can include a stale rotation frame or content beneath
     /// system bars. Keep genuine toolbar buttons reachable in their own bars.
     @MainActor
-    private func hasVisibleTapCenter(_ element: XCUIElement, frame: CGRect, hittable: Bool,
+    private func hasVisibleTapCenter(snapshot: any XCUIElementSnapshot, hittable: Bool,
                                      context: GeometryContext) -> Bool {
+        let frame = snapshot.frame
         guard hittable, !frame.isEmpty, !frame.isNull else { return false }
         let center = CGPoint(x: frame.midX, y: frame.midY)
         guard context.appFrame.contains(center) else { return false }
-        let identifier = element.identifier
-        let label = element.label
+        let identifier = snapshot.identifier
+        let label = snapshot.label
         for bar in context.bars {
             let buttons = bar.buttons
             let match = identifier.isEmpty
                 ? buttons.matching(NSPredicate(format: "label == %@", label)).firstMatch
                 : buttons.matching(identifier: identifier).matching(NSPredicate(format: "label == %@", label)).firstMatch
-            if match.exists && match.frame == frame { return true }
+            if let matchSnap = try? match.snapshot(), matchSnap.frame == frame { return true }
         }
         guard let viewport = context.viewport else { return false }
         return viewport.contains(center) && isVisible(frame, viewport: viewport)
@@ -1400,8 +1422,8 @@ final class CPAQuotaAppUITests: XCTestCase {
             return
         }
         let anchor = container.cells.firstMatch
-        let hasAnchor = anchor.exists && !anchor.frame.isEmpty
-        let before = hasAnchor ? anchor.frame : .null
+        let before = (try? anchor.snapshot()).flatMap { $0.frame.isEmpty ? nil : $0.frame } ?? .null
+        let hasAnchor = !before.isNull
         let preferredX = hasAnchor ? before.minX + 4 : viewport.midX
         let x = min(max(preferredX, viewport.minX + 8), viewport.maxX - 8) - context.containerFrame.minX
         let targetDistance = targetFrame.isEmpty || targetFrame.isNull
@@ -1422,10 +1444,10 @@ final class CPAQuotaAppUITests: XCTestCase {
         } else {
             start.press(forDuration: 0.05, thenDragTo: end)
         }
-        let after = anchor.exists ? anchor.frame : .null
-        let afterExists = target.exists
-        let afterFrame = afterExists ? target.frame : .null
-        let afterHittable = afterExists && target.isHittable
+        let after = (try? anchor.snapshot())?.frame ?? .null
+        let afterSnap = try? target.snapshot()
+        let afterFrame = afterSnap?.frame ?? .null
+        let afterHittable = afterSnap != nil && target.isHittable
         print("FRONTEND_SCROLL line=\(line) upward=\(upward) viewport=\(viewport) anchorBefore=\(before) anchorAfter=\(after) targetBefore=\(targetFrame) hittableBefore=\(targetHittable) targetAfter=\(afterFrame) hittableAfter=\(afterHittable)")
     }
 
