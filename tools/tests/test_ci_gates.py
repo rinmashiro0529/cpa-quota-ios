@@ -148,8 +148,18 @@ class CIGateTests(unittest.TestCase):
                             {
                                 "Name": "Default",
                                 "TestTargets": [
-                                    {"BlueprintName": "CPAQuotaTests", "TestingEnvironmentVariables": {}},
-                                    {"BlueprintName": "CPAQuotaAppUITests"},
+                                    {
+                                        "BlueprintName": "CPAQuotaTests",
+                                        "EnvironmentVariables": {"OS_ACTIVITY_DT_MODE": "YES", "TERM": "dumb"},
+                                        "TestingEnvironmentVariables": {},
+                                    },
+                                    {
+                                        "BlueprintName": "CPAQuotaAppUITests",
+                                        "IsUITestBundle": True,
+                                        "TestBundlePath": "__TESTHOST__/PlugIns/CPAQuotaAppUITests.xctest",
+                                        "EnvironmentVariables": {"OS_ACTIVITY_DT_MODE": "YES"},
+                                        "UITargetAppEnvironmentVariables": {"XCODE_SCHEME_NAME": "CPAQuota"},
+                                    },
                                 ],
                             }
                         ],
@@ -162,16 +172,26 @@ class CIGateTests(unittest.TestCase):
             )
             self.assertEqual(count_v2, 2)
             loaded_v2 = plistlib.loads(v2_path.read_bytes())
-            for target in loaded_v2["TestConfigurations"][0]["TestTargets"]:
+            targets_v2 = loaded_v2["TestConfigurations"][0]["TestTargets"]
+            for target in targets_v2:
                 self.assertEqual(target["TestingEnvironmentVariables"]["CPA_UI_LAYOUT_POLICY"], "duo-adaptive")
                 self.assertEqual(target["TestingEnvironmentVariables"]["CPA_UI_SIMULATOR_DEVICE"], "iPhone Duo")
+                self.assertNotIn("OS_ACTIVITY_DT_MODE", target["EnvironmentVariables"])
+            self.assertEqual(targets_v2[1]["UITargetAppEnvironmentVariables"]["OS_ACTIVITY_MODE"], "disable")
+            self.assertNotIn("OS_ACTIVITY_MODE", targets_v2[1]["TestingEnvironmentVariables"])
+            self.assertNotIn("UITargetAppEnvironmentVariables", targets_v2[0])
 
             v1_path = Path(tmp) / "v1.xctestrun"
             with v1_path.open("wb") as fh:
                 plistlib.dump(
                     {
                         "__xctestrun_metadata__": {"FormatVersion": 1},
-                        "CPAQuotaAppUITests": {"TestBundlePath": "__TESTROOT__/Debug/Tests.xctest"},
+                        "CPAQuotaAppUITests": {
+                            "IsUITestBundle": True,
+                            "TestBundlePath": "__TESTROOT__/Debug/Tests.xctest",
+                            "EnvironmentVariables": {"OS_ACTIVITY_DT_MODE": "YES"},
+                            "UITargetAppEnvironmentVariables": {"OS_ACTIVITY_DT_MODE": "YES"},
+                        },
                     },
                     fh,
                     fmt=plistlib.FMT_XML,
@@ -181,10 +201,11 @@ class CIGateTests(unittest.TestCase):
             )
             self.assertEqual(count_v1, 1)
             loaded_v1 = plistlib.loads(v1_path.read_bytes())
-            self.assertEqual(
-                loaded_v1["CPAQuotaAppUITests"]["TestingEnvironmentVariables"]["CPA_UI_LAYOUT_POLICY"],
-                "standard-iphone",
-            )
+            ui_v1 = loaded_v1["CPAQuotaAppUITests"]
+            self.assertEqual(ui_v1["TestingEnvironmentVariables"]["CPA_UI_LAYOUT_POLICY"], "standard-iphone")
+            self.assertNotIn("OS_ACTIVITY_DT_MODE", ui_v1["EnvironmentVariables"])
+            self.assertNotIn("OS_ACTIVITY_DT_MODE", ui_v1["UITargetAppEnvironmentVariables"])
+            self.assertEqual(ui_v1["UITargetAppEnvironmentVariables"]["OS_ACTIVITY_MODE"], "disable")
 
 
 if __name__ == "__main__":

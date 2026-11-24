@@ -13,39 +13,39 @@ import re
 import sys
 from pathlib import Path
 
-# Historical runtimes (seconds) from Xcode 27.1 iPhone 18 Pro CI used solely to
-# balance shards evenly. Unlisted tests fall back to DEFAULT_WEIGHT_SECONDS.
+# Observed runtimes (seconds) from Xcode 27.1 iPhone 18 Pro sharded CI used solely
+# to balance shards evenly. Unlisted tests fall back to DEFAULT_WEIGHT_SECONDS.
 KNOWN_WEIGHTS_SECONDS: dict[str, int] = {
-    "testLargestDynamicTypeAndDeviceRotationPreservePrimaryActions": 217,
-    "testLoginValidatesHTTPSAndRejectsManagement401BeforeConnecting": 183,
-    "testCAPAllFourSectionsReadParsedFixtures": 181,
-    "testReadingPositionDuringStreamGrowth": 160,
-    "testRecentModelPersistsAcrossCreationAndLaunch": 146,
-    "testHTMLPreviewKeepsSnapshotWhileConversationStreams": 133,
-    "testAppearancePickerChangesRealCanvasAndWidgetSharingDefaultsOff": 120,
-    "testCAPRangePanelCancelsWithoutRequestsAndSelectsBoundedHours": 114,
-    "testHTMLPreviewRotatesWithLargeTextInDarkAppearance": 111,
-    "testQuotaCardShowsRegularCodexWindowsInOrderWithUnknownAndSevenDayOnly": 107,
-    "testLargeChatControlsInLightAndDarkLandscape": 104,
-    "testCAPMonthOverviewUsesServerSummaryFromInitialOnly": 100,
-    "testStopContinueAndCompleteOneReply": 100,
-    "testSwipeDismissalDuringSlowConnectionClearsDraftAndRejectsLateResponse": 89,
-    "testChatEditCancelRestoresMultilineDraft": 86,
-    "testChatReasoningPickerSelectsPersistsAndShowsFallbackNotice": 85,
-    "testCloseDuringSlowConnectionClearsDraftAndRejectsLateResponse": 83,
-    "testForegroundReturnAndExplicitExpiryKeepOneGeneration": 81,
-    "testInterruptedGenerationRestoresWrittenCheckpointWithoutRequest": 79,
-    "testFiveNativeTabsAndQuotaDetailKeepTheirSystemNavigation": 76,
-    "testChatTranscriptStaysVisibleWhenSendingAgainWithKeyboardOpen": 72,
-    "testChatSelectsModelStreamsStopsAndRegenerates": 66,
-    "testHTMLFallbackCopiesOriginalMixedFences": 56,
-    "testUnconfiguredMonitoringRequiresSeparateCredentials": 53,
-    "testMonitoringDeepLinkOpensMonitoringPage": 45,
-    "testReasoningIsVisibleBeforeAnswerIsReleased": 45,
-    "testLegacyFixedModelSurvivesLaunch": 32,
+    "testLoginValidatesHTTPSAndRejectsManagement401BeforeConnecting": 159,
+    "testReadingPositionDuringStreamGrowth": 157,
+    "testCAPAllFourSectionsReadParsedFixtures": 147,
+    "testRecentModelPersistsAcrossCreationAndLaunch": 147,
+    "testCAPRangePanelCancelsWithoutRequestsAndSelectsBoundedHours": 138,
+    "testLargestDynamicTypeAndDeviceRotationPreservePrimaryActions": 133,
+    "testChatEditCancelRestoresMultilineDraft": 127,
+    "testCloseDuringSlowConnectionClearsDraftAndRejectsLateResponse": 117,
+    "testAppearancePickerChangesRealCanvasAndWidgetSharingDefaultsOff": 112,
+    "testHTMLPreviewRotatesWithLargeTextInDarkAppearance": 112,
+    "testQuotaCardShowsRegularCodexWindowsInOrderWithUnknownAndSevenDayOnly": 112,
+    "testSwipeDismissalDuringSlowConnectionClearsDraftAndRejectsLateResponse": 93,
+    "testChatReasoningPickerSelectsPersistsAndShowsFallbackNotice": 92,
+    "testLargeChatControlsInLightAndDarkLandscape": 91,
+    "testChatSelectsModelStreamsStopsAndRegenerates": 90,
+    "testCAPMonthOverviewUsesServerSummaryFromInitialOnly": 81,
+    "testFiveNativeTabsAndQuotaDetailKeepTheirSystemNavigation": 79,
+    "testHTMLPreviewKeepsSnapshotWhileConversationStreams": 72,
+    "testInterruptedGenerationRestoresWrittenCheckpointWithoutRequest": 69,
+    "testChatTranscriptStaysVisibleWhenSendingAgainWithKeyboardOpen": 64,
+    "testUnconfiguredMonitoringRequiresSeparateCredentials": 57,
+    "testMonitoringDeepLinkOpensMonitoringPage": 52,
+    "testStopContinueAndCompleteOneReply": 51,
+    "testForegroundReturnAndExplicitExpiryKeepOneGeneration": 42,
+    "testHTMLFallbackCopiesOriginalMixedFences": 32,
+    "testLegacyFixedModelSurvivesLaunch": 31,
+    "testReasoningIsVisibleBeforeAnswerIsReleased": 26,
 }
 DEFAULT_WEIGHT_SECONDS = 90
-UNIT_TEST_TARGET_WEIGHT_SECONDS = 25
+UNIT_TEST_TARGET_WEIGHT_SECONDS = 70
 
 # Focused Duo PR suite: exercises adaptive windowing, rotation, AX5 Dynamic Type,
 # light/dark appearance, chat composer/popover, HTML preview rotation, and 5-tab
@@ -178,8 +178,36 @@ def select_only_testing_args(
     return args, selected
 
 
+def _patch_target_env(target: dict, env_updates: dict[str, str]) -> bool:
+    """Apply runner env vars and suppress os_log DT_MODE PTY stalls in UI targets.
+
+    Spindumps from Xcode 27.1 iPhone Duo runs showed CPAQuota spending >92% of
+    UI-query timeout windows blocked in kernel `writev()` + `diagnosticd`
+    turnstile stalls because `build-for-testing` bakes `OS_ACTIVITY_DT_MODE=YES`
+    into `.xctestrun`, forcing synchronous stderr mirroring on every
+    XCTAutomationSupport accessibility lookup.
+    """
+    if "TestBundlePath" not in target and "TestingEnvironmentVariables" not in target:
+        return False
+    testing_env = target.setdefault("TestingEnvironmentVariables", {})
+    if not isinstance(testing_env, dict):
+        return False
+    testing_env.update(env_updates)
+
+    env = target.get("EnvironmentVariables")
+    if isinstance(env, dict):
+        env.pop("OS_ACTIVITY_DT_MODE", None)
+
+    if target.get("IsUITestBundle") is True or isinstance(target.get("UITargetAppEnvironmentVariables"), dict):
+        target_app_env = target.setdefault("UITargetAppEnvironmentVariables", {})
+        if isinstance(target_app_env, dict):
+            target_app_env.pop("OS_ACTIVITY_DT_MODE", None)
+            target_app_env["OS_ACTIVITY_MODE"] = "disable"
+    return True
+
+
 def patch_xctestrun_env(xctestrun_path: Path, env_updates: dict[str, str]) -> int:
-    """Inject TestingEnvironmentVariables into FormatVersion 1 or 2 xctestrun plists."""
+    """Inject TestingEnvironmentVariables and quiet target os_log streaming in xctestrun plists."""
     if xctestrun_path.is_symlink():
         raise ValueError(f"Refusing to patch symlinked xctestrun: {xctestrun_path}")
     with xctestrun_path.open("rb") as fh:
@@ -193,21 +221,14 @@ def patch_xctestrun_env(xctestrun_path: Path, env_updates: dict[str, str]) -> in
             if not isinstance(config, dict):
                 continue
             for target in config.get("TestTargets", []):
-                if not isinstance(target, dict):
-                    continue
-                env = target.setdefault("TestingEnvironmentVariables", {})
-                if isinstance(env, dict):
-                    env.update(env_updates)
+                if isinstance(target, dict) and _patch_target_env(target, env_updates):
                     patched_targets += 1
     else:
         for key, value in plist.items():
             if key == "__xctestrun_metadata__" or not isinstance(value, dict):
                 continue
-            if "TestBundlePath" in value or "TestingEnvironmentVariables" in value:
-                env = value.setdefault("TestingEnvironmentVariables", {})
-                if isinstance(env, dict):
-                    env.update(env_updates)
-                    patched_targets += 1
+            if _patch_target_env(value, env_updates):
+                patched_targets += 1
 
     if patched_targets == 0:
         raise ValueError(f"No test targets found to patch in {xctestrun_path}")
