@@ -67,6 +67,24 @@ private func makeSearchSession() -> URLSession {
                       delegate: SearchRedirectRefusingDelegate(), delegateQueue: nil)
 }
 
+/// Shared ephemeral session reused by all stateless search clients so per-search
+/// `URLSession` instances never accumulate or retain delegates indefinitely.
+private let sharedSearchSession: URLSession = makeSearchSession()
+
+/// Only allow http(s) search result links with a non-empty host so untrusted
+/// search results cannot inject custom URL schemes into `Link(destination:)`.
+func validatedChatSearchSourceURL(_ raw: String?) -> URL? {
+    guard let raw else { return nil }
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let url = URL(string: trimmed),
+          let scheme = url.scheme?.lowercased(),
+          scheme == "http" || scheme == "https",
+          let host = url.host, !host.isEmpty else {
+        return nil
+    }
+    return url
+}
+
 private func requireQuery(_ query: String) throws -> String {
     let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { throw ChatSearchError.emptyQuery }
@@ -95,7 +113,7 @@ public struct TavilySearchClient: ChatSearchClient {
     private let session: URLSession
     private let endpoint = URL(string: "https://api.tavily.com/search")!
 
-    public init(session: URLSession? = nil) { self.session = session ?? makeSearchSession() }
+    public init(session: URLSession? = nil) { self.session = session ?? sharedSearchSession }
 
     public func search(_ query: String, apiKey: String) async throws -> [ChatSearchSource] {
         let query = try requireQuery(query)
@@ -110,7 +128,7 @@ public struct TavilySearchClient: ChatSearchClient {
             throw ChatSearchError.invalidResponse
         }
         return (decoded.results ?? []).prefix(maximumResults).compactMap { item in
-            guard let title = item.title, let raw = item.url, let url = URL(string: raw) else {
+            guard let title = item.title, let url = validatedChatSearchSourceURL(item.url) else {
                 return nil
             }
             return ChatSearchSource(title: title, url: url, snippet: item.content ?? "")
@@ -120,13 +138,11 @@ public struct TavilySearchClient: ChatSearchClient {
     private struct RequestBody: Encodable {
         var query: String
         var maxResults = maximumResults
-        var includeAnswer = true
         var searchDepth = "basic"
 
         enum CodingKeys: String, CodingKey {
             case query
             case maxResults = "max_results"
-            case includeAnswer = "include_answer"
             case searchDepth = "search_depth"
         }
     }
@@ -146,7 +162,7 @@ public struct BraveSearchClient: ChatSearchClient {
     private let session: URLSession
     private let endpoint = URL(string: "https://api.search.brave.com/res/v1/web/search")!
 
-    public init(session: URLSession? = nil) { self.session = session ?? makeSearchSession() }
+    public init(session: URLSession? = nil) { self.session = session ?? sharedSearchSession }
 
     public func search(_ query: String, apiKey: String) async throws -> [ChatSearchSource] {
         let query = try requireQuery(query)
@@ -166,7 +182,7 @@ public struct BraveSearchClient: ChatSearchClient {
             throw ChatSearchError.invalidResponse
         }
         return (decoded.web?.results ?? []).prefix(maximumResults).compactMap { item in
-            guard let title = item.title, let raw = item.url, let url = URL(string: raw) else {
+            guard let title = item.title, let url = validatedChatSearchSourceURL(item.url) else {
                 return nil
             }
             return ChatSearchSource(title: title, url: url, snippet: item.description ?? "")
@@ -192,7 +208,7 @@ public struct ExaSearchClient: ChatSearchClient {
     private let session: URLSession
     private let endpoint = URL(string: "https://api.exa.ai/search")!
 
-    public init(session: URLSession? = nil) { self.session = session ?? makeSearchSession() }
+    public init(session: URLSession? = nil) { self.session = session ?? sharedSearchSession }
 
     public func search(_ query: String, apiKey: String) async throws -> [ChatSearchSource] {
         let query = try requireQuery(query)
@@ -209,7 +225,7 @@ public struct ExaSearchClient: ChatSearchClient {
             throw ChatSearchError.invalidResponse
         }
         return (decoded.results ?? []).prefix(maximumResults).compactMap { item in
-            guard let title = item.title, let raw = item.url, let url = URL(string: raw) else {
+            guard let title = item.title, let url = validatedChatSearchSourceURL(item.url) else {
                 return nil
             }
             return ChatSearchSource(title: title, url: url, snippet: item.text ?? item.summary ?? "")
@@ -246,7 +262,7 @@ public struct SerperSearchClient: ChatSearchClient {
     private let session: URLSession
     private let endpoint = URL(string: "https://google.serper.dev/search")!
 
-    public init(session: URLSession? = nil) { self.session = session ?? makeSearchSession() }
+    public init(session: URLSession? = nil) { self.session = session ?? sharedSearchSession }
 
     public func search(_ query: String, apiKey: String) async throws -> [ChatSearchSource] {
         let query = try requireQuery(query)
@@ -261,7 +277,7 @@ public struct SerperSearchClient: ChatSearchClient {
             throw ChatSearchError.invalidResponse
         }
         return (decoded.organic ?? []).prefix(maximumResults).compactMap { item in
-            guard let title = item.title, let raw = item.link, let url = URL(string: raw) else {
+            guard let title = item.title, let url = validatedChatSearchSourceURL(item.link) else {
                 return nil
             }
             return ChatSearchSource(title: title, url: url, snippet: item.snippet ?? "")
@@ -288,7 +304,7 @@ public struct SerpAPISearchClient: ChatSearchClient {
     private let session: URLSession
     private let endpoint = URL(string: "https://serpapi.com/search.json")!
 
-    public init(session: URLSession? = nil) { self.session = session ?? makeSearchSession() }
+    public init(session: URLSession? = nil) { self.session = session ?? sharedSearchSession }
 
     public func search(_ query: String, apiKey: String) async throws -> [ChatSearchSource] {
         let query = try requireQuery(query)
@@ -309,7 +325,7 @@ public struct SerpAPISearchClient: ChatSearchClient {
             throw ChatSearchError.invalidResponse
         }
         return (decoded.organicResults ?? []).prefix(maximumResults).compactMap { item in
-            guard let title = item.title, let raw = item.link, let url = URL(string: raw) else {
+            guard let title = item.title, let url = validatedChatSearchSourceURL(item.link) else {
                 return nil
             }
             return ChatSearchSource(title: title, url: url, snippet: item.snippet ?? "")

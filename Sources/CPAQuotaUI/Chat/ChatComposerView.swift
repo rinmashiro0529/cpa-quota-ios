@@ -23,6 +23,9 @@ struct ChatComposerView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
     @FocusState private var isFocused: Bool
     #if canImport(PhotosUI)
     @State private var pickerItems: [PhotosPickerItem] = []
@@ -110,7 +113,7 @@ struct ChatComposerView: View {
                 }
             }
 
-            ChatComposerLayout(prefersStackedRows: dynamicTypeSize.isAccessibilitySize) {
+            ChatComposerLayout(prefersStackedRows: prefersStackedComposer) {
                 field(palette)
                 HStack(spacing: 4) {
                     accessoryButtons(palette)
@@ -184,6 +187,15 @@ struct ChatComposerView: View {
             .accessibilityIdentifier("chat.input")
     }
 
+    private var prefersStackedComposer: Bool {
+        if dynamicTypeSize.isAccessibilitySize { return true }
+        #if os(iOS)
+        return horizontalSizeClass == .compact
+        #else
+        return false
+        #endif
+    }
+
     @ViewBuilder
     private func accessoryButtons(_ palette: BrandPalette) -> some View {
         #if canImport(PhotosUI)
@@ -200,22 +212,27 @@ struct ChatComposerView: View {
             }
             .accessibilityIdentifier("chat.attach")
         } else {
-            photoPicker
+            photoPicker(palette)
         }
         #else
-        photoPicker
+        photoPicker(palette)
         #endif
         #endif
         searchButton(palette)
     }
 
     #if canImport(PhotosUI)
-    private var photoPicker: some View {
-        PhotosPicker(selection: $pickerItems, maxSelectionCount: 4, matching: .images) {
-            Image(systemName: isLoadingAttachments ? "hourglass" : "photo.on.rectangle")
+    private func photoPicker(_ palette: BrandPalette) -> some View {
+        let symbolName = isLoadingAttachments ? "hourglass" : "photo.on.rectangle"
+        let iconColor = attachments.isEmpty ? palette.textSecondary : palette.actionTint
+        return PhotosPicker(selection: $pickerItems, maxSelectionCount: 4, matching: .images) {
+            Image(systemName: symbolName)
                 .font(.title3)
+                .foregroundStyle(iconColor)
                 .frame(width: 44, height: 44)
         }
+        .buttonStyle(.plain)
+        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
         .disabled(editingMessageID != nil || isGenerating || attachments.count >= 4)
         .accessibilityLabel("添加图片")
         .accessibilityIdentifier("chat.attach")
@@ -224,7 +241,7 @@ struct ChatComposerView: View {
 
     private func searchButton(_ palette: BrandPalette) -> some View {
         Button {
-            chat.updateConversation(conversation.id) { $0.isWebSearchEnabled.toggle() }
+            chat.updateConversationMetadata(conversation.id) { $0.isWebSearchEnabled.toggle() }
         } label: {
             Image(systemName: conversation.isWebSearchEnabled ? "globe.badge.chevron.backward" : "globe")
                 .font(.title3)
@@ -232,6 +249,7 @@ struct ChatComposerView: View {
                 .frame(width: 44, height: 44)
         }
         .buttonStyle(.plain)
+        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
         // Still allow switching it off after the search service was removed.
         .disabled(chat.settings.searchProvider == nil && !conversation.isWebSearchEnabled)
         .accessibilityLabel(chat.settings.searchProvider == nil ? "联网搜索（未设置搜索服务）" : "联网搜索")
@@ -255,6 +273,7 @@ struct ChatComposerView: View {
                     .font(.headline)
             }
             .buttonStyle(ChatRoundButtonStyle(prominent: false))
+            .dynamicTypeSize(...DynamicTypeSize.accessibility2)
             .accessibilityLabel("停止生成")
             .accessibilityIdentifier("chat.stop")
         } else if let target = continuation {
@@ -266,6 +285,7 @@ struct ChatComposerView: View {
                     .font(.headline.weight(.bold))
             }
             .buttonStyle(ChatRoundButtonStyle(prominent: true))
+            .dynamicTypeSize(...DynamicTypeSize.accessibility2)
             .disabled(continuationCooldown)
             .accessibilityLabel(target.isRetry ? "重试生成回复" : "续写上一条回复")
             .accessibilityHint("发起一次新的生成请求，可能产生额外用量")
@@ -276,6 +296,7 @@ struct ChatComposerView: View {
                     .font(.headline.weight(.bold))
             }
             .buttonStyle(ChatRoundButtonStyle(prominent: true))
+            .dynamicTypeSize(...DynamicTypeSize.accessibility2)
             .disabled(!canSend)
             .keyboardShortcut(.return, modifiers: .command)
             .accessibilityLabel(editingMessageID == nil ? "发送" : "发送修改")
@@ -355,7 +376,7 @@ private struct ChatComposerLayout: Layout {
     let prefersStackedRows: Bool
 
     private let spacing: CGFloat = 4
-    private let minimumFieldWidth: CGFloat = 140
+    private let minimumFieldWidth: CGFloat = 220
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         metrics(width: proposal.width, subviews: subviews).size

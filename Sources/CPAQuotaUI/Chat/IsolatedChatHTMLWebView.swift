@@ -3,6 +3,10 @@ import WebKit
 
 /// A fresh, scriptless document for one immutable assistant snippet.
 @MainActor final class IsolatedChatHTMLWebView: WKWebView, WKNavigationDelegate, WKUIDelegate {
+    private static var cachedRuleList: WKContentRuleList?
+    private static var ruleListCompilation: Task<WKContentRuleList, any Error>?
+
+    var onFinish: (() -> Void)?
     var onFailure: (() -> Void)?
     private var permitsInitialLoad = false
     private var initialNavigation: WKNavigation?
@@ -23,12 +27,33 @@ import WebKit
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
+    private static func sharedContentRuleList() async throws -> WKContentRuleList {
+        if let cachedRuleList { return cachedRuleList }
+        if let existing = ruleListCompilation {
+            return try await existing.value
+        }
+        let task = Task<WKContentRuleList, any Error> { @MainActor in
+            let rules = #"[{"trigger":{"url-filter":".*"},"action":{"type":"block"}}]"#
+            guard let blocker = try await WKContentRuleListStore.default().compileContentRuleList(
+                forIdentifier: "chat-static-html-v1", encodedContentRuleList: rules)
+            else { throw URLError(.cannotLoadFromNetwork) }
+            return blocker
+        }
+        ruleListCompilation = task
+        do {
+            let compiled = try await task.value
+            cachedRuleList = compiled
+            ruleListCompilation = nil
+            return compiled
+        } catch {
+            ruleListCompilation = nil
+            throw error
+        }
+    }
+
     func loadSnapshot(_ source: String) async throws {
         guard #available(iOS 18.4, *) else { throw URLError(.unsupportedURL) }
-        let rules = #"[{"trigger":{"url-filter":".*"},"action":{"type":"block"}}]"#
-        guard let blocker = try await WKContentRuleListStore.default().compileContentRuleList(
-            forIdentifier: "chat-static-html-v1", encodedContentRuleList: rules)
-        else { throw URLError(.cannotLoadFromNetwork) }
+        let blocker = try await Self.sharedContentRuleList()
         try Task.checkCancellation()
         configuration.userContentController.add(blocker)
         let head = """
@@ -42,6 +67,10 @@ import WebKit
         permitsInitialLoad = true
         initialNavigation = loadHTMLString(head + source, baseURL: nil)
         if initialNavigation == nil { throw URLError(.cannotDecodeContentData) }
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if navigation === initialNavigation { onFinish?() }
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {

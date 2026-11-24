@@ -15,6 +15,7 @@ struct ChatConversationView: View {
     @State private var editingMessageID: UUID?
     /// The draft and images set aside while a sent message is being edited.
     @State private var stashedDraft: (text: String, attachments: [ChatImageAttachment])?
+    @State private var loadedDraftConversationID: UUID?
     @State private var pendingConfirmation: PendingConfirmation?
     @State private var htmlPreview: ChatHTMLSnippet?
     @State private var isPresentingOptions = false
@@ -45,6 +46,27 @@ struct ChatConversationView: View {
         .onChange(of: chat.conversation(conversationID) == nil) { _, deleted in
             // Deleting from the options sheet returns to the list instead of an empty page.
             if deleted { dismiss() }
+        }
+        .onAppear {
+            restoreDraftIfNeeded()
+        }
+        .onChange(of: conversationID) { oldID, _ in
+            persistCurrentDraft(for: oldID)
+            loadedDraftConversationID = nil
+            editingMessageID = nil
+            stashedDraft = nil
+            restoreDraftIfNeeded()
+        }
+        .onChange(of: draft) { _, _ in
+            guard loadedDraftConversationID == conversationID, editingMessageID == nil else { return }
+            persistCurrentDraft(for: conversationID)
+        }
+        .onChange(of: attachments) { _, _ in
+            guard loadedDraftConversationID == conversationID, editingMessageID == nil else { return }
+            persistCurrentDraft(for: conversationID)
+        }
+        .onDisappear {
+            persistCurrentDraft(for: conversationID)
         }
         .sheet(isPresented: $isPresentingOptions) {
             NavigationStack {
@@ -245,6 +267,7 @@ struct ChatConversationView: View {
                             confirmingServerChange: serverChange) else { return }
             draft = ""
             attachments = []
+            chat.clearDraft(for: conversationID)
         case .edit(let messageID, let text):
             guard chat.editAndResend(messageID, text: text, in: conversationID,
                                      confirmingServerChange: serverChange) else { return }
@@ -277,6 +300,26 @@ struct ChatConversationView: View {
         AccessibilityNotification.Announcement(text).post()
     }
 
+    private func restoreDraftIfNeeded() {
+        guard loadedDraftConversationID != conversationID else { return }
+        let saved = chat.draft(for: conversationID)
+        draft = saved.text
+        attachments = saved.attachments
+        loadedDraftConversationID = conversationID
+    }
+
+    private func persistCurrentDraft(for id: UUID) {
+        guard chat.conversation(id) != nil else {
+            chat.clearDraft(for: id)
+            return
+        }
+        if let stashedDraft, editingMessageID != nil {
+            chat.saveDraft(.init(text: stashedDraft.text, attachments: stashedDraft.attachments), for: id)
+        } else {
+            chat.saveDraft(.init(text: draft, attachments: attachments), for: id)
+        }
+    }
+
     private func beginEditing(_ message: ChatMessage) {
         if editingMessageID == nil {
             stashedDraft = (draft, attachments)
@@ -291,6 +334,7 @@ struct ChatConversationView: View {
         draft = stashedDraft?.text ?? ""
         attachments = stashedDraft?.attachments ?? []
         stashedDraft = nil
+        persistCurrentDraft(for: conversationID)
     }
 
     private func actions(for message: ChatMessage, in conversation: ChatConversation) -> ChatMessageActions {

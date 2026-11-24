@@ -426,19 +426,28 @@ struct ChatSettingsView: View {
     }
 }
 
-/// A full-height editor for long free-form instructions.
+/// A full-height editor for long free-form instructions. Edits stay local until
+/// saved or dismissed so typing never triggers per-keystroke disk writes.
 struct ChatTextEditorView: View {
     let title: String
     @Binding var text: String
     let footer: String
+    @State private var draftText: String
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
+
+    init(title: String, text: Binding<String>, footer: String) {
+        self.title = title
+        _text = text
+        self.footer = footer
+        _draftText = State(initialValue: text.wrappedValue)
+    }
 
     var body: some View {
         let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         Form {
             Section {
-                TextEditor(text: $text)
+                TextEditor(text: $draftText)
                     .frame(minHeight: 240)
             } footer: {
                 Text(footer)
@@ -449,6 +458,11 @@ struct ChatTextEditorView: View {
         .scrollContentBackground(.hidden)
         .background(BrandCanvasBackground())
         .navigationTitle(title)
+        .onDisappear {
+            if text != draftText {
+                text = draftText
+            }
+        }
     }
 }
 #endif

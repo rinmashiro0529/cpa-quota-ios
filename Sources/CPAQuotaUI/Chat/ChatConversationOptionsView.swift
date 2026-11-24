@@ -11,6 +11,9 @@ struct ChatConversationOptionsView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
     @State private var isConfirmingDelete = false
+    @State private var titleDraft = ""
+    @State private var systemPromptDraft = ""
+    @State private var hasLoadedDrafts = false
 
     var body: some View {
         let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
@@ -27,15 +30,25 @@ struct ChatConversationOptionsView: View {
         #endif
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
-                Button("完成") { dismiss() }
+                Button("完成") {
+                    commitTextDrafts()
+                    dismiss()
+                }
             }
+        }
+        .onAppear {
+            loadTextDraftsIfNeeded()
+        }
+        .onDisappear {
+            commitTextDrafts()
         }
     }
 
     private func form(_ conversation: ChatConversation, palette: BrandPalette) -> some View {
         Form {
             Section("标题") {
-                TextField("新对话", text: binding(\.title, in: conversation))
+                TextField("新对话", text: $titleDraft)
+                    .onSubmit { commitTextDrafts() }
                     .accessibilityIdentifier("chat.options.title")
             }
             .listRowBackground(palette.contentSurface)
@@ -47,7 +60,7 @@ struct ChatConversationOptionsView: View {
                         if let value {
                             chat.selectModel(value, in: conversationID)
                         } else {
-                            chat.updateConversation(conversationID) { $0.modelID = nil }
+                            chat.updateConversationMetadata(conversationID) { $0.modelID = nil }
                         }
                     }
                 )) {
@@ -72,13 +85,13 @@ struct ChatConversationOptionsView: View {
                 Text("模型与能力")
             } footer: {
                 Text(chat.settings.searchProvider == nil
-                     ? "思考等级会自动适配 OpenAI / Anthropic 等模型协议；若模型不支持所选等级，将自动降级或按默认发送。联网搜索需要先在对话设置中选择搜索服务。"
-                     : "思考等级会自动适配 OpenAI / Anthropic 等模型协议；若模型不支持所选等级，将自动降级或按默认发送。开启联网搜索后，每次发送会先检索，再把结果交给模型。")
+                     ? "思考等级会自动适配当前模型；若模型不支持所选等级，将自动降级或按默认发送。联网搜索需要先在对话设置中选择搜索服务。"
+                     : "思考等级会自动适配当前模型；若模型不支持所选等级，将自动降级或按默认发送。开启联网搜索后，每次发送会先检索，再把结果交给模型。")
             }
             .listRowBackground(palette.contentSurface)
 
             Section {
-                TextEditor(text: binding(\.systemPrompt, in: conversation))
+                TextEditor(text: $systemPromptDraft)
                     .frame(minHeight: 120)
                     .accessibilityIdentifier("chat.options.systemPrompt")
             } header: {
@@ -132,11 +145,26 @@ struct ChatConversationOptionsView: View {
         }
     }
 
+    private func loadTextDraftsIfNeeded() {
+        guard !hasLoadedDrafts, let conversation = chat.conversation(conversationID) else { return }
+        titleDraft = conversation.title
+        systemPromptDraft = conversation.systemPrompt
+        hasLoadedDrafts = true
+    }
+
+    private func commitTextDrafts() {
+        guard hasLoadedDrafts, chat.conversation(conversationID) != nil else { return }
+        chat.updateConversationMetadata(conversationID) {
+            $0.title = titleDraft
+            $0.systemPrompt = systemPromptDraft
+        }
+    }
+
     private func binding<Value>(_ keyPath: WritableKeyPath<ChatConversation, Value>,
                                 in conversation: ChatConversation) -> Binding<Value> {
         Binding(
             get: { chat.conversation(conversationID)?[keyPath: keyPath] ?? conversation[keyPath: keyPath] },
-            set: { value in chat.updateConversation(conversationID) { $0[keyPath: keyPath] = value } }
+            set: { value in chat.updateConversationMetadata(conversationID) { $0[keyPath: keyPath] = value } }
         )
     }
 

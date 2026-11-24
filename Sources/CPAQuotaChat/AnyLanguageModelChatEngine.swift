@@ -65,24 +65,43 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
 
     public func complete(_ request: ChatEngineRequest) async throws -> String {
         let serverKey = ChatReasoningPolicy.serverKey(for: request.baseURL)
+        let cacheGeneration = capabilityCache.currentGeneration()
+        let prompt = makePrompt(for: request)
+        var transcripts: [Bool: Transcript] = [:]
         var plan = initialPlan(for: request, serverKey: serverKey)
+        var pendingAuthFallback: (error: any Error, serverKey: String, modelID: String)?
 
         for attempt in 0..<Self.maximumAttempts {
             try Task.checkCancellation()
             do {
-                let session = makeSession(for: request, plan: plan, live: nil)
+                let session = makeSession(for: request, plan: plan, live: nil, transcripts: &transcripts)
                 let response = try await session.respond(
-                    to: makePrompt(for: request),
+                    to: prompt,
                     options: makeOptions(for: request, plan: plan, streaming: false)
                 )
+                if let pending = pendingAuthFallback {
+                    ChatReasoningPolicy.recordAnthropicEndpointUnsupported(
+                        server: pending.serverKey,
+                        modelID: pending.modelID,
+                        cache: capabilityCache,
+                        generation: cacheGeneration
+                    )
+                }
                 return response.content
             } catch {
-                guard let nextPlan = resolveFallback(
-                    for: error, from: plan, serverKey: serverKey, modelID: request.modelID, attempt: attempt
+                guard let fallback = resolveFallback(
+                    for: error, from: plan, serverKey: serverKey, modelID: request.modelID,
+                    attempt: attempt, cacheGeneration: cacheGeneration
                 ) else {
+                    if let pending = pendingAuthFallback {
+                        throw pending.error
+                    }
                     throw error
                 }
-                plan = nextPlan
+                if fallback.isAuthFallback {
+                    pendingAuthFallback = (error, serverKey, request.modelID)
+                }
+                plan = fallback.plan
             }
         }
         preconditionFailure("Fallback loop must return or throw before exit")
@@ -93,16 +112,20 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
         continuation: AsyncThrowingStream<ChatEngineEvent, any Error>.Continuation
     ) async throws {
         let serverKey = ChatReasoningPolicy.serverKey(for: request.baseURL)
+        let cacheGeneration = capabilityCache.currentGeneration()
+        let prompt = makePrompt(for: request)
+        var transcripts: [Bool: Transcript] = [:]
         var plan = initialPlan(for: request, serverKey: serverKey)
         var usedFallbackProtocol = false
+        var pendingAuthFallback: (error: any Error, serverKey: String, modelID: String)?
 
         for attempt in 0..<Self.maximumAttempts {
             try Task.checkCancellation()
             let live = LiveChatSnapshots(continuation)
             do {
-                let session = makeSession(for: request, plan: plan, live: live)
+                let session = makeSession(for: request, plan: plan, live: live, transcripts: &transcripts)
                 let response = session.streamResponse(
-                    to: makePrompt(for: request),
+                    to: prompt,
                     options: makeOptions(for: request, plan: plan, streaming: true)
                 )
                 for try await snapshot in response {
@@ -118,20 +141,35 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
                             reasoningTokens: usage.output.reasoningTokenCount)))
                     }
                 }
+                if let pending = pendingAuthFallback {
+                    ChatReasoningPolicy.recordAnthropicEndpointUnsupported(
+                        server: pending.serverKey,
+                        modelID: pending.modelID,
+                        cache: capabilityCache,
+                        generation: cacheGeneration
+                    )
+                }
                 continuation.yield(.reasoningResolution(plan.resolution(usedFallbackProtocol: usedFallbackProtocol)))
                 return
             } catch {
                 // Never retry after any output reached the caller: avoids duplicate billing or spliced text.
                 guard !live.hasEmitted,
-                      let nextPlan = resolveFallback(
-                        for: error, from: plan, serverKey: serverKey, modelID: request.modelID, attempt: attempt
+                      let fallback = resolveFallback(
+                        for: error, from: plan, serverKey: serverKey, modelID: request.modelID,
+                        attempt: attempt, cacheGeneration: cacheGeneration
                       ) else {
+                    if !live.hasEmitted, let pending = pendingAuthFallback {
+                        throw pending.error
+                    }
                     throw error
                 }
-                if nextPlan.protocolKind != plan.protocolKind {
+                if fallback.isAuthFallback {
+                    pendingAuthFallback = (error, serverKey, request.modelID)
+                }
+                if fallback.plan.protocolKind != plan.protocolKind {
                     usedFallbackProtocol = true
                 }
-                plan = nextPlan
+                plan = fallback.plan
             }
         }
     }
@@ -152,8 +190,9 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
         from plan: ChatReasoningWirePlan,
         serverKey: String,
         modelID: String,
-        attempt: Int
-    ) -> ChatReasoningWirePlan? {
+        attempt: Int,
+        cacheGeneration: UInt64
+    ) -> (plan: ChatReasoningWirePlan, isAuthFallback: Bool)? {
         guard attempt + 1 < Self.maximumAttempts,
               let rejection = ChatReasoningPolicy.classifyError(error, plan: plan) else {
             return nil
@@ -163,9 +202,11 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
             for: plan,
             server: serverKey,
             modelID: modelID,
-            cache: capabilityCache
+            cache: capabilityCache,
+            generation: cacheGeneration
         )
-        let nextProtocol: ChatAPIProtocol = rejection == .anthropicEndpointUnsupported
+        let isAuthFallback = rejection == .anthropicAuthFallback
+        let nextProtocol: ChatAPIProtocol = (rejection == .anthropicEndpointUnsupported || isAuthFallback)
             ? .openAIChatCompletions
             : plan.protocolKind
         var nextProfile = capabilityCache.profile(for: serverKey, modelID: modelID)
@@ -179,14 +220,24 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
             modelID: modelID,
             profile: nextProfile
         )
-        return nextPlan != plan ? nextPlan : nil
+        return nextPlan != plan ? (nextPlan, isAuthFallback) : nil
     }
 
     private func makeSession(
         for request: ChatEngineRequest,
         plan: ChatReasoningWirePlan,
-        live: LiveChatSnapshots?
+        live: LiveChatSnapshots?,
+        transcripts: inout [Bool: Transcript]
     ) -> LanguageModelSession {
+        func cachedTranscript(includeInstructions: Bool) -> Transcript {
+            if let existing = transcripts[includeInstructions] {
+                return existing
+            }
+            let built = Self.makeTranscript(for: request, includeInstructions: includeInstructions)
+            transcripts[includeInstructions] = built
+            return built
+        }
+
         switch plan.protocolKind {
         case .anthropicMessages:
             let model = AnthropicLanguageModel(
@@ -197,7 +248,7 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
             )
             return LanguageModelSession(
                 model: model,
-                transcript: Self.makeTranscript(for: request, includeInstructions: false)
+                transcript: cachedTranscript(includeInstructions: false)
             )
         case .openAIChatCompletions:
             let model = OpenAILanguageModel(
@@ -209,7 +260,7 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
             )
             return LanguageModelSession(
                 model: model,
-                transcript: Self.makeTranscript(for: request, includeInstructions: true)
+                transcript: cachedTranscript(includeInstructions: true)
             )
         case .openAIResponses:
             let model = OpenAILanguageModel(
@@ -221,7 +272,7 @@ public struct AnyLanguageModelChatEngine: ChatEngine {
             )
             return LanguageModelSession(
                 model: model,
-                transcript: Self.makeTranscript(for: request, includeInstructions: true)
+                transcript: cachedTranscript(includeInstructions: true)
             )
         }
     }

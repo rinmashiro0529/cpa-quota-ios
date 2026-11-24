@@ -38,6 +38,9 @@ public struct ChatWorkspaceView: View {
         let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         // Filtered once per render; message text is only scanned while searching.
         let visible = visibleConversations
+        let hasBannerSections = !isCredentialReady || !chat.failedConversationDeletions.isEmpty
+        let showsFullEmptyOverlay = chat.isLoaded && chat.conversations.isEmpty && !hasBannerSections
+        let showsSearchEmptyOverlay = chat.isLoaded && !chat.conversations.isEmpty && visible.isEmpty && !hasBannerSections
         List {
             if !isCredentialReady {
                 Section {
@@ -74,26 +77,20 @@ public struct ChatWorkspaceView: View {
                 }
                 .listRowBackground(palette.contentSurface)
             } else if chat.conversations.isEmpty {
-                Section {
-                    ContentUnavailableView {
-                        Label("还没有对话", systemImage: "bubble.left.and.text.bubble.right")
-                    } description: {
-                        Text("新建对话后，可选择 CPA 提供的任一模型。对话记录只保存在本机。")
-                    } actions: {
-                        Button {
-                            startConversation()
-                        } label: {
-                            Label("新建对话", systemImage: "square.and.pencil")
-                                .frame(minHeight: 44)
-                        }
-                        .quotaSecondaryButtonStyle()
-                        .accessibilityIdentifier("chat.emptyNew")
+                if hasBannerSections {
+                    Section {
+                        emptyConversationsView()
+                            .padding(.vertical, 12)
                     }
-                }
-                .listRowBackground(palette.contentSurface)
-            } else if visible.isEmpty {
-                ContentUnavailableView.search(text: searchText)
                     .listRowBackground(palette.contentSurface)
+                }
+            } else if visible.isEmpty {
+                if hasBannerSections {
+                    Section {
+                        ContentUnavailableView.search(text: searchText)
+                    }
+                    .listRowBackground(palette.contentSurface)
+                }
             } else {
                 Section {
                     ForEach(visible) { conversation in
@@ -129,6 +126,14 @@ public struct ChatWorkspaceView: View {
                     Text("最近对话")
                 }
                 .listRowBackground(palette.contentSurface)
+            }
+        }
+        .overlay {
+            if showsFullEmptyOverlay {
+                emptyConversationsView()
+                    .padding(24)
+            } else if showsSearchEmptyOverlay {
+                ContentUnavailableView.search(text: searchText)
             }
         }
         .scrollContentBackground(.hidden)
@@ -209,6 +214,28 @@ public struct ChatWorkspaceView: View {
 
     private func startConversation() {
         pendingConversation = chat.createConversation()
+    }
+
+    private func emptyConversationsView() -> some View {
+        ContentUnavailableView {
+            Label("还没有对话", systemImage: "bubble.left.and.text.bubble.right")
+        } description: {
+            Text("新建对话后，可选择 CPA 提供的任一模型。对话记录只保存在本机。")
+        } actions: {
+            Button {
+                startConversation()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "square.and.pencil")
+                    Text("新建对话")
+                }
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.horizontal, 8)
+                .frame(minHeight: 44)
+            }
+            .quotaSecondaryButtonStyle()
+            .accessibilityIdentifier("chat.emptyNew")
+        }
     }
 }
 

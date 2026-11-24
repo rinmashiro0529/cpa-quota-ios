@@ -346,7 +346,24 @@ public final class ChatWorkspaceModel {
 
     // MARK: - Conversations
 
+    public struct ConversationDraft: Equatable, Sendable {
+        public var text: String
+        public var attachments: [ChatImageAttachment]
+
+        public init(text: String = "", attachments: [ChatImageAttachment] = []) {
+            self.text = text
+            self.attachments = attachments
+        }
+
+        public var isEmpty: Bool {
+            text.isEmpty && attachments.isEmpty
+        }
+    }
+
     public private(set) var conversations: [ChatConversation] = []
+    /// Per-conversation unsent composer drafts retained across navigation.
+    /// Kept `@ObservationIgnored` so typing never invalidates the workspace views.
+    @ObservationIgnored private var drafts: [UUID: ConversationDraft] = [:]
     /// `true` only after history, settings, memories and skills are restored.
     public private(set) var isLoaded = false
     @ObservationIgnored private var loadTask: Task<Void, Never>?
@@ -492,6 +509,22 @@ public final class ChatWorkspaceModel {
         conversations.first(where: { $0.id == id })
     }
 
+    public func draft(for conversationID: UUID) -> ConversationDraft {
+        drafts[conversationID] ?? ConversationDraft()
+    }
+
+    public func saveDraft(_ draft: ConversationDraft, for conversationID: UUID) {
+        if draft.isEmpty {
+            drafts.removeValue(forKey: conversationID)
+        } else {
+            drafts[conversationID] = draft
+        }
+    }
+
+    public func clearDraft(for conversationID: UUID) {
+        drafts.removeValue(forKey: conversationID)
+    }
+
     /// Reuses an existing empty conversation instead of stacking up new ones,
     /// resetting per-conversation settings so nothing leaks across servers.
     @discardableResult
@@ -508,6 +541,7 @@ public final class ChatWorkspaceModel {
             reused.modelID = modelID
             reused.updatedAt = Date()
             manualReasoningConversationIDs.remove(reused.id)
+            drafts.removeValue(forKey: reused.id)
             conversations.insert(reused, at: 0)
             return reused.id
         }
@@ -519,7 +553,7 @@ public final class ChatWorkspaceModel {
 
     private func preferredReasoningEffort(for modelID: String?) -> ChatReasoningEffort {
         guard let server, let modelID else { return .automatic }
-        if persistsKey {
+        if persistsKey, !settingsLoadFailed {
             return settings.rememberedReasoningEffort(for: modelID, server: server.identifier) ?? .automatic
         }
         return temporaryRecentReasoningEfforts[modelID] ?? .automatic
@@ -551,8 +585,7 @@ public final class ChatWorkspaceModel {
             && !isAvailableModel(conversations[index].modelID) {
             conversations[index].serverIdentifier = server.identifier
             conversations[index].modelID = modelID
-            if !manualReasoningConversationIDs.contains(conversations[index].id),
-               conversations[index].reasoningEffort == .automatic {
+            if !manualReasoningConversationIDs.contains(conversations[index].id) {
                 conversations[index].reasoningEffort = rememberedEffort
             }
         }
@@ -572,7 +605,7 @@ public final class ChatWorkspaceModel {
         let shouldAdoptRememberedEffort = existing.messages.isEmpty
             && !manualReasoningConversationIDs.contains(conversationID)
         let rememberedEffort = shouldAdoptRememberedEffort ? preferredReasoningEffort(for: id) : nil
-        updateConversation(conversationID) {
+        updateConversationMetadata(conversationID) {
             $0.modelID = id
             if let rememberedEffort {
                 $0.reasoningEffort = rememberedEffort
@@ -589,7 +622,7 @@ public final class ChatWorkspaceModel {
     public func selectReasoningEffort(_ effort: ChatReasoningEffort, in conversationID: UUID) {
         guard let existing = conversation(conversationID) else { return }
         manualReasoningConversationIDs.insert(conversationID)
-        updateConversation(conversationID) { $0.reasoningEffort = effort }
+        updateConversationMetadata(conversationID) { $0.reasoningEffort = effort }
         guard let server, let modelID = existing.modelID else { return }
         if persistsKey, !settingsLoadFailed {
             settings.rememberReasoningEffort(effort, for: modelID, server: server.identifier)
@@ -625,6 +658,7 @@ public final class ChatWorkspaceModel {
         }
         conversations.removeAll { $0.id == id }
         manualReasoningConversationIDs.remove(id)
+        drafts.removeValue(forKey: id)
         unsavedConversations.remove(id)
         failedConversationDeletions.remove(id)
         return true
@@ -641,6 +675,7 @@ public final class ChatWorkspaceModel {
         titleTasks.removeAll()
         // Clear first: cancelled generations then find no conversation to write back.
         conversations.removeAll()
+        drafts.removeAll()
         let store = persistence
         let previous = persistTail
         let removal = Task { () -> Bool in
@@ -673,7 +708,17 @@ public final class ChatWorkspaceModel {
     }
 
     public func renameConversation(_ id: UUID, title: String) {
-        updateConversation(id) { $0.title = title }
+        updateConversationMetadata(id) { $0.title = title }
+    }
+
+    /// Updates per-conversation metadata (title, system prompt, model, reasoning,
+    /// web search) without bumping `updatedAt` or re-sorting the conversation list.
+    public func updateConversationMetadata(_ id: UUID, _ mutate: (inout ChatConversation) -> Void) {
+        guard let index = conversations.firstIndex(where: { $0.id == id }) else { return }
+        let before = conversations[index]
+        mutate(&conversations[index])
+        guard conversations[index] != before else { return }
+        persist(conversations[index])
     }
 
     public func updateConversation(_ id: UUID, _ mutate: (inout ChatConversation) -> Void) {
@@ -738,6 +783,7 @@ public final class ChatWorkspaceModel {
               isServerChangeAllowed(for: conversationID, confirming: confirmation),
               let conversation = self.conversation(conversationID) else { return false }
         startGeneration(text: text, attachments: attachments, conversation: conversation)
+        drafts.removeValue(forKey: conversationID)
         return true
     }
 
