@@ -170,10 +170,12 @@ final class CPAQuotaAppUITests: XCTestCase {
         verify(remaining.label.contains("42% 剩余"), in: app,
                "The account detail must show the real parsed remaining percentage.")
         attach(app, name: "quota-detail-multiple-windows")
+        let detailNav = app.navigationBars["账号详情"]
         app.buttons["完成"].tap()
+        expectPredicate(NSPredicate(format: "exists == false"), on: detailNav, in: app,
+                        message: "Done must dismiss the native account sheet.",
+                        finalCheck: { !detailNav.exists })
         expectExists(account, in: app, timeout: 5)
-        verify(!app.navigationBars["账号详情"].exists, in: app,
-               "Done must dismiss the native account sheet.")
     }
 
     @MainActor
@@ -523,6 +525,9 @@ final class CPAQuotaAppUITests: XCTestCase {
                "The account refresh action must remain reachable at the largest font after device rotation.")
         attach(app, name: "quota-detail-accessibility5-\(rotationSuffix)")
         close.tap()
+        expectPredicate(NSPredicate(format: "exists == false"), on: close, in: app,
+                        message: "Done must dismiss the account sheet before switching tabs.",
+                        finalCheck: { !close.exists })
 
         selectTab("connection", title: "连接管理", in: app)
         let masking = app.switches["settings.maskEmail"]
@@ -1002,7 +1007,11 @@ final class CPAQuotaAppUITests: XCTestCase {
         let offOption = element("chat.reasoningOption.off", in: app)
         if !offOption.isHittable { reveal(offOption, in: app) }
         offOption.tap()
-        app.buttons["完成"].tap()
+        let done = app.buttons["完成"]
+        done.tap()
+        expectPredicate(NSPredicate(format: "exists == false"), on: done, in: app,
+                        message: "Tapping Done must dismiss the conversation options sheet.",
+                        finalCheck: { !done.exists })
         expectExists(trigger, in: app)
         expectPredicate(NSPredicate(format: "value == %@", "关闭"), on: trigger, in: app,
                         message: "Changing reasoning effort in conversation options must sync to the composer trigger.",
@@ -1139,7 +1148,11 @@ final class CPAQuotaAppUITests: XCTestCase {
         app.buttons["刷新"].tap()
         expectExists(start, in: app, timeout: htmlPreviewContentTimeout)
         XCTAssertTrue(web.frame.contains(CGPoint(x: start.frame.midX, y: start.frame.minY + 2)))
-        app.buttons["关闭"].tap()
+        let closePreview = app.buttons["关闭"]
+        closePreview.tap()
+        expectPredicate(NSPredicate(format: "exists == false"), on: closePreview, in: app,
+                        message: "Closing the first HTML preview must dismiss the sheet.",
+                        finalCheck: { !closePreview.exists })
         reveal(second, in: app)
         XCTAssertFalse(element("chat.html.snippet.3", in: app).exists)
         second.tap()
@@ -1148,7 +1161,10 @@ final class CPAQuotaAppUITests: XCTestCase {
         XCTAssertFalse(web.staticTexts["First fragment"].exists)
         app.buttons["源码"].tap()
         app.buttons["复制源码"].tap()
-        app.buttons["关闭"].tap()
+        closePreview.tap()
+        expectPredicate(NSPredicate(format: "exists == false"), on: closePreview, in: app,
+                        message: "Closing the second HTML preview must dismiss the sheet.",
+                        finalCheck: { !closePreview.exists })
         let check = element("ui-test.chat.checkCopy", in: app)
         check.tap()
         XCTAssertEqual(check.label, "片段源码一致")
