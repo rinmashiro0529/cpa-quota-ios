@@ -78,6 +78,9 @@ public struct ChatReasoningWirePlan: Equatable, Sendable {
 public enum ChatReasoningRejection: Equatable, Sendable {
     /// Anthropic `/v1/messages` cannot serve the current model on this server.
     case anthropicEndpointUnsupported
+    /// Anthropic `/v1/messages` rejected credentials (`401`); probe OpenAI fallback
+    /// without caching until the fallback succeeds.
+    case anthropicAuthFallback
     /// Model or upstream does not accept reasoning/thinking configuration at all.
     case parameterUnsupported
     /// Specific effort value was rejected; `allowedValues` holds any values parsed from the error body.
@@ -99,6 +102,8 @@ public final class ChatReasoningCapabilityCache: @unchecked Sendable {
         public var unsupportedOpenAIValues = Set<String>()
         public var allowedOpenAIValues: Set<String>?
         public var preferredAnthropicStyle: AnthropicThinkingStyle?
+        public var anthropicAdaptiveUnsupported = false
+        public var anthropicBudgetUnsupported = false
         public var unsupportedAnthropicEfforts = Set<String>()
         public var allowedAnthropicEfforts: Set<String>?
         public var anthropicMaxTokensCeiling: Int?
@@ -113,15 +118,28 @@ public final class ChatReasoningCapabilityCache: @unchecked Sendable {
 
     private let lock = NSLock()
     private var profiles: [ModelKey: ModelProfile] = [:]
+    private var generation: UInt64 = 0
 
     public init() {}
+
+    public func currentGeneration() -> UInt64 {
+        lock.withLock { generation }
+    }
 
     public func profile(for server: String, modelID: String) -> ModelProfile {
         lock.withLock { profiles[ModelKey(server: server, modelID: modelID)] ?? ModelProfile() }
     }
 
-    public func updateProfile(for server: String, modelID: String, _ mutate: (inout ModelProfile) -> Void) {
+    public func updateProfile(
+        for server: String,
+        modelID: String,
+        generation expectedGeneration: UInt64? = nil,
+        _ mutate: (inout ModelProfile) -> Void
+    ) {
         lock.withLock {
+            if let expectedGeneration, expectedGeneration != generation {
+                return
+            }
             let key = ModelKey(server: server, modelID: modelID)
             var current = profiles[key] ?? ModelProfile()
             mutate(&current)
@@ -131,6 +149,7 @@ public final class ChatReasoningCapabilityCache: @unchecked Sendable {
 
     public func reset() {
         lock.withLock {
+            generation &+= 1
             profiles.removeAll()
         }
     }
@@ -142,28 +161,30 @@ public enum ChatReasoningPolicy {
     public static let anthropicOutputHeadroom = 8_192
     public static let minimumAnthropicBudgetTokens = 1_024
     public static let defaultAnthropicMaxTokensCap = 64_000
+    static let maximumErrorClassificationBytes = 16_384
 
     public static func serverKey(for baseURL: URL) -> String {
         anthropicBaseURL(from: baseURL).absoluteString.lowercased()
     }
 
-    /// Strips a trailing `/v1` segment from `ChatEngineRequest.baseURL` because
-    /// `AnthropicLanguageModel` appends `v1/messages` itself.
+    /// Strips a trailing `/v1` segment from `ChatEngineRequest.baseURL` while
+    /// preserving the raw percent-encoded path, because `AnthropicLanguageModel`
+    /// appends `v1/messages` itself.
     public static func anthropicBaseURL(from inferenceBaseURL: URL) -> URL {
         guard var components = URLComponents(url: inferenceBaseURL, resolvingAgainstBaseURL: false) else {
             return inferenceBaseURL
         }
-        var path = components.path
+        var path = components.percentEncodedPath
         while path.count > 1 && path.hasSuffix("/") {
             path.removeLast()
         }
         if path.lowercased() == "/v1" {
-            components.path = "/"
+            components.percentEncodedPath = "/"
             return components.url ?? inferenceBaseURL
         }
         if path.lowercased().hasSuffix("/v1") {
-            components.path = String(path.dropLast(3))
-            if components.path.isEmpty { components.path = "/" }
+            let trimmed = String(path.dropLast(3))
+            components.percentEncodedPath = trimmed.isEmpty ? "/" : trimmed
             return components.url ?? inferenceBaseURL
         }
         return inferenceBaseURL
@@ -198,27 +219,34 @@ public enum ChatReasoningPolicy {
     }
 
     private static func extractClaudeVersion(from text: String) -> (Int, Int)? {
+        // Strip trailing 8-digit release dates (e.g., `-20250514`) before matching
+        // major/minor numbers so release dates are never misparsed as minor versions.
+        let cleaned = text.replacingOccurrences(
+            of: #"(?:[-_])20\d{6}(?=$|[^0-9])"#,
+            with: "",
+            options: .regularExpression
+        )
         let patterns = [
-            #"claude-(?:opus|sonnet|haiku)-(\d+)[.-](\d+)"#,
-            #"claude-(\d+)[.-](\d+)-(?:opus|sonnet|haiku)"#,
-            #"claude-(\d+)[.-](\d+)"#,
+            #"claude-(?:opus|sonnet|haiku)-(\d+)[.-](\d{1,2})(?!\d)"#,
+            #"claude-(\d+)[.-](\d{1,2})-(?:opus|sonnet|haiku)"#,
+            #"claude-(\d+)[.-](\d{1,2})(?!\d)"#,
             #"claude-(?:opus|sonnet|haiku)-(\d+)(?!\d)"#,
         ]
         for pattern in patterns {
             guard let regex = try? NSRegularExpression(pattern: pattern),
-                  let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else {
+                  let match = regex.firstMatch(in: cleaned, range: NSRange(cleaned.startIndex..., in: cleaned)) else {
                 continue
             }
             if match.numberOfRanges >= 3,
-               let r1 = Range(match.range(at: 1), in: text),
-               let r2 = Range(match.range(at: 2), in: text),
-               let major = Int(text[r1]),
-               let minor = Int(text[r2]) {
+               let r1 = Range(match.range(at: 1), in: cleaned),
+               let r2 = Range(match.range(at: 2), in: cleaned),
+               let major = Int(cleaned[r1]),
+               let minor = Int(cleaned[r2]) {
                 return (major, minor)
             }
             if match.numberOfRanges >= 2,
-               let r1 = Range(match.range(at: 1), in: text),
-               let major = Int(text[r1]) {
+               let r1 = Range(match.range(at: 1), in: cleaned),
+               let major = Int(cleaned[r1]) {
                 return (major, 0)
             }
         }
@@ -336,7 +364,43 @@ public enum ChatReasoningPolicy {
             return omittedPlan(protocolKind: .anthropicMessages, requested: requested, anthropicMaxTokens: baseMaxTokens)
         }
 
-        let style = profile.preferredAnthropicStyle ?? initialAnthropicStyle(for: modelID)
+        let style: AnthropicThinkingStyle
+        if let preferred = profile.preferredAnthropicStyle {
+            switch preferred {
+            case .adaptive where !profile.anthropicAdaptiveUnsupported:
+                style = .adaptive
+            case .budget where !profile.anthropicBudgetUnsupported:
+                style = .budget
+            default:
+                if !profile.anthropicAdaptiveUnsupported {
+                    style = .adaptive
+                } else if !profile.anthropicBudgetUnsupported {
+                    style = .budget
+                } else {
+                    return omittedPlan(protocolKind: .anthropicMessages, requested: requested, anthropicMaxTokens: baseMaxTokens)
+                }
+            }
+        } else {
+            let initial = initialAnthropicStyle(for: modelID)
+            switch initial {
+            case .adaptive:
+                if !profile.anthropicAdaptiveUnsupported {
+                    style = .adaptive
+                } else if !profile.anthropicBudgetUnsupported {
+                    style = .budget
+                } else {
+                    return omittedPlan(protocolKind: .anthropicMessages, requested: requested, anthropicMaxTokens: baseMaxTokens)
+                }
+            case .budget:
+                if !profile.anthropicBudgetUnsupported {
+                    style = .budget
+                } else if !profile.anthropicAdaptiveUnsupported {
+                    style = .adaptive
+                } else {
+                    return omittedPlan(protocolKind: .anthropicMessages, requested: requested, anthropicMaxTokens: baseMaxTokens)
+                }
+            }
+        }
         switch style {
         case .adaptive:
             for candidate in anthropicEffortCandidates(for: requested) {
@@ -410,12 +474,12 @@ public enum ChatReasoningPolicy {
     public static func openAICandidates(for effort: ChatReasoningEffort) -> [(effort: ChatReasoningEffort, wire: String)] {
         switch effort {
         case .automatic: []
-        case .off: [(.off, "none")]
+        case .off: [(.off, "none"), (.low, "minimal"), (.low, "low")]
         case .low: [(.low, "low")]
         case .medium: [(.medium, "medium"), (.low, "low")]
         case .high: [(.high, "high"), (.medium, "medium"), (.low, "low")]
-        case .xhigh: [(.xhigh, "xhigh"), (.high, "high"), (.medium, "medium")]
-        case .max: [(.max, "max"), (.xhigh, "xhigh"), (.high, "high"), (.medium, "medium")]
+        case .xhigh: [(.xhigh, "xhigh"), (.high, "high"), (.medium, "medium"), (.low, "low")]
+        case .max: [(.max, "max"), (.xhigh, "xhigh"), (.high, "high"), (.medium, "medium"), (.low, "low")]
         }
     }
 
@@ -426,8 +490,8 @@ public enum ChatReasoningPolicy {
         case .low: [(.low, "low")]
         case .medium: [(.medium, "medium"), (.low, "low")]
         case .high: [(.high, "high"), (.medium, "medium"), (.low, "low")]
-        case .xhigh: [(.xhigh, "xhigh"), (.high, "high"), (.medium, "medium")]
-        case .max: [(.max, "max"), (.xhigh, "xhigh"), (.high, "high"), (.medium, "medium")]
+        case .xhigh: [(.xhigh, "xhigh"), (.high, "high"), (.medium, "medium"), (.low, "low")]
+        case .max: [(.max, "max"), (.xhigh, "xhigh"), (.high, "high"), (.medium, "medium"), (.low, "low")]
         }
     }
 
@@ -452,21 +516,40 @@ public enum ChatReasoningPolicy {
         return .low
     }
 
+    public static func recordAnthropicEndpointUnsupported(
+        server: String,
+        modelID: String,
+        cache: ChatReasoningCapabilityCache,
+        generation: UInt64? = nil
+    ) {
+        cache.updateProfile(for: server, modelID: modelID, generation: generation) {
+            $0.anthropicEndpointUnsupported = true
+        }
+    }
+
     /// Applies a classified rejection to the session capability cache.
     public static func recordRejection(
         _ rejection: ChatReasoningRejection,
         for plan: ChatReasoningWirePlan,
         server: String,
         modelID: String,
-        cache: ChatReasoningCapabilityCache
+        cache: ChatReasoningCapabilityCache,
+        generation: UInt64? = nil
     ) {
         switch rejection {
         case .anthropicEndpointUnsupported:
-            cache.updateProfile(for: server, modelID: modelID) { $0.anthropicEndpointUnsupported = true }
+            cache.updateProfile(for: server, modelID: modelID, generation: generation) {
+                $0.anthropicEndpointUnsupported = true
+            }
+        case .anthropicAuthFallback:
+            // Do not cache until the fallback OpenAI route proves it can serve this request.
+            break
         case .parameterUnsupported:
-            cache.updateProfile(for: server, modelID: modelID) { $0.reasoningUnsupported = true }
+            cache.updateProfile(for: server, modelID: modelID, generation: generation) {
+                $0.reasoningUnsupported = true
+            }
         case .effortValueUnsupported(let allowed):
-            cache.updateProfile(for: server, modelID: modelID) { profile in
+            cache.updateProfile(for: server, modelID: modelID, generation: generation) { profile in
                 switch plan.protocolKind {
                 case .openAIChatCompletions, .openAIResponses:
                     if let wire = plan.openAIWireEffort {
@@ -485,23 +568,25 @@ public enum ChatReasoningPolicy {
                 }
             }
         case .anthropicAdaptiveUnsupported:
-            cache.updateProfile(for: server, modelID: modelID) { profile in
-                if profile.preferredAnthropicStyle == .budget {
+            cache.updateProfile(for: server, modelID: modelID, generation: generation) { profile in
+                profile.anthropicAdaptiveUnsupported = true
+                if profile.anthropicBudgetUnsupported {
                     profile.reasoningUnsupported = true
                 } else {
                     profile.preferredAnthropicStyle = .budget
                 }
             }
         case .anthropicBudgetUnsupported:
-            cache.updateProfile(for: server, modelID: modelID) { profile in
-                if profile.preferredAnthropicStyle == .adaptive {
+            cache.updateProfile(for: server, modelID: modelID, generation: generation) { profile in
+                profile.anthropicBudgetUnsupported = true
+                if profile.anthropicAdaptiveUnsupported {
                     profile.reasoningUnsupported = true
                 } else {
                     profile.preferredAnthropicStyle = .adaptive
                 }
             }
         case .anthropicMaxTokensLimit(let maximum):
-            cache.updateProfile(for: server, modelID: modelID) { profile in
+            cache.updateProfile(for: server, modelID: modelID, generation: generation) { profile in
                 let clamped = max(256, maximum)
                 if let existing = profile.anthropicMaxTokensCeiling {
                     profile.anthropicMaxTokensCeiling = min(existing, clamped)
@@ -522,9 +607,6 @@ public enum ChatReasoningPolicy {
         if let transportError = error as? HTTPTransportError {
             return classifyTransportError(transportError, plan: plan)
         }
-        if plan.protocolKind == .anthropicMessages, error is DecodingError {
-            return .anthropicEndpointUnsupported
-        }
         return nil
     }
 
@@ -535,12 +617,13 @@ public enum ChatReasoningPolicy {
         let status = error.response?.status.code
 
         // Anthropic endpoint fallback on relays that only expose `/v1/chat/completions`
-        // or reject `x-api-key` auth on `/v1/messages`.
-        if plan.protocolKind == .anthropicMessages {
-            if error.kind == .decodingError || error.kind == .invalidResponse {
-                return .anthropicEndpointUnsupported
+        // or reject `x-api-key` auth on `/v1/messages`. Never fall back on 200 decode
+        // errors: the upstream may already have generated and billed the response.
+        if plan.protocolKind == .anthropicMessages, let status {
+            if status == 401 {
+                return .anthropicAuthFallback
             }
-            if let status, [401, 404, 405, 501].contains(status) {
+            if [404, 405, 501].contains(status) {
                 return .anthropicEndpointUnsupported
             }
         }
@@ -557,6 +640,7 @@ public enum ChatReasoningPolicy {
         guard isValidationError else { return nil }
 
         let details = extractErrorDetails(from: error.body)
+        guard !details.combinedLowercased.isEmpty else { return nil }
         let combined = details.combinedLowercased
 
         // Non-reasoning rejections must never trigger retries.
@@ -580,9 +664,21 @@ public enum ChatReasoningPolicy {
 
         // 1. Anthropic `max_tokens` ceiling exceeded.
         if plan.protocolKind == .anthropicMessages,
+           plan.anthropicMaxTokens != nil,
            combined.contains("max_tokens"),
            let limit = extractMaxTokensLimit(from: details.rawText) {
             return .anthropicMaxTokensLimit(maximum: limit)
+        }
+
+        // Never classify a validation failure as reasoning-unsupported unless this attempt
+        // actually sent a reasoning/thinking parameter (e.g., proxy requiring the field on `.automatic`).
+        let sentReasoningParameter =
+            plan.openAIWireEffort != nil
+            || plan.anthropicStyle != nil
+            || plan.anthropicEffort != nil
+            || plan.anthropicBudgetTokens != nil
+        guard sentReasoningParameter else {
+            return nil
         }
 
         // 2. Anthropic adaptive vs budget paradigm conflict.
@@ -675,7 +771,7 @@ public enum ChatReasoningPolicy {
     }
 
     private static func extractErrorDetails(from body: Data?) -> ErrorDetails {
-        guard let body, !body.isEmpty else {
+        guard let body, !body.isEmpty, body.count <= maximumErrorClassificationBytes else {
             return ErrorDetails(rawText: "", paramLowercased: "", combinedLowercased: "")
         }
         let raw = String(decoding: body, as: UTF8.self)
@@ -739,7 +835,7 @@ public enum ChatReasoningPolicy {
         let lowered = text.lowercased()
         let patterns = [
             #"max_tokens[^0-9]*\d+\s*>\s*(\d+)"#,
-            #"maximum(?:\s+allowed|\s+is|\s+of)?\s*[:=]?\s*(\d+)"#,
+            #"maximum(?:\s+allowed)?(?:\s+is|\s+of)?\s*[:=]?\s*(\d+)"#,
             #"at most\s+(\d+)"#,
             #"<=?\s*(\d+)"#,
             #"limit(?:\s+of|\s+is)?\s*[:=]?\s*(\d+)"#,

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import CPAQuotaKit
+@testable import CPAQuotaChat
 @testable import CPAQuotaUI
 
 @Suite("CPAQuotaUI session, presentation, and contract fidelity tests")
@@ -221,5 +222,20 @@ struct CPAQuotaUITests {
         #expect(QuotaFormatter.maskEmail("rin.primary@workspace.dev", enabled: true) == "ri***y@workspace.dev")
         #expect(QuotaFormatter.maskEmail("rin.primary@workspace.dev", enabled: false) == "rin.primary@workspace.dev")
         #expect(QuotaFormatter.maskEmail(nil, enabled: true) == "未提供邮箱标识")
+    }
+
+    @Test
+    func reasoningResolutionNoticeDistinguishesForcedOffFromUnsupportedEffort() {
+        let applied = ChatReasoningResolution(requested: .high, applied: .high, outcome: .applied)
+        #expect(applied.noticeText == nil)
+
+        let downgraded = ChatReasoningResolution(requested: .max, applied: .high, outcome: .downgraded)
+        #expect(downgraded.noticeText == "当前模型不支持「最大」，本次已按「高」发送")
+
+        let omittedOff = ChatReasoningResolution(requested: .off, applied: nil, outcome: .omitted)
+        #expect(omittedOff.noticeText == "当前模型无法关闭思考，本次已按默认发送")
+
+        let omittedHigh = ChatReasoningResolution(requested: .high, applied: nil, outcome: .omitted)
+        #expect(omittedHigh.noticeText == "当前模型不支持思考等级，本次已按默认发送")
     }
 }

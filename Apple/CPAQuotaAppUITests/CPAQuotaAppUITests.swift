@@ -913,20 +913,27 @@ final class CPAQuotaAppUITests: XCTestCase {
         XCTAssertEqual(trigger.value as? String, "自动")
         let attachment = element("chat.attach", in: app)
         let send = element("chat.send", in: app)
-        // A side tab bar can reduce the space available to the composer.
-        // The accessory group and Send keep the same horizontal placement in both layouts.
+        let composer = element("chat.composer", in: app)
+        // Compact widths and narrow composers always stack the text field above the action bar
+        // so the field never truncates or jumps between 1-row and 2-row layouts.
         let availableFieldWidth = send.frame.minX - trigger.frame.maxX - 8
         XCTAssertEqual(attachment.frame.midY, trigger.frame.midY, accuracy: 4)
         XCTAssertEqual(send.frame.midY, trigger.frame.midY, accuracy: 4)
-        if availableFieldWidth >= 142 {
+        let expectsStacked = app.frame.width < 600 || availableFieldWidth < 218
+        if expectsStacked {
+            XCTAssertLessThanOrEqual(input.frame.maxY, trigger.frame.minY + 2)
+        } else if availableFieldWidth >= 224 {
             XCTAssertEqual(trigger.frame.midY, input.frame.midY, accuracy: 4)
-        } else if availableFieldWidth < 138 {
-            XCTAssertLessThan(input.frame.maxY, trigger.frame.minY)
         }
+        let initialComposerHeight = composer.frame.height
+        let initialTriggerWidth = trigger.frame.width
 
         trigger.tap()
         let slider = element("chat.reasoningSlider", in: app)
         expectExists(slider, in: app)
+        let highOption = element("chat.reasoningOption.high", in: app)
+        expectExists(highOption, in: app)
+        highOption.tap()
         let xhighOption = element("chat.reasoningOption.xhigh", in: app)
         expectExists(xhighOption, in: app)
         xhighOption.tap()
@@ -950,6 +957,9 @@ final class CPAQuotaAppUITests: XCTestCase {
         expectPredicate(NSPredicate(format: "value == %@", "最大"), on: trigger, in: app,
                         message: "Composer trigger must display the chosen max reasoning level.",
                         finalCheck: { trigger.value as? String == "最大" })
+        // DISP-03: Changing between 1-char and 2-char level titles must not jump composer height or pill width.
+        XCTAssertEqual(composer.frame.height, initialComposerHeight, accuracy: 2)
+        XCTAssertEqual(trigger.frame.width, initialTriggerWidth, accuracy: 2)
 
         input.tap()
         input.typeText("测试思考等级")
@@ -1026,22 +1036,26 @@ final class CPAQuotaAppUITests: XCTestCase {
         expectExists(copy, in: app)
         copy.tap()
 
-        let model = element("chat.modelMenu", in: app)
-        model.tap()
-        textContaining("fixture-chat-alternate", in: app).tap()
-        XCTAssertTrue(model.label.contains("fixture-chat-alternate"))
-        expectExists(keyboard, in: app)
-        input.typeText("Eir")
-        tapChatSend(in: app)
-        expectExists(release, in: app)
-        let streamedCode = app.staticTexts["<p>Second fragment"].firstMatch
-        expectExists(streamedCode, in: app)
         let composer = element("chat.composer", in: app)
         func transcriptViewport() -> CGRect {
             let top = app.navigationBars.firstMatch.frame.maxY
             return CGRect(x: composer.frame.minX, y: top, width: composer.frame.width,
                           height: max(0, composer.frame.minY - top))
         }
+
+        let model = element("chat.modelMenu", in: app)
+        model.tap()
+        textContaining("fixture-chat-alternate", in: app).tap()
+        XCTAssertTrue(model.label.contains("fixture-chat-alternate"))
+        expectExists(keyboard, in: app)
+        let firstPreview = element("chat.html.snippet.2", in: app)
+        verify(transcriptViewport().contains(CGPoint(x: firstPreview.frame.midX, y: firstPreview.frame.midY)), in: app,
+               "Switching models with the keyboard open must keep the transcript visible before typing.")
+        input.typeText("Eir")
+        tapChatSend(in: app)
+        expectExists(release, in: app)
+        let streamedCode = app.staticTexts["<p>Second fragment"].firstMatch
+        expectExists(streamedCode, in: app)
         verify(transcriptViewport().contains(CGPoint(x: streamedCode.frame.midX, y: streamedCode.frame.midY)), in: app,
                "The incomplete HTML source must be visible while the second reply streams.")
         release.tap()

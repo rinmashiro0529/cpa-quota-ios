@@ -61,14 +61,25 @@ private final class ScriptedReasoningTransport: AnyLanguageModel.HTTPTransport, 
 }
 
 private final class ReasoningStubEngine: ChatEngine, @unchecked Sendable {
-    private(set) var streamRequests: [ChatEngineRequest] = []
-    private(set) var completeRequests: [ChatEngineRequest] = []
-    private(set) var resetCount = 0
-    var events: [ChatEngineEvent] = [.snapshot(text: "回复", reasoning: nil)]
+    private let lock = NSLock()
+    private var _streamRequests: [ChatEngineRequest] = []
+    private var _completeRequests: [ChatEngineRequest] = []
+    private var _resetCount = 0
+    private var _events: [ChatEngineEvent] = [.snapshot(text: "回复", reasoning: nil)]
+
+    var streamRequests: [ChatEngineRequest] { lock.withLock { _streamRequests } }
+    var completeRequests: [ChatEngineRequest] { lock.withLock { _completeRequests } }
+    var resetCount: Int { lock.withLock { _resetCount } }
+    var events: [ChatEngineEvent] {
+        get { lock.withLock { _events } }
+        set { lock.withLock { _events = newValue } }
+    }
 
     func stream(_ request: ChatEngineRequest) -> AsyncThrowingStream<ChatEngineEvent, any Error> {
-        streamRequests.append(request)
-        let events = self.events
+        let events: [ChatEngineEvent] = lock.withLock {
+            _streamRequests.append(request)
+            return _events
+        }
         return AsyncThrowingStream { continuation in
             for event in events { continuation.yield(event) }
             continuation.finish()
@@ -76,13 +87,27 @@ private final class ReasoningStubEngine: ChatEngine, @unchecked Sendable {
     }
 
     func complete(_ request: ChatEngineRequest) async throws -> String {
-        completeRequests.append(request)
+        lock.withLock { _completeRequests.append(request) }
         return "简短标题"
     }
 
     func resetReasoningCapabilities() {
-        resetCount += 1
+        lock.withLock { _resetCount += 1 }
     }
+}
+
+private actor FailingSettingsLoadPersistence: ChatPersistence {
+    private let base = ChatMemoryPersistence()
+    func loadConversations() async throws -> [ChatConversation] { try await base.loadConversations() }
+    func saveConversation(_ conversation: ChatConversation) async throws { try await base.saveConversation(conversation) }
+    func removeConversation(_ id: UUID) async throws { try await base.removeConversation(id) }
+    func removeAllConversations() async throws { try await base.removeAllConversations() }
+    func loadSettings() async throws -> ChatSettings? { throw ChatPersistenceError.storageFailure }
+    func saveSettings(_ settings: ChatSettings) async throws { try await base.saveSettings(settings) }
+    func loadMemories() async throws -> [ChatMemoryItem]? { nil }
+    func saveMemories(_ items: [ChatMemoryItem]) async throws {}
+    func loadSkills() async throws -> [ChatSkill]? { nil }
+    func saveSkills(_ skills: [ChatSkill]) async throws {}
 }
 
 private struct ReasoningStubCatalog: ChatModelCatalog {
@@ -150,6 +175,8 @@ struct ChatReasoningCompatibilityTests {
     @Test func protocolAndAnthropicGenerationClassification() throws {
         #expect(ChatReasoningPolicy.anthropicBaseURL(from: try #require(URL(string: "https://a.test/v1"))).absoluteString == "https://a.test/")
         #expect(ChatReasoningPolicy.anthropicBaseURL(from: try #require(URL(string: "https://a.test/proxy/v1/"))).absoluteString == "https://a.test/proxy")
+        // SEC-01: preserve percent-encoded path segments byte-for-byte.
+        #expect(ChatReasoningPolicy.anthropicBaseURL(from: try #require(URL(string: "https://a.test/tenant%3Aa/v1"))).absoluteString == "https://a.test/tenant%3Aa")
 
         #expect(ChatReasoningPolicy.isAnthropicModel(modelID: "claude-opus-4-6", ownedBy: nil))
         #expect(ChatReasoningPolicy.isAnthropicModel(modelID: "anthropic/claude-sonnet-4-5", ownedBy: nil))
@@ -158,9 +185,14 @@ struct ChatReasoningCompatibilityTests {
         #expect(!ChatReasoningPolicy.isAnthropicModel(modelID: "gemini-2.5-pro", ownedBy: "google"))
 
         #expect(ChatReasoningPolicy.initialAnthropicStyle(for: "claude-opus-4-6") == .adaptive)
+        #expect(ChatReasoningPolicy.initialAnthropicStyle(for: "claude-opus-4-6-20260101") == .adaptive)
         #expect(ChatReasoningPolicy.initialAnthropicStyle(for: "claude-opus-4-7") == .adaptive)
         #expect(ChatReasoningPolicy.initialAnthropicStyle(for: "claude-sonnet-5") == .adaptive)
         #expect(ChatReasoningPolicy.initialAnthropicStyle(for: "claude-sonnet-4-5") == .budget)
+        #expect(ChatReasoningPolicy.initialAnthropicStyle(for: "claude-sonnet-4-5-20250929") == .budget)
+        // EFF-09: 8-digit release dates must not be misparsed as minor versions.
+        #expect(ChatReasoningPolicy.initialAnthropicStyle(for: "claude-sonnet-4-20250514") == .budget)
+        #expect(ChatReasoningPolicy.initialAnthropicStyle(for: "claude-opus-4-20250514") == .budget)
         #expect(ChatReasoningPolicy.initialAnthropicStyle(for: "claude-3-7-sonnet-20250219") == .budget)
     }
 
@@ -256,10 +288,14 @@ struct ChatReasoningCompatibilityTests {
         #expect(recorded[2].bodyJSON?["reasoning_effort"] as? String == "high")
     }
 
-    @Test func openAIOffRejectedByForcedReasoningModelFallsBackToOmit() async throws {
-        let reject400 = #"{"error":{"message":"Unsupported value: 'none' is not supported for reasoning_effort on this model.","param":"reasoning_effort"}}"#
+    @Test func openAIOffRejectedByForcedReasoningModelWalksLadderAndFallsBackToOmit() async throws {
+        let rejectNone = #"{"error":{"message":"Unsupported value: 'none' is not supported for reasoning_effort on this model.","param":"reasoning_effort"}}"#
+        let rejectMinimal = #"{"error":{"message":"Unsupported value: 'minimal' is not supported for reasoning_effort on this model.","param":"reasoning_effort"}}"#
+        let rejectLow = #"{"error":{"message":"Unsupported value: 'low' is not supported for reasoning_effort on this model.","param":"reasoning_effort"}}"#
         let transport = ScriptedReasoningTransport(steps: [
-            .init(status: .badRequest, chunks: [reject400]),
+            .init(status: .badRequest, chunks: [rejectNone]),
+            .init(status: .badRequest, chunks: [rejectMinimal]),
+            .init(status: .badRequest, chunks: [rejectLow]),
             .init(chunks: openAISuccessChunks),
         ])
         let engine = AnyLanguageModelChatEngine(transport: transport)
@@ -271,9 +307,105 @@ struct ChatReasoningCompatibilityTests {
         }
         #expect(resolution == ChatReasoningResolution(requested: .off, applied: nil, outcome: .omitted))
         let recorded = transport.snapshot()
+        #expect(recorded.map { $0.bodyJSON?["reasoning_effort"] as? String } == ["none", "minimal", "low", nil])
+    }
+
+    @Test func openAIOffDowngradesToLowestAllowedEffortInOneRetry() async throws {
+        let reject400 = #"{"error":{"message":"Invalid value: 'none'. Supported values are: 'low', 'medium', and 'high'.","param":"reasoning_effort"}}"#
+        let transport = ScriptedReasoningTransport(steps: [
+            .init(status: .badRequest, chunks: [reject400]),
+            .init(chunks: openAISuccessChunks),
+        ])
+        let engine = AnyLanguageModelChatEngine(transport: transport)
+        let req = try makeRequest(modelID: "o3", ownedBy: "openai", effort: .off)
+
+        var resolution: ChatReasoningResolution?
+        for try await event in engine.stream(req) {
+            if case .reasoningResolution(let res) = event { resolution = res }
+        }
+        #expect(resolution == ChatReasoningResolution(requested: .off, applied: .low, outcome: .downgraded))
+        let recorded = transport.snapshot()
+        #expect(recorded.map { $0.bodyJSON?["reasoning_effort"] as? String } == ["none", "low"])
+    }
+
+    @Test func openAIMaxDowngradesToLowWhenOnlyLowIsAllowed() async throws {
+        let reject400 = #"{"error":{"message":"Invalid value: 'max'. Supported values are: 'low'.","param":"reasoning_effort"}}"#
+        let transport = ScriptedReasoningTransport(steps: [
+            .init(status: .badRequest, chunks: [reject400]),
+            .init(chunks: openAISuccessChunks),
+        ])
+        let engine = AnyLanguageModelChatEngine(transport: transport)
+        let req = try makeRequest(modelID: "o3-restricted", ownedBy: "openai", effort: .max)
+
+        var resolution: ChatReasoningResolution?
+        for try await event in engine.stream(req) {
+            if case .reasoningResolution(let res) = event { resolution = res }
+        }
+        #expect(resolution == ChatReasoningResolution(requested: .max, applied: .low, outcome: .downgraded))
+        let recorded = transport.snapshot()
+        #expect(recorded.map { $0.bodyJSON?["reasoning_effort"] as? String } == ["max", "low"])
+    }
+
+    @Test func automaticEffortValidationErrorDoesNotPoisonExplicitReasoningCache() async throws {
+        let reject422 = #"{"error":{"message":"reasoning_effort is required by this proxy","param":"reasoning_effort"}}"#
+        let transport = ScriptedReasoningTransport(steps: [
+            .init(status: .unprocessableContent, chunks: [reject422]),
+            .init(chunks: openAISuccessChunks),
+        ])
+        let engine = AnyLanguageModelChatEngine(transport: transport)
+        let autoReq = try makeRequest(modelID: "proxy-model", ownedBy: "openai", effort: .automatic)
+        do {
+            for try await _ in engine.stream(autoReq) {}
+            Issue.record("Expected 422 on .automatic without retry")
+        } catch {
+            #expect(AnyLanguageModelChatEngine.failure(for: error) == .upstream(statusCode: 422))
+        }
+
+        let highReq = try makeRequest(modelID: "proxy-model", ownedBy: "openai", effort: .high)
+        for try await _ in engine.stream(highReq) {}
+        let recorded = transport.snapshot()
         #expect(recorded.count == 2)
-        #expect(recorded[0].bodyJSON?["reasoning_effort"] as? String == "none")
-        #expect(recorded[1].bodyJSON?["reasoning_effort"] == nil)
+        #expect(recorded[0].bodyJSON?["reasoning_effort"] == nil)
+        #expect(recorded[1].bodyJSON?["reasoning_effort"] as? String == "high")
+    }
+
+    @Test func oversizedErrorBodyIsNotClassifiedForRetry() async throws {
+        let padding = String(repeating: "x", count: ChatReasoningPolicy.maximumErrorClassificationBytes + 128)
+        let huge400 = #"{"error":{"message":"Unrecognized request argument supplied: reasoning_effort \#(padding)","param":"reasoning_effort"}}"#
+        let transport = ScriptedReasoningTransport(steps: [
+            .init(status: .badRequest, chunks: [huge400]),
+            .init(chunks: openAISuccessChunks),
+        ])
+        let engine = AnyLanguageModelChatEngine(transport: transport)
+        let req = try makeRequest(modelID: "gpt-5.4", ownedBy: "openai", effort: .high)
+        do {
+            for try await _ in engine.stream(req) {}
+            Issue.record("Expected oversized 400 body to fail without retry")
+        } catch {
+            #expect(AnyLanguageModelChatEngine.failure(for: error) == .upstream(statusCode: 400))
+        }
+        #expect(transport.snapshot().count == 1)
+    }
+
+    @Test func staleCacheGenerationCannotPoisonCacheAfterReset() {
+        let cache = ChatReasoningCapabilityCache()
+        let staleGen = cache.currentGeneration()
+        cache.reset()
+        let plan = ChatReasoningPolicy.makePlan(
+            requested: .high,
+            protocolKind: .openAIChatCompletions,
+            modelID: "gpt-5.4",
+            profile: .init()
+        )
+        ChatReasoningPolicy.recordRejection(
+            .parameterUnsupported,
+            for: plan,
+            server: "https://cpa.example.invalid/",
+            modelID: "gpt-5.4",
+            cache: cache,
+            generation: staleGen
+        )
+        #expect(!cache.profile(for: "https://cpa.example.invalid/", modelID: "gpt-5.4").reasoningUnsupported)
     }
 
     @Test func maxFallsBackToProviderDefaultAfterProtocolAndEffortRejections() async throws {
@@ -440,6 +572,109 @@ struct ChatReasoningCompatibilityTests {
         #expect(resolution?.outcome == .downgraded)
     }
 
+    @Test func anthropicMaxTokensLimitParsesMaximumAllowedIsPhrase() async throws {
+        let rejectMax = #"{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: maximum allowed is 8192"}}"#
+        let transport = ScriptedReasoningTransport(steps: [
+            .init(status: .badRequest, chunks: [rejectMax]),
+            .init(chunks: anthropicSuccessChunks),
+        ])
+        let engine = AnyLanguageModelChatEngine(transport: transport)
+        let req = try makeRequest(modelID: "claude-sonnet-4-5", ownedBy: "anthropic", effort: .max)
+
+        for try await _ in engine.stream(req) {}
+        let recorded = transport.snapshot()
+        #expect(recorded.count == 2)
+        #expect(recorded[1].bodyJSON?["max_tokens"] as? Int == 8_192)
+    }
+
+    @Test func anthropicDualParadigmRejectionDegradesToOmitWithoutPingPong() async throws {
+        let rejectAdaptive = #"{"type":"error","error":{"type":"invalid_request_error","message":"thinking.type: Input should be 'enabled'"}}"#
+        let rejectBudget = #"{"type":"error","error":{"type":"invalid_request_error","message":"thinking.budget_tokens is not supported for this model"}}"#
+        let transport = ScriptedReasoningTransport(steps: [
+            .init(status: .badRequest, chunks: [rejectAdaptive]),
+            .init(status: .badRequest, chunks: [rejectBudget]),
+            .init(chunks: anthropicSuccessChunks),
+            .init(chunks: anthropicSuccessChunks),
+        ])
+        let engine = AnyLanguageModelChatEngine(transport: transport)
+        let req = try makeRequest(modelID: "claude-haiku-nonthinking", ownedBy: "anthropic", effort: .high)
+
+        var resolution: ChatReasoningResolution?
+        for try await event in engine.stream(req) {
+            if case .reasoningResolution(let res) = event { resolution = res }
+        }
+        #expect(resolution == ChatReasoningResolution(requested: .high, applied: nil, outcome: .omitted))
+
+        // Second turn goes straight to omitted without repeating adaptive or budget probes.
+        for try await _ in engine.stream(req) {}
+        let recorded = transport.snapshot()
+        #expect(recorded.count == 4)
+        #expect((recorded[0].bodyJSON?["thinking"] as? [String: Any])?["type"] as? String == "adaptive")
+        #expect((recorded[1].bodyJSON?["thinking"] as? [String: Any])?["type"] as? String == "enabled")
+        #expect(recorded[2].bodyJSON?["thinking"] == nil)
+        #expect(recorded[3].bodyJSON?["thinking"] == nil)
+    }
+
+    @Test func anthropic200MalformedBodyDoesNotFallbackToOpenAI() async throws {
+        let transport = ScriptedReasoningTransport(steps: [
+            .init(status: .ok, chunks: ["{malformed-json"]),
+            .init(chunks: openAISuccessChunks),
+        ])
+        let engine = AnyLanguageModelChatEngine(transport: transport)
+        let req = try makeRequest(modelID: "claude-opus-4-6", ownedBy: "anthropic", effort: .high)
+
+        do {
+            _ = try await engine.complete(req)
+            Issue.record("Expected 200 malformed JSON to throw without falling back to OpenAI")
+        } catch {
+            #expect(AnyLanguageModelChatEngine.failure(for: error) == .invalidResponse)
+        }
+        let recorded = transport.snapshot()
+        #expect(recorded.map(\.path) == ["/v1/messages"])
+    }
+
+    @Test func anthropic401FallbackCachesOnlyWhenOpenAISucceedsAndPreserves401OnFailure() async throws {
+        // Case 1: Anthropic 401 followed by OpenAI 404 must surface 401 and NOT cache fallback.
+        let failingTransport = ScriptedReasoningTransport(steps: [
+            .init(status: .unauthorized, chunks: [#"{"error":"invalid x-api-key"}"#]),
+            .init(status: .notFound, chunks: [#"{"error":"not found"}"#]),
+            .init(status: .unauthorized, chunks: [#"{"error":"invalid x-api-key"}"#]),
+            .init(status: .notFound, chunks: [#"{"error":"not found"}"#]),
+        ])
+        let failingEngine = AnyLanguageModelChatEngine(transport: failingTransport)
+        let req = try makeRequest(modelID: "claude-opus-4-6", ownedBy: "anthropic", effort: .high)
+        do {
+            for try await _ in failingEngine.stream(req) {}
+            Issue.record("Expected original 401 error when OpenAI fallback fails")
+        } catch {
+            #expect(AnyLanguageModelChatEngine.failure(for: error) == .unauthorized(statusCode: 401))
+        }
+        // Second call still attempts `/v1/messages` because fallback did not succeed.
+        do {
+            for try await _ in failingEngine.stream(req) {}
+        } catch {}
+        #expect(failingTransport.snapshot().map(\.path) == [
+            "/v1/messages", "/v1/chat/completions", "/v1/messages", "/v1/chat/completions",
+        ])
+
+        // Case 2: Anthropic 401 followed by OpenAI 200 succeeds and caches fallback for turn 2.
+        let succeedingTransport = ScriptedReasoningTransport(steps: [
+            .init(status: .unauthorized, chunks: [#"{"error":"bearer only"}"#]),
+            .init(chunks: openAISuccessChunks),
+            .init(chunks: openAISuccessChunks),
+        ])
+        let succeedingEngine = AnyLanguageModelChatEngine(transport: succeedingTransport)
+        var resolution: ChatReasoningResolution?
+        for try await event in succeedingEngine.stream(req) {
+            if case .reasoningResolution(let res) = event { resolution = res }
+        }
+        #expect(resolution?.usedFallbackProtocol == true)
+        for try await _ in succeedingEngine.stream(req) {}
+        #expect(succeedingTransport.snapshot().map(\.path) == [
+            "/v1/messages", "/v1/chat/completions", "/v1/chat/completions",
+        ])
+    }
+
     @Test func anthropicModel404FallsBackWithoutDisablingNativeMessagesForOtherModels() async throws {
         let transport = ScriptedReasoningTransport(steps: [
             .init(status: .notFound, chunks: [
@@ -543,5 +778,50 @@ struct ChatReasoningCompatibilityTests {
         let serverBID = workspace.createConversation()
         #expect(workspace.conversation(serverBID)?.reasoningEffort == .automatic)
         #expect(engine.resetCount > 0)
+    }
+
+    @Test @MainActor func modelRemovalAdoptsFallbackRememberedEffortAndFailedSettingsUsesTemporaryCache() async throws {
+        final class SwitchableCatalog: ChatModelCatalog, @unchecked Sendable {
+            private let lock = NSLock()
+            private var items: [CPAModel]
+            init(_ items: [CPAModel]) { self.items = items }
+            func set(_ items: [CPAModel]) { lock.withLock { self.items = items } }
+            func models() async throws -> [CPAModel] { lock.withLock { items } }
+        }
+        let server = try CPAServer(baseURL: "https://server-c.example")
+        let catalog = SwitchableCatalog([
+            CPAModel(id: "model-a", ownedBy: "openai"),
+            CPAModel(id: "model-b", ownedBy: "openai"),
+        ])
+        let workspace = ChatWorkspaceModel(
+            persistence: FailingSettingsLoadPersistence(),
+            secrets: MemorySecretStore(),
+            engine: ReasoningStubEngine(),
+            modelCatalog: { _, _ in catalog }
+        )
+        await workspace.loadIfNeeded()
+        #expect(workspace.settingsLoadFailed)
+        await workspace.bind(server: server) { nil }
+        #expect(await workspace.useManualKey("test-client-key-0003"))
+
+        // EFF-10: Even when settings failed to load, remembered efforts round-trip via temporary cache.
+        let id1 = workspace.createConversation()
+        workspace.selectModel("model-b", in: id1)
+        workspace.selectReasoningEffort(.off, in: id1)
+        workspace.selectModel("model-a", in: id1)
+        workspace.selectReasoningEffort(.max, in: id1)
+
+        // Create a fresh empty conversation (non-manual) adopting model-a's `.max` from temporary cache.
+        let id2 = workspace.createConversation()
+        #expect(id2 == id1) // reused empty conversation, manual flag cleared!
+        #expect(workspace.conversation(id2)?.modelID == "model-a")
+        #expect(workspace.conversation(id2)?.reasoningEffort == .max)
+
+        // EFF-08: Removing model-a falls back to model-b and adopts model-b's remembered `.off`
+        // instead of keeping model-a's `.max`.
+        catalog.set([CPAModel(id: "model-b", ownedBy: "openai")])
+        await workspace.refreshModels()
+        #expect(workspace.conversation(id2)?.modelID == "model-b")
+        #expect(workspace.conversation(id2)?.reasoningEffort == .off)
     }
 }

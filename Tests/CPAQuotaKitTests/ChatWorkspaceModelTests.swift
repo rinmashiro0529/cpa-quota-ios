@@ -2325,6 +2325,80 @@ struct ChatWorkspaceModelTests {
         #expect(search.queries.isEmpty)
         #expect(fixture.engine.streamRequests.count == 1)
     }
+
+    @Test @MainActor func draftsPersistPerConversationAndClearOnSendDeleteAndReuse() async throws {
+        let fixture = makeFixture()
+        fixture.engine.respond(with: [.snapshot(text: "好", reasoning: nil)])
+        fixture.workspace.settings.generatesTitles = false
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+
+        let first = fixture.workspace.createConversation()
+        let img = ChatImageAttachment(mimeType: "image/jpeg", data: Data([1, 2, 3]))
+        fixture.workspace.saveDraft(.init(text: "未发草稿", attachments: [img]), for: first)
+        #expect(fixture.workspace.draft(for: first) == .init(text: "未发草稿", attachments: [img]))
+
+        // Reusing an empty conversation clears any leftover draft on it.
+        #expect(fixture.workspace.createConversation() == first)
+        #expect(fixture.workspace.draft(for: first).isEmpty)
+
+        // Saving draft on a non-empty conversation survives switching to a new conversation.
+        await completeTurn(fixture, "第一句", in: first)
+        fixture.workspace.saveDraft(.init(text: "续写草稿", attachments: [img]), for: first)
+        let second = fixture.workspace.createConversation()
+        #expect(second != first)
+        #expect(fixture.workspace.draft(for: first).text == "续写草稿")
+        #expect(fixture.workspace.draft(for: second).isEmpty)
+
+        // Sending clears the draft for that conversation.
+        await completeTurn(fixture, "发送草稿", in: first)
+        #expect(fixture.workspace.draft(for: first).isEmpty)
+
+        // Deleting a conversation clears its draft.
+        fixture.workspace.saveDraft(.init(text: "待删草稿"), for: first)
+        #expect(await fixture.workspace.deleteConversation(first))
+        #expect(fixture.workspace.draft(for: first).isEmpty)
+    }
+
+    @Test @MainActor func updateConversationMetadataPreservesOrderAndSkipsNoOpWrites() async throws {
+        let olderTime = Date(timeIntervalSince1970: 1_700_000_000)
+        let newerTime = Date(timeIntervalSince1970: 1_700_000_500)
+        let older = ChatConversation(
+            title: "较早对话",
+            modelID: "test-model",
+            messages: [ChatMessage(role: .user, text: "hi"), ChatMessage(role: .assistant, text: "ok")],
+            updatedAt: olderTime,
+            serverIdentifier: server.identifier
+        )
+        let newer = ChatConversation(
+            title: "较新对话",
+            modelID: "test-model",
+            messages: [ChatMessage(role: .user, text: "hi"), ChatMessage(role: .assistant, text: "ok")],
+            updatedAt: newerTime,
+            serverIdentifier: server.identifier
+        )
+        let store = RecordingPersistence(seeded: [older, newer])
+        let fixture = makeFixture(persistence: store)
+        await fixture.workspace.loadIfNeeded()
+        await bind(fixture, apiKeys: ["test-client-key-0001"])
+
+        #expect(fixture.workspace.conversations.map(\.id) == [newer.id, older.id])
+
+        // No-op metadata update must not write to disk or alter order/updatedAt.
+        fixture.workspace.updateConversationMetadata(older.id) { $0.title = "较早对话" }
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(await store.saves(for: older.id).isEmpty)
+        #expect(fixture.workspace.conversation(older.id)?.updatedAt == olderTime)
+        #expect(fixture.workspace.conversations.map(\.id) == [newer.id, older.id])
+
+        // Real metadata update writes once without bumping updatedAt or re-sorting.
+        fixture.workspace.renameConversation(older.id, title: "已重命名")
+        let saved = await waitUntil { await store.saves(for: older.id).count == 1 }
+        #expect(saved)
+        #expect(fixture.workspace.conversation(older.id)?.title == "已重命名")
+        #expect(fixture.workspace.conversation(older.id)?.updatedAt == olderTime)
+        #expect(fixture.workspace.conversations.map(\.id) == [newer.id, older.id])
+    }
 }
 private actor StreamObservation {
     var requests = 0

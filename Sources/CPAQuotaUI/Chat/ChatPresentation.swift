@@ -177,6 +177,9 @@ extension ChatReasoningResolution {
             }
             return "当前模型不支持「\(requested.title)」，本次已降级发送"
         case .omitted:
+            if requested == .off {
+                return "当前模型无法关闭思考，本次已按默认发送"
+            }
             return "当前模型不支持思考等级，本次已按默认发送"
         }
     }

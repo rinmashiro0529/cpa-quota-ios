@@ -18,38 +18,8 @@ struct ChatReasoningTriggerButton: View {
 
     var body: some View {
         let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
-        let trigger = Button {
-            isPresented.toggle()
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: effort.symbolName)
-                    .font(.caption.weight(.semibold))
-                Text(effort.title)
-                    .font(.footnote.weight(.semibold))
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
-            .foregroundStyle(isActiveExplicit ? palette.actionTint : palette.textSecondary)
-            .padding(.horizontal, 10)
-            .frame(height: 36)
-            .background(pillBackground(palette), in: Capsule())
-            .overlay {
-                Capsule()
-                    .strokeBorder(pillBorder(palette), lineWidth: contrast == .increased ? 1 : 0.75)
-                    .allowsHitTesting(false)
-            }
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
-        .accessibilityLabel("思考等级")
-        .accessibilityValue(effort.title)
-        .accessibilityHint("轻点调整思考等级")
-        .accessibilityIdentifier("chat.reasoningTrigger")
-
         if dynamicTypeSize.isAccessibilitySize {
-            trigger
+            triggerButton(palette)
                 .sheet(isPresented: $isPresented) {
                     NavigationStack {
                         ScrollView {
@@ -70,13 +40,50 @@ struct ChatReasoningTriggerButton: View {
                     .presentationDragIndicator(.visible)
                 }
         } else {
-            trigger
+            triggerButton(palette)
                 .popover(isPresented: $isPresented, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
                     ChatReasoningSliderPopover(effort: effort, onSelect: onSelect)
                         .frame(width: 288)
                         .padding(14)
                         .presentationCompactAdaptation(.popover)
                 }
+        }
+    }
+
+    private func triggerButton(_ palette: BrandPalette) -> some View {
+        Button {
+            isPresented.toggle()
+        } label: {
+            triggerPillLabel(palette)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
+        .accessibilityLabel("思考等级")
+        .accessibilityValue(effort.title)
+        .accessibilityHint("轻点调整思考等级")
+        .accessibilityIdentifier("chat.reasoningTrigger")
+    }
+
+    private func triggerPillLabel(_ palette: BrandPalette) -> some View {
+        let borderWidth: CGFloat = contrast == .increased ? 1 : 0.75
+        return HStack(spacing: 4) {
+            Image(systemName: effort.symbolName)
+                .font(.caption.weight(.semibold))
+            Text(effort.title)
+                .font(.footnote.weight(.semibold))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .foregroundStyle(isActiveExplicit ? palette.actionTint : palette.textSecondary)
+        .padding(.horizontal, 10)
+        .frame(minWidth: 72, minHeight: 36, maxHeight: 36)
+        .background(pillBackground(palette), in: Capsule())
+        .overlay {
+            Capsule()
+                .strokeBorder(pillBorder(palette), lineWidth: borderWidth)
+                .allowsHitTesting(false)
         }
     }
 
@@ -100,58 +107,58 @@ struct ChatReasoningTriggerButton: View {
 struct ChatReasoningSliderPopover: View {
     let effort: ChatReasoningEffort
     let onSelect: (ChatReasoningEffort) -> Void
+    @State private var previewEffort: ChatReasoningEffort?
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
+
+    private var displayedEffort: ChatReasoningEffort {
+        previewEffort ?? effort
+    }
 
     var body: some View {
         let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         VStack(spacing: 12) {
             ZStack {
-                HStack(spacing: 4) {
-                    Text(effort.title)
-                        .font(.headline)
-                        .foregroundStyle(palette.textPrimary)
-                        .accessibilityIdentifier("chat.reasoningActiveTitle")
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(palette.textMuted)
-                        .accessibilityHidden(true)
-                }
+                Text(displayedEffort == .automatic ? "思考等级" : displayedEffort.title)
+                    .font(.headline)
+                    .foregroundStyle(palette.textPrimary)
+                    .accessibilityIdentifier("chat.reasoningActiveTitle")
 
                 HStack {
                     Spacer(minLength: 0)
                     Button {
+                        previewEffort = nil
                         onSelect(.automatic)
                     } label: {
                         Text("自动")
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(effort == .automatic ? palette.actionTint : palette.textSecondary)
+                            .foregroundStyle(displayedEffort == .automatic ? palette.actionTint : palette.textSecondary)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
                             .background(
-                                effort == .automatic ? palette.accentSoft : palette.insetSurface,
+                                displayedEffort == .automatic ? palette.accentSoft : palette.insetSurface,
                                 in: Capsule()
                             )
                             .overlay {
                                 Capsule()
                                     .strokeBorder(
-                                        effort == .automatic ? palette.actionTint.opacity(0.45) : palette.trackBackground,
+                                        displayedEffort == .automatic ? palette.actionTint.opacity(0.45) : palette.trackBackground,
                                         lineWidth: 0.75
                                     )
                             }
+                            .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .frame(minHeight: 32)
-                    .contentShape(Rectangle())
                     .accessibilityLabel("思考等级：自动")
-                    .accessibilityAddTraits(effort == .automatic ? .isSelected : [])
+                    .accessibilityAddTraits(displayedEffort == .automatic ? .isSelected : [])
                     .accessibilityIdentifier("chat.reasoningOption.automatic")
                 }
             }
 
-            ChatSteppedReasoningSlider(effort: effort, onSelect: onSelect)
+            ChatSteppedReasoningSlider(effort: effort, onPreview: { previewEffort = $0 }, onSelect: onSelect)
 
-            Text(effort.summary)
+            Text(displayedEffort.summary)
                 .font(.caption)
                 .foregroundStyle(palette.textSecondary)
                 .multilineTextAlignment(.center)
@@ -168,8 +175,13 @@ struct ChatReasoningSliderPopover: View {
 struct ChatReasoningInlineSelector: View {
     let effort: ChatReasoningEffort
     let onSelect: (ChatReasoningEffort) -> Void
+    @State private var previewEffort: ChatReasoningEffort?
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
+
+    private var displayedEffort: ChatReasoningEffort {
+        previewEffort ?? effort
+    }
 
     var body: some View {
         let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
@@ -179,23 +191,31 @@ struct ChatReasoningInlineSelector: View {
                     .font(.body)
                     .foregroundStyle(palette.textPrimary)
                 Spacer(minLength: 8)
-                Text(effort.title)
+                Text(displayedEffort.title)
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(effort == .automatic ? palette.textSecondary : palette.actionTint)
-                if effort != .automatic {
-                    Button("自动") {
+                    .foregroundStyle(displayedEffort == .automatic ? palette.textSecondary : palette.actionTint)
+                if displayedEffort != .automatic {
+                    Button {
+                        previewEffort = nil
                         onSelect(.automatic)
+                    } label: {
+                        Text("自动")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(palette.actionTint)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(palette.accentSoft, in: Capsule())
+                            .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
+                            .contentShape(Rectangle())
                     }
-                    .font(.caption.weight(.semibold))
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
+                    .buttonStyle(.plain)
                     .accessibilityIdentifier("chat.options.reasoningAutomatic")
                 }
             }
 
-            ChatSteppedReasoningSlider(effort: effort, onSelect: onSelect)
+            ChatSteppedReasoningSlider(effort: effort, onPreview: { previewEffort = $0 }, onSelect: onSelect)
 
-            Text(effort.summary)
+            Text(displayedEffort.summary)
                 .font(.caption)
                 .foregroundStyle(palette.textSecondary)
         }
@@ -207,27 +227,36 @@ struct ChatReasoningInlineSelector: View {
 /// haptic tick feedback, and VoiceOver adjustable support.
 struct ChatSteppedReasoningSlider: View {
     let effort: ChatReasoningEffort
+    var onPreview: ((ChatReasoningEffort?) -> Void)? = nil
     let onSelect: (ChatReasoningEffort) -> Void
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isDragging = false
+    @State private var dragEffort: ChatReasoningEffort?
 
     private let levels = ChatReasoningEffort.explicitLevels
     private let trackHeight: CGFloat = 38
     private let thumbDiameter: CGFloat = 32
     private let dotDiameter: CGFloat = 5.5
 
+    private var displayedEffort: ChatReasoningEffort {
+        dragEffort ?? effort
+    }
+
     private var activeIndex: Int? {
-        levels.firstIndex(of: effort)
+        levels.firstIndex(of: displayedEffort)
     }
 
     var body: some View {
         let palette = BrandPalette(colorScheme: colorScheme, contrast: contrast)
         let fillColor = contrast == .increased ? palette.actionTint : palette.accent
+        let usesDarkAccentInk = palette.isDark && contrast == .increased
+        let filledDotColor = usesDarkAccentInk ? palette.textOnAccent.opacity(0.65) : Color.white.opacity(0.65)
+        let thumbStrokeColor = usesDarkAccentInk ? palette.textOnAccent.opacity(0.85) : Color.black.opacity(0.18)
 
-        VStack(spacing: 6) {
+        VStack(spacing: 4) {
             GeometryReader { proxy in
                 let width = max(trackHeight, proxy.size.width)
                 let edgeInset = trackHeight / 2
@@ -236,15 +265,20 @@ struct ChatSteppedReasoningSlider: View {
                 let stopX: (Int) -> CGFloat = { index in
                     edgeInset + (CGFloat(index) / CGFloat(stepCount)) * usableWidth
                 }
+                let levelAtX: (CGFloat) -> ChatReasoningEffort = { x in
+                    let fraction = min(max((x - edgeInset) / usableWidth, 0), 1)
+                    let targetIndex = Int((fraction * CGFloat(stepCount)).rounded())
+                    return levels[min(max(targetIndex, 0), levels.count - 1)]
+                }
 
                 ZStack(alignment: .leading) {
                     // Base capsule track
                     Capsule()
-                        .fill(palette.isDark ? Color.white.opacity(0.11) : Color.black.opacity(0.08))
+                        .fill(palette.trackBackground)
                         .overlay {
                             Capsule()
                                 .strokeBorder(
-                                    palette.isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.10),
+                                    contrast == .increased ? palette.textSecondary.opacity(0.45) : palette.trackBackground,
                                     lineWidth: contrast == .increased ? 1.25 : 0.75
                                 )
                         }
@@ -262,8 +296,8 @@ struct ChatSteppedReasoningSlider: View {
                         let isFilledDot = activeIndex.map { $0 > 0 && index < $0 } ?? false
                         Circle()
                             .fill(isFilledDot
-                                  ? Color.white.opacity(0.55)
-                                  : palette.textMuted.opacity(palette.isDark ? 0.7 : 0.55))
+                                  ? filledDotColor
+                                  : palette.textMuted.opacity(palette.isDark ? 0.75 : 0.65))
                             .frame(width: dotDiameter, height: dotDiameter)
                             .position(x: stopX(index), y: trackHeight / 2)
                             .allowsHitTesting(false)
@@ -275,7 +309,7 @@ struct ChatSteppedReasoningSlider: View {
                             .fill(Color.white)
                             .overlay {
                                 Circle()
-                                    .strokeBorder(Color.black.opacity(0.12), lineWidth: 0.75)
+                                    .strokeBorder(thumbStrokeColor, lineWidth: contrast == .increased ? 1.5 : 0.75)
                             }
                             .shadow(color: Color.black.opacity(0.24), radius: 3, y: 1)
                             .frame(width: thumbDiameter, height: thumbDiameter)
@@ -286,29 +320,45 @@ struct ChatSteppedReasoningSlider: View {
                 }
                 .frame(width: width, height: trackHeight)
                 .contentShape(Rectangle())
+                .onTapGesture(coordinateSpace: .local) { location in
+                    let target = levelAtX(location.x)
+                    guard target != effort else { return }
+                    withAnimation(reduceMotion ? nil : .snappy(duration: 0.16, extraBounce: 0)) {
+                        onSelect(target)
+                    }
+                }
                 .gesture(
-                    DragGesture(minimumDistance: 0)
+                    DragGesture(minimumDistance: 8)
                         .onChanged { value in
+                            // Let vertical Form/ScrollView gestures pass through unhijacked.
+                            guard isDragging || abs(value.translation.width) >= abs(value.translation.height) else {
+                                return
+                            }
                             isDragging = true
-                            let fraction = min(max((value.location.x - edgeInset) / usableWidth, 0), 1)
-                            let targetIndex = Int((fraction * CGFloat(stepCount)).rounded())
-                            let target = levels[min(max(targetIndex, 0), levels.count - 1)]
-                            if target != effort {
-                                withAnimation(reduceMotion ? nil : .snappy(duration: 0.16, extraBounce: 0)) {
-                                    onSelect(target)
+                            let target = levelAtX(value.location.x)
+                            if target != displayedEffort {
+                                withAnimation(reduceMotion ? nil : .snappy(duration: 0.14, extraBounce: 0)) {
+                                    dragEffort = target
                                 }
+                                onPreview?(target)
                             }
                         }
                         .onEnded { _ in
+                            let committed = dragEffort
                             isDragging = false
+                            dragEffort = nil
+                            onPreview?(nil)
+                            if let committed, committed != effort {
+                                onSelect(committed)
+                            }
                         }
                 )
             }
             .frame(height: trackHeight)
-            .sensoryFeedback(.selection, trigger: effort)
+            .sensoryFeedback(.selection, trigger: displayedEffort)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("思考等级滑块")
-            .accessibilityValue(effort.title)
+            .accessibilityValue(displayedEffort.title)
             .accessibilityHint("上下轻扫调整思考等级")
             .accessibilityAdjustableAction { direction in
                 adjustEffort(direction)
@@ -324,16 +374,17 @@ struct ChatSteppedReasoningSlider: View {
                         }
                     } label: {
                         Text(level.compactTickTitle)
-                            .font(.caption2.weight(effort == level ? .semibold : .regular))
-                            .foregroundStyle(effort == level ? palette.textPrimary : palette.textSecondary)
+                            .font(.caption2.weight(displayedEffort == level ? .semibold : .regular))
+                            .foregroundStyle(displayedEffort == level ? palette.textPrimary : palette.textSecondary)
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
-                            .frame(maxWidth: .infinity, minHeight: 28)
+                            .frame(maxWidth: .infinity, minHeight: 44)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .dynamicTypeSize(...DynamicTypeSize.accessibility2)
                     .accessibilityLabel("思考等级：\(level.title)")
-                    .accessibilityAddTraits(effort == level ? .isSelected : [])
+                    .accessibilityAddTraits(displayedEffort == level ? .isSelected : [])
                     .accessibilityIdentifier("chat.reasoningOption.\(level.rawValue)")
                 }
             }

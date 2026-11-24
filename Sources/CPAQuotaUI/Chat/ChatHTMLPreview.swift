@@ -35,6 +35,7 @@ struct ChatHTMLPreview: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showsSource: Bool
     @State private var loadFailed = false
+    @State private var isLoadingPreview = true
     @State private var revision = 0
 
     private static var supportsStaticPreview: Bool {
@@ -76,12 +77,28 @@ struct ChatHTMLPreview: View {
                     }
                     Button("复制源码") { ChatClipboard.copy(snippet.source) }
                 } else {
-                    StaticHTMLView(source: snippet.source) {
-                        loadFailed = true
-                        showsSource = true
+                    ZStack {
+                        StaticHTMLView(
+                            source: snippet.source,
+                            onFinish: { isLoadingPreview = false },
+                            onFailure: {
+                                isLoadingPreview = false
+                                loadFailed = true
+                                showsSource = true
+                            }
+                        )
+                        .id(revision)
+                        if isLoadingPreview {
+                            ProgressView("正在载入静态预览")
+                                .padding(12)
+                                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .allowsHitTesting(false)
+                        }
                     }
-                    .id(revision)
                 }
+            }
+            .onChange(of: showsSource) { _, showingSource in
+                if !showingSource { isLoadingPreview = true }
             }
             .navigationTitle("HTML 片段 \(snippet.id)")
             .navigationBarTitleDisplayMode(.inline)
@@ -93,6 +110,7 @@ struct ChatHTMLPreview: View {
                     ToolbarItem(placement: .primaryAction) {
                         Button {
                             loadFailed = false
+                            isLoadingPreview = true
                             showsSource = false
                             revision += 1
                         } label: { Label("刷新", systemImage: "arrow.clockwise") }
@@ -105,10 +123,12 @@ struct ChatHTMLPreview: View {
 
 private struct StaticHTMLView: UIViewRepresentable {
     let source: String
+    let onFinish: () -> Void
     let onFailure: () -> Void
 
     func makeUIView(context: Context) -> IsolatedChatHTMLWebView {
         let web = IsolatedChatHTMLWebView()
+        web.onFinish = onFinish
         web.onFailure = onFailure
         context.coordinator.load = Task {
             do { try await web.loadSnapshot(source) }
@@ -127,6 +147,7 @@ private struct StaticHTMLView: UIViewRepresentable {
 
     static func dismantleUIView(_ web: IsolatedChatHTMLWebView, coordinator: Coordinator) {
         coordinator.load?.cancel()
+        web.onFinish = nil
         web.onFailure = nil
         web.stopLoading()
     }

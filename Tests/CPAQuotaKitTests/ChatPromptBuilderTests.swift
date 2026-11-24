@@ -97,9 +97,27 @@ struct ChatPromptBuilderTests {
         ]
         let prompt = ChatPromptBuilder.searchInjectedPrompt("用户问题内容", sources: sources)
         #expect(prompt.hasPrefix("以下是联网搜索结果"))
+        #expect(prompt.contains("<web_source index=\"1\">"))
         #expect(prompt.contains("[1] 结果一\nhttps://a.example.com\n摘要一"))
+        #expect(prompt.contains("<web_source index=\"2\">"))
         #expect(prompt.contains("[2] 结果二\nhttps://b.example.com\n摘要二"))
+        #expect(prompt.contains("</web_source>"))
         #expect(prompt.hasSuffix("用户问题：用户问题内容"))
+    }
+
+    @Test func validatedChatSearchSourceURLAllowsOnlyHTTPAndHTTPSWithHost() {
+        #expect(validatedChatSearchSourceURL("https://example.com/path?q=1")?.absoluteString == "https://example.com/path?q=1")
+        #expect(validatedChatSearchSourceURL("  http://example.org/docs  ")?.absoluteString == "http://example.org/docs")
+        #expect(validatedChatSearchSourceURL("HTTPS://Example.COM/a")?.host == "Example.COM")
+
+        #expect(validatedChatSearchSourceURL(nil) == nil)
+        #expect(validatedChatSearchSourceURL("") == nil)
+        #expect(validatedChatSearchSourceURL("   ") == nil)
+        #expect(validatedChatSearchSourceURL("https://") == nil)
+        #expect(validatedChatSearchSourceURL("shortcuts://run-shortcut?name=x") == nil)
+        #expect(validatedChatSearchSourceURL("tel:+1234567890") == nil)
+        #expect(validatedChatSearchSourceURL("javascript:alert(1)") == nil)
+        #expect(validatedChatSearchSourceURL("file:///etc/passwd") == nil)
     }
 }
 
