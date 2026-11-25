@@ -154,7 +154,7 @@ public struct AccountsDiagnosticsTabView: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
-        .accessibilityHint("查看此账号的配额详情")
+        .accessibilityHint("查看此账号的额度详情")
         .privacySensitive()
     }
 }

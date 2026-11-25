@@ -6,9 +6,9 @@
 
 `MonitorBridgeToken` 与 `MonitoringPushToken` 是独立的非 Codable 敏感类型，文本描述脱敏。使用 `MonitorBridgeAddress` 规范化 HTTPS 桥接地址后创建 `CPAMonitorClient`，调用 `capabilities`、`create`、`get`、`rotate`、`refresh`、`stop` 和 `cachedQuota`。地址规则与独立 Keychain 存储一致，不能自行剥离桥接的反向代理路径。监控访问令牌（Bridge Token）不等于 CPA 管理密钥。
 
-创建会话时由调用方先生成并持久保存 UUID；请求超时后以原 UUID 查询对账，不能换 UUID 盲目重试。`stop` 返回 nil 只表示服务器返回204并接受停止意图，不能解释为设备活动已移除或 APNs 已送达。`MonitoringStore` 对启动、加载、刷新、token 更新和停止提供可观察状态；网络失败保留当前会话 UUID，并标为 uncertain，不把结果不明伪装成停止成功。
+创建会话时由调用方先生成并持久保存 UUID；请求超时后以原 UUID 查询对账，不能换 UUID 盲目重试。`stop` 返回 nil 只表示服务器返回 204 并接受停止意图，不能解释为设备活动已移除或 APNs 已送达。`MonitoringStore` 对启动、加载、刷新、token 更新和停止提供可观察状态；网络失败保留当前会话 UUID，并标为 uncertain，不把结果不明伪装成停止成功。
 
-`rotate` 的 revision 为 expected-current，成功响应必须加一；溢出在发送前拒绝。初始 revision 为1，控制变更递增，快照更新只递增 sequence。`refresh` 接受200或202；202只表示当前会话已返回、采集尚待完成，不表示推送完成。push token 是非空偶数长度十六进制文本，最多4096字符，不固定为32字节。当前 `rotate` 的 activityID 参数只用于核对响应，不发送到 token 更新 body 中，也不把旧 session 改绑到另一 Activity。
+`rotate` 的 revision 为 expected-current，成功响应必须加一；溢出在发送前拒绝。初始 revision 为 1，控制变更递增，快照更新只递增 sequence。`refresh` 接受 200 或 202；202 只表示当前会话已返回、采集尚待完成，不表示推送完成。push token 是非空偶数长度十六进制文本，最多 4096 字符，不固定为 32 字节。当前 `rotate` 的 activityID 参数只用于核对响应，不发送到 token 更新 body 中，也不把旧 session 改绑到另一 Activity。
 
 401 表示桥接凭据失效，会阻断该客户端后续请求；403 可能只是来源/账号授权不足，只拒绝这一请求，不应阻止发送原本有权停止的会话 DELETE。此规则不同于 CPA 管理连接的共享 401/403 熔断：管理侧原合同不变。404、409、5xx、重定向和 429 有独立安全错误类别。普通查询/创建、refresh、DELETE 和 token PUT 各自遵守自己的 Retry-After；缺少有效期限时保守等待 60 秒。刷新被限流不会阻断其他通道，停止或 token 更新自身被限流时仍然等待，不能借通道隔离绕过服务端冷却。`await client.retryAt` 仅暴露普通查询/创建通道的期限。不得记录原始认证头、请求体、令牌或完整会话上下文。
 
@@ -30,9 +30,9 @@
 
 `MonitoringSnapshot` 和 `MonitoringAccount` 提供验证式公开构造器，可在取得 push token 前构造初始内容，也可用作不依赖 ActivityKit/WidgetKit 的 Codable 模型。时间按 Unix 秒数字编码，允许合法小数；缺失 observed_at 保持 nil，snapshot.expires_at 是数据过期时间，可早于 generated_at，与监控租约 session.expires_at 不同。没有原观察时间时不能用一次列表或桥接读取时间伪造新观察。
 
-系统安全别名 id/provider/window_id 只允许字母数字及 `_ -`，最长128个UTF-8字节。显示文本 label/window_label/unit 可含中文和正常的 `% / · . -` 等已批准标点，拒绝控制字符、`@`、URL。不得填入真实邮箱、账号文件名、地址或秘密；字符验证不能代替调用方使用非敏感别名。单位保留源语义，不能把 credits 重标为 requests。
+系统安全别名 id/provider/window_id 只允许字母数字及 `_ -`，最长 128 个 UTF-8 字节。显示文本 label/window_label/unit 可含中文和正常的 `% / · . -` 等已批准标点，拒绝控制字符、`@`、URL。不得填入真实邮箱、账号文件名、地址或秘密；字符验证不能代替调用方使用非敏感别名。单位保留源语义，不能把 credits 重标为 requests。
 
-控制接口 account_ids 允许 `_ - @ .`、1–128个UTF-8字节，与系统安全别名不同。source ID 使用严格标识符规则。`activityContentData()` 限制动态内容最多3584字节，为静态属性预留512字节；未来扩展仍须检查实际 ActivityKit 静态属性和动态内容合计不超过系统预算，不得直接使用 CPA 原始对象作为 ContentState。
+控制接口 account_ids 允许 `_ - @ .`、1–128 个 UTF-8 字节，与系统安全别名不同。source ID 使用严格标识符规则。`activityContentData()` 限制动态内容最多 3584 字节，为静态属性预留 512 字节；未来扩展仍须检查实际 ActivityKit 静态属性和动态内容合计不超过系统预算，不得直接使用 CPA 原始对象作为 ContentState。
 
 ## 取消、切换与对账
 
@@ -46,4 +46,4 @@ Go handler 实际响应生成的 `Tests/ContractFixtures/monitoring-lifecycle-v1
 
 ## 验证边界
 
-本地合成测试覆盖 DTO 向量、Unix 秒、安全文本、4KiB分配策略、令牌脱敏、地址/路径、CAS、401与请求级403、429、202、错误保留、迟到响应和 detached 操作。`BACKEND_RELIABILITY_PR.md` 与 `verification/backend-reliability-20261029.json` 记录的是既有版本的历史验证。2026-11-07 审计整改的实际执行范围见 [整改交付记录](AUDIT_REMEDIATION_20261107.md) 与对应候选 SHA 的 PR Checks；新增的合成测试尚需在具备工具链的环境执行。`BACKEND_VERIFICATION.md` 中的 Swift/iOS 交叉编译是 PR #1 的历史结果，不覆盖本次改动。没有访问真实 CPA、Keychain、APNs 或 Apple 账号，也没有修改签名能力或安装 App。
+本地合成测试覆盖 DTO 向量、Unix 秒、安全文本、4 KiB 分配策略、令牌脱敏、地址/路径、CAS、401 与请求级 403、429、202、错误保留、迟到响应和 detached 操作。当前提交的 `swift test` 与原生测试结果以 `.github/workflows/backend-checks.yml` 对应提交的 [GitHub Actions](https://github.com/rinmashiro0529/cpa-quota-ios/actions) 运行记录为准；`BACKEND_RELIABILITY_PR.md`、`verification/backend-reliability-20261029.json`、`AUDIT_REMEDIATION_20261107.md` 与 `BACKEND_VERIFICATION.md` 仅为各自历史基线的验证记录，不代表后续提交通过。合成测试没有访问真实 CPA、Keychain、APNs 或 Apple 账号，也没有修改签名能力或安装 App。

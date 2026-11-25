@@ -241,7 +241,7 @@ public struct CreditsPresentation: Equatable, Sendable {
         } else if credits.hasCredits == false {
             self.title = "额外额度"
             self.valueText = "无额外额度"
-            self.footnote = "当前账号仅使用主订阅窗口或摘要配额。"
+            self.footnote = "当前账号仅使用主订阅窗口或摘要额度。"
         } else {
             return nil
         }

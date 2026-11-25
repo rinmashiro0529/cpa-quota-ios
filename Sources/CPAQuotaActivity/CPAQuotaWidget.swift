@@ -61,8 +61,8 @@ public struct CPAQuotaWidget: Widget {
                 .containerBackground(for: .widget) { QuotaWidgetCanvas() }
                 .widgetURL(CPAQuotaDeepLink.quotas.url)
         }
-        .configurationDisplayName("CPA 配额")
-        .description("查看最近观察到的配额与数据时间。请先在应用设置中启用小组件共享。")
+        .configurationDisplayName("CPA 额度")
+        .description("查看最近观察到的额度与数据时间。请先在「连接管理 › 隐私 › 在小组件中显示额度」中启用小组件共享。")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge, .accessoryRectangular, .accessoryCircular])
     }
 }
@@ -149,7 +149,7 @@ private struct QuotaWidgetContent: View {
 
     private var overview: some View {
             VStack(alignment: .leading, spacing: 8) {
-                Label("配额概况", systemImage: "chart.bar.xaxis")
+                Label("额度概况", systemImage: "chart.bar.xaxis")
                     .font(.caption.weight(.semibold))
                     .widgetAccentable()
                 if entry.selectedEntries.isEmpty {
@@ -197,9 +197,9 @@ private struct QuotaWidgetContent: View {
 
     private var empty: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(entry.selectedID == nil ? "尚无共享读数" : "此配额窗口暂不可用")
+            Text(entry.selectedID == nil ? "尚无共享读数" : "此额度窗口暂不可用")
                 .font(.headline)
-            Text("打开应用，启用小组件共享并刷新配额。")
+            Text("打开应用，启用小组件共享并刷新额度。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -277,7 +277,7 @@ private struct QuotaWidgetContent: View {
             .accessibilityValue("剩余 \(account.formattedValue)")
         } else {
             Image(systemName: entry.selectedEntries.first.map(statusSymbol) ?? "questionmark.circle")
-                .accessibilityLabel(entry.selectedEntries.first.map(statusText) ?? "配额未知，打开应用查看")
+                .accessibilityLabel(entry.selectedEntries.first.map(statusText) ?? "额度未知，打开应用查看")
         }
     }
 

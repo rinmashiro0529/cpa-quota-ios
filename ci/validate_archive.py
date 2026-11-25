@@ -265,10 +265,16 @@ def validate_archive(archive_path):
     privacy_path = app / "PrivacyInfo.xcprivacy"
     with privacy_path.open("rb") as stream:
         privacy = plistlib.load(stream)
-    expected_accessed_apis = [{
-        "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryUserDefaults",
-        "NSPrivacyAccessedAPITypeReasons": ["CA92.1"],
-    }]
+    expected_accessed_apis = [
+        {
+            "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryUserDefaults",
+            "NSPrivacyAccessedAPITypeReasons": ["CA92.1"],
+        },
+        {
+            "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryFileTimestamp",
+            "NSPrivacyAccessedAPITypeReasons": ["C617.1"],
+        },
+    ]
     if privacy.get("NSPrivacyTracking") is not False:
         raise ValueError("privacy manifest must disable tracking")
     if privacy.get("NSPrivacyTrackingDomains") != []:
@@ -276,7 +282,7 @@ def validate_archive(archive_path):
     if privacy.get("NSPrivacyCollectedDataTypes") != []:
         raise ValueError("privacy manifest collected data types must be empty")
     if privacy.get("NSPrivacyAccessedAPITypes") != expected_accessed_apis:
-        raise ValueError("privacy manifest must declare only UserDefaults with reason CA92.1")
+        raise ValueError("privacy manifest must declare only UserDefaults (CA92.1) and FileTimestamp (C617.1)")
 
     profiles = list(app.rglob("embedded.mobileprovision"))
     if profiles:

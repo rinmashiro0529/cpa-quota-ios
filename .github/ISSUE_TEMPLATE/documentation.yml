@@ -1,0 +1,19 @@
+name: 文档改进（Documentation）
+description: 反馈文档与当前代码/界面不一致、缺失说明或措辞/链接问题
+labels: ["documentation"]
+body:
+  - type: input
+    id: doc_path
+    attributes:
+      label: 文档路径或位置
+      placeholder: 例如：README.md、docs/AI_CHAT.md、docs/LIVE_ACTIVITY_SETUP.md
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: 问题描述与修改建议
+      description: 请说明哪一处与当前实现或界面不符，以及期望补充或更正的内容。
+    validations:
+      required: true

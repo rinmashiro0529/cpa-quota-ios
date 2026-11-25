@@ -27,7 +27,7 @@ public struct MonitoringTabView: View {
         @Bindable var monitor = session.monitoringCoordinator
         Form {
             Section {
-                Text("在需要连续关注配额变化时开启监控。到期自动结束，日常查看可使用额度页或小组件。")
+                Text("在需要连续关注额度变化时开启监控。到期自动结束，日常查看可使用额度页或小组件。")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 if let message = userFacingMessage {

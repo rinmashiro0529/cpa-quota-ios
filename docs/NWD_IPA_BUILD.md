@@ -1,6 +1,6 @@
 # iOS 构建和签名
 
-历史主机标识已泛化；远端测试工具的 `--host BUILD_HOST --container BUILD_CONTAINER` 参数见 [README](../README.md)，本页 Linux 本地构建与 macOS Xcode 签名是不同路径。
+历史主机标识已泛化；远端测试工具 `tools/test_backend_nwd.py` 的 `--host BUILD_HOST --container BUILD_CONTAINER` 参数（默认值 `NWD`、`ios-builder`）定义于脚本自身（运行 `python -I tools/test_backend_nwd.py --help` 查看），本页 Linux 本地构建与 macOS Xcode 签名是不同路径。
 
 本仓库提供离线源码准备、显式 Linux 本地构建及 App/Widget 结构检查。新通用入口已在历史 Linux 构建主机的 Swift 6.4.1、iPhoneOS27.1 SDK 环境完成一次真实构建，产出未签名的主 App 与扩展，并核对 frontend、linker、SDK 配置和源文件前后摘要；这不等于所有工具版本组合都已兼容。准备、预检和结构检查不会联网、编译、签名、安装或访问设备；只有显式调用 `build` 才会启动本地 xtool 和 Swift。该历史构建未使用新入口签名，也未进行真机验收。
 
@@ -60,11 +60,15 @@ python3 -I tools/ios_build/nwd.py build --derived /work/derived --output /work/n
 }
 ```
 
-实测环境为 xtool1.23.0；现有 LLD 输出了 iOS 平台支持警告，SwiftPM native 后端也有弃用提示。构建及输入一致性检查通过不消除这些风险，日志保留警告，没有升级共享工具、抑制错误或修改二进制头；签名、设备安装和实际运行仍需单独验收。
+实测环境为 xtool 1.23.0；现有 LLD 输出了 iOS 平台支持警告，SwiftPM native 后端也有弃用提示。构建及输入一致性检查通过不消除这些风险，日志保留警告，没有升级共享工具、抑制错误或修改二进制头；签名、设备安装和实际运行仍需单独验收。
 
 ## Xcode 双 bundle 签名与导出
 
-在 macOS 上使用已安装且支持目标 SDK 的 Xcode，打开 `Apple/CPAQuota.xcodeproj`，选择共享 scheme `CPAQuota` 和 Generic iOS Device。项目包含主 App `icu.nahida.cpaquota` 和嵌入的 Widget `icu.nahida.cpaquota.activity`。在 Apple Developer 账户中为两个 identifier 分别配置所需 capability、证书和 provisioning profile；在 Xcode 的两个 target 的 Signing & Capabilities 中选择团队及匹配的签名方式。Profile、证书、私钥和导出选项必须保存在仓库外，且不得提交。
+在 macOS 上使用 **Xcode 26 或更高版本（iOS 26 SDK）**（因源码在 `#available(iOS 26.0, *)` 中调用 `glassEffect`，主 CI 使用 Xcode 27.1）打开 `Apple/CPAQuota.xcodeproj`，首次解析 SwiftPM 依赖时信任 `AnyLanguageModel` 与 `Equatable` 的 Swift Macros（命令行环境可参考 `ci/install_trusted_swift_macros.sh`），然后选择共享 scheme `CPAQuota` 和 Generic iOS Device。
+
+> **重要（签名禁用覆盖）**：为支持无签名 CI 归档，`Apple/CPAQuota.xcodeproj/project.pbxproj` 在主 App 与扩展的 Debug/Release 配置中均设置了 `CODE_SIGNING_ALLOWED = NO`、`CODE_SIGNING_REQUIRED = NO` 和 `CODE_SIGN_IDENTITY = ""`。仅在 Xcode 的 Signing & Capabilities 中选择团队**不会**撤销这三项设置，直接 Archive 仍可能产出未签名产物且缺失 `aps-environment` 与 App Group 权限。在本地签名打包前，须在两个 target 的 Build Settings 中移除/恢复这三项设置，或在 `xcodebuild` 命令行 / 仓外 `.xcconfig` 中显式覆盖为签名启用状态。
+
+项目包含主 App `icu.nahida.cpaquota` 和嵌入的 Widget `icu.nahida.cpaquota.activity`。在 Apple Developer 账户中为两个 identifier 分别配置所需 capability、证书和 provisioning profile；在 Xcode 的两个 target 的 Signing & Capabilities 中选择团队及匹配的签名方式。Profile、证书、私钥和导出选项必须保存在仓库外，且不得提交。
 
 使用 Xcode 的 Product > Archive 构建，再在 Organizer 中按目标分发方式导出，确认两个 bundle 的签名和 profile 均匹配。也可使用本机 Xcode 的 `xcodebuild archive` 和 `xcodebuild -exportArchive`：分别传入项目、scheme、独立 archive 路径，以及仓库外的导出选项 plist；手动签名时该 plist 的 `provisioningProfiles` 必须分别映射两个 bundle identifier。可用导出方法和键以本机 `xcodebuild -help` 为准。不要将私钥、profile 或账户数据放进命令日志、报告或仓库。
 

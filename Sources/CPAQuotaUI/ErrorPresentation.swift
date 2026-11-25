@@ -47,7 +47,7 @@ public struct ErrorPresentation: Equatable, Sendable {
         case .invalidManagementKey:
             self.title = "管理密钥格式无效"
             self.summary = "请输入非空的 CPA 管理密钥（Bearer Key），不得包含控制字符。"
-            self.recoveryAdvice = "请确认输入的是 CPA 管理密钥而非普通推理 API Key，修正后重试。"
+            self.recoveryAdvice = "请确认输入的是 CPA 管理密钥而非 CPA 客户端 API Key，修正后重试。"
             self.symbolName = "key.slash"
             self.severity = .warning
             self.preservesManagementKey = false

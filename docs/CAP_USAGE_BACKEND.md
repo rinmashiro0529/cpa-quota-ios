@@ -50,7 +50,7 @@ if let client = await session.makeCAPUsageClient() {
 
 CPA 账号清单身份（id/name/auth_index 与嵌套 Codex account ID）优先使用字符串。此处数字身份仅接受可证明无损的安全整数；小数、布尔值、浮点来源及超出 ±(2^53−1) 的数值身份拒绝，不通过 Double 舍入后制造另一个 ID。大整数必须由上游以字符串传输。度量值仍按其原有数值合同解析，此限制不会把用量、金额等字段整体改为字符串；CAP 请求 sequence 仍按 UInt64 合同解码，不适用这一账号身份限制。
 
-100 Token/2 秒和 900 Token/30 秒的已知向量结果为 31.25 Token/s，不是单请求速率的算术平均40，也不是1000/1800的窗口吞吐。`average_latency_ns` 与 `average_ttft_ns` 的样本集合可能不同，不能相减推导生成时长。失败请求的部分用量仍属于用量数据，但不纳入成功生成 TPS。
+100 Token/2 秒和 900 Token/30 秒的已知向量结果为 31.25 Token/s，不是单请求速率的算术平均 40，也不是 1000/1800 的窗口吞吐。`average_latency_ns` 与 `average_ttft_ns` 的样本集合可能不同，不能相减推导生成时长。失败请求的部分用量仍属于用量数据，但不纳入成功生成 TPS。
 
 ## 分页与保守完整性
 
@@ -60,7 +60,7 @@ CPA 账号清单身份（id/name/auth_index 与嵌套 Codex account ID）优先�
 | --- | --- |
 | `singlePage` | 这一次响应报告的全部记录在一页内；不是对历史迟到写入的保证 |
 | `offsetUnverified` | 已按固定窗口读到报告的末页，但 offset 不提供冻结快照证明 |
-| `truncated` | 达到资源预算，或发现重复、total变化、页缺口等异常；已取得部分数据不能称完整 |
+| `truncated` | 达到资源预算，或发现重复、total 变化、页缺口等异常；已取得部分数据不能称完整 |
 
 固定终点、去重和 total 相同都不能证明跨页强一致。界面必须显示完整性和有效 TPS 样本覆盖；不要把截断样本推导出的速度称为全窗口精确平均。
 
@@ -78,15 +78,15 @@ CPA 账号清单身份（id/name/auth_index 与嵌套 Codex account ID）优先�
 
 新一轮刷新会取消同类旧任务；取消会向底层传输传播，并在 HTTP 返回及 JSON 解码后检查。代际校验同时禁止旧结果覆盖新结果。调用方取消外层 Task 时，Store 也取消自己持有的子任务，不会脱离外层继续翻页。
 
-管理401/403触发共享管理熔断，管理429遵守 Retry-After，缺少有效截止时间时保守60秒；force 或重新探测不清除保护。匿名资源的429使用本用量客户端独立的资源冷却，不污染管理凭据熔断；换详情路由不能绕过资源冷却，`resourceRejected(statusCode:retryAt:)` 和 `error.retryAt` 提供可读期限。404表达插件路由不可用，不返回伪造的空统计。网络错误使用安全类别，不回显底层任意文本、响应正文或认证头。
+管理 401/403 触发共享管理熔断，管理 429 遵守 Retry-After，缺少有效截止时间时保守 60 秒；force 或重新探测不清除保护。匿名资源的 429 使用本用量客户端独立的资源冷却，不污染管理凭据熔断；换详情路由不能绕过资源冷却，`resourceRejected(statusCode:retryAt:)` 和 `error.retryAt` 提供可读期限。404 表达插件路由不可用，不返回伪造的空统计。网络错误使用安全类别，不回显底层任意文本、响应正文或认证头。
 
 ## 验证与上线边界
 
-测试采用固定公开协议的合成 JSON、受控时钟及注入 HTTP 传输，不访问真实 CPA 或凭据。本轮审计整改与验证边界见 `AUDIT_REMEDIATION_20261107.md` 及对应 PR 最新 Checks。新增 Swift 回归用例已加入源码；当前工作环境没有 Swift 编译器，未在本地执行，不能以静态检查替代编译或原生运行结果。`BACKEND_RELIABILITY_PR.md`、`verification/backend-reliability-20261029.json` 与 `BACKEND_VERIFICATION.md` 仅为此前版本的历史证据，不证明本轮变更通过。部分切片的通过不代表完整工程通过。没有新增第三方运行时依赖，也未操作 Apple 账号、签名、安装或部署。
+测试采用固定公开协议的合成 JSON、受控时钟及注入 HTTP 传输，不访问真实 CPA 或凭据。当前提交的 `swift test` 与原生测试结果以 `.github/workflows/backend-checks.yml` 对应提交的 [GitHub Actions](https://github.com/rinmashiro0529/cpa-quota-ios/actions) 运行记录为准；`AUDIT_REMEDIATION_20261107.md`、`BACKEND_RELIABILITY_PR.md`、`verification/backend-reliability-20261029.json` 与 `BACKEND_VERIFICATION.md` 仅为各自历史基线的验证记录，不代表后续提交通过。`CPAQuotaKit` 模块自身不依赖第三方运行时包（仓库内 `CPAQuotaChat` / `CPAQuotaUI` 使用的 SwiftPM 依赖见 [README](../README.md) 与 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)）。合成测试不能替代真实部署的插件版本、反代权限、Apple 账号签名与真机验收。
 
 ## 一手协议来源
 
 - [固定版 aggregate.go](https://github.com/AITNR/cap-token-usage-tracker/blob/b7748ecfc1a5352acd10df8f17b1ba88ee2a591b/internal/plugin/aggregate.go)：计数、维度、概览、分组、时间桶，以及 `usageRangeFromQuery` / `presetUsageRange` 的窗口合同。
 - [固定版 config.go](https://github.com/AITNR/cap-token-usage-tracker/blob/b7748ecfc1a5352acd10df8f17b1ba88ee2a591b/internal/plugin/config.go)：可配置保留天数；默认配置不构成用户实例实际保留范围的证据。
-- [固定版 request_log.go](https://github.com/AITNR/cap-token-usage-tracker/blob/b7748ecfc1a5352acd10df8f17b1ba88ee2a591b/internal/plugin/request_log.go)：请求字段、推理口径及插件TPS回退。
+- [固定版 request_log.go](https://github.com/AITNR/cap-token-usage-tracker/blob/b7748ecfc1a5352acd10df8f17b1ba88ee2a591b/internal/plugin/request_log.go)：请求字段、推理口径及插件 TPS 回退。
 - [固定版 management.go](https://github.com/AITNR/cap-token-usage-tracker/blob/b7748ecfc1a5352acd10df8f17b1ba88ee2a591b/internal/plugin/management.go)：只读路由、查询与分页。

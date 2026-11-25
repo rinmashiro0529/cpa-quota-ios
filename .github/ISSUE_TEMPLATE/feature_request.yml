@@ -1,0 +1,35 @@
+name: 功能建议（Feature Request）
+description: 提出新功能想法或交互体验改进建议
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: 相关页面或模块
+      options:
+        - 额度总览
+        - CAP 用量
+        - AI 对话
+        - 账号诊断
+        - 连接管理
+        - 监控与活动 / 实时活动 / 小组件
+        - 独立 Go 监控服务
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解决什么问题
+      description: 请描述当前使用场景下的痛点或缺失能力。
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望方案与边界
+      description: 如有上游协议依赖、隐私/凭据边界或兼容性考虑，请一并说明。
+    validations:
+      required: true
