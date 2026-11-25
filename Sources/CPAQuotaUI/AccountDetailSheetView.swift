@@ -93,7 +93,7 @@ public struct AccountDetailSheetView: View {
                     } header: {
                         Text("上游摘要指标")
                     } footer: {
-                        Text("保留上游返回的单位，不将摘要指标转换成不存在的配额百分比。")
+                        Text("保留上游返回的单位，不将摘要指标转换成不存在的额度百分比。")
                     }
                     .listRowBackground(palette.contentSurface)
                 }

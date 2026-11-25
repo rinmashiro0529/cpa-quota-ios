@@ -6,7 +6,7 @@
 
 容量限制和持久取消墓碑用于防止重放，不能通过删除历史状态释放容量；管理连接的 401/403 是永久熔断，不能通过 force、清单重载或缓存绕过；`healthz` 的现有语义不能被改变或夸大为真实上游与设备送达的保证。涉及这些合同的变更须保留对应回归。
 
-文案请遵循 [编辑准则](docs/COPY_STYLE.md)。在仓库根目录可运行以下本地检查；按需准备项目已有工具链，不需要真实服务或 Apple 身份。Apple 原生、签名和真机验收以及真实服务连接均不默认执行。
+文案请遵循 [编辑准则](docs/COPY_STYLE.md)；如新增或升级第三方依赖，须同步更新 [第三方许可声明](THIRD_PARTY_NOTICES.md) 及 `README.md`；如变更用户可见界面、AI 对话数据/隐私边界或构建要求，须同步更新对应文档（见 [AI 对话指南](docs/AI_CHAT.md) 等）。在仓库根目录可运行以下本地检查；按需准备项目已有工具链，不需要真实服务或 Apple 身份。具备 Swift 6 工具链时可额外运行 `swift test --disable-automatic-resolution`。Apple 原生、签名和真机验收以及真实服务连接均不默认执行。
 
 ```powershell
 python -I -B ci/validate_public_copy.py --root .

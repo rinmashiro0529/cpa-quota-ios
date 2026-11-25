@@ -132,7 +132,7 @@ struct ChatSettingsView: View {
                 }
                 .disabled((chat.conversationSummaries.isEmpty && !deleteAllFailed && !chat.deleteAllStateUnknown) || isDeletingAll)
             } footer: {
-                Text("对话、记忆与技能只保存在本机，不会上传到 CPA 以外的服务。")
+                Text("对话、记忆、技能与附件保存在本机；发送消息时内容会传给当前连接的 CPA 服务，开启联网搜索时消息正文还会发往所选第三方搜索服务。")
             }
             .listRowBackground(palette.contentSurface)
         }

@@ -138,7 +138,7 @@ struct MonitoringWorkspaceReliabilityTests {
     @Test func operationFeedbackShowsSpecificValidation() async {
         let coordinator = workspace(transport: WorkspaceMonitorTransport())
         await coordinator.startOrReconcileMonitoringSession()
-        #expect(coordinator.bridgeFormFeedback?.summary == "请先连接监控桥接。")
+        #expect(coordinator.bridgeFormFeedback?.summary == "请先连接监控服务。")
         coordinator.addAccountIDDraft("invalid account!")
         #expect(coordinator.bridgeFormFeedback?.summary == "账号标识格式无效，请使用监控服务授权的原标识。")
         #expect(coordinator.bridgeFormFeedback?.diagnostics == coordinator.bridgeFormError)

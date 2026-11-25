@@ -13,9 +13,8 @@
   "comparison_scope": "Package.swift, Sources/**/*.swift, Tests/**/*.swift on the local machine, isolated build workspace and the final build source archive",
   "secret_check_scope": "Generated project files including build logs and uncompressed source archives; the actual management key was read only into local verifier memory for byte equality checks and was not printed",
   "provided_certificate_private_key_password_or_profile_read": false,
-  "reference_entitlements_metadata_read_by_context_agent": true,
   "reference_entitlements_values_recorded": false,
-  "scope_note": "The context collector read the reference project's adhoc-entitlements.plist once despite its narrower assigned directory restriction. No p12, password, private key, or provisioning profile contents were read; the metadata file was not copied into this project.",
+  "scope_note": "No p12, password, private key, provisioning profile, or external entitlement values were copied into this project.",
   "source_manifest": {
     "Package.swift": "11de9e5bbed4350378ab4fa008e4f7cb5ae98ab5f34b508386bc3455a06db9cc",
     "Sources/CPAQuotaKit/CPAClient.swift": "cb13311f330c76f08de9a7c1ddbe27aadb09f66187ef69ce33665ceae9d3a368",

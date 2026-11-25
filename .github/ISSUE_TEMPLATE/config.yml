@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞报告（请先阅读安全政策）
+    url: https://github.com/rinmashiro0529/cpa-quota-ios/blob/main/SECURITY.md
+    about: 不要在公开 Issue 中附带漏洞利用细节、真实密钥、访问令牌、APNs 私钥或未脱敏日志。

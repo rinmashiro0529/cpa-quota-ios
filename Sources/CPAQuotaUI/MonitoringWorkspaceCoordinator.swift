@@ -556,7 +556,7 @@ public final class MonitoringWorkspaceCoordinator {
                 self.bindClient(client, credential: credential, isSaved: true)
             } catch {
                 guard self.configurationGeneration == generation else { return }
-                self.bridgeFormError = "桥接安全存储读取失败，请重新连接。"
+                self.bridgeFormError = "监控服务安全存储读取失败，请重新连接。"
             }
         }
         configurationTask = task
@@ -570,7 +570,7 @@ public final class MonitoringWorkspaceCoordinator {
 
     public func connectBridge(rawURLString: String, rawTokenString: String, rememberInKeychain: Bool) async {
         guard !isBridgeConfigurationInProgress else {
-            bridgeFormError = "桥接凭据正在处理，请等待完成后再连接；仍可选择仅在本机忘记。"
+            bridgeFormError = "监控访问令牌正在处理，请等待完成后再连接；仍可选择仅在本机忘记。"
             return
         }
         let address: MonitorBridgeAddress
@@ -584,7 +584,7 @@ public final class MonitoringWorkspaceCoordinator {
             token = try MonitorBridgeToken(rawTokenString)
             client = try clientFactory(address.baseURL, token)
         } catch {
-            bridgeFormError = "请检查 HTTPS 桥接地址与独立桥接 Token。"
+            bridgeFormError = "请检查 HTTPS 监控服务地址与独立监控访问令牌。"
             return
         }
         configurationGeneration &+= 1
@@ -630,7 +630,7 @@ public final class MonitoringWorkspaceCoordinator {
                 self.bridgeFormError = ErrorPresentation(error: error).summary
             } catch {
                 guard self.configurationGeneration == generation else { return }
-                self.bridgeFormError = "桥接凭据保存或移除失败，原连接保持不变。"
+                self.bridgeFormError = "监控访问令牌保存或移除失败，原连接保持不变。"
             }
         }
         configurationTask = task
@@ -775,14 +775,14 @@ public final class MonitoringWorkspaceCoordinator {
                 self.cachedSourceSnapshot = nil
                 self.cachedSourceID = nil
                 self.bridgeStatusNotice = currentID == nil
-                    ? "已移除本机桥接凭据并断开连接。"
-                    : "已移除本机桥接凭据并断开连接；远端监控未因此停止。已保留原桥接与会话索引，重新连接后可对账或停止，租约也会有限期到期。"
+                    ? "已移除本机监控访问令牌并断开连接。"
+                    : "已移除本机监控访问令牌并断开连接；远端监控未因此停止。已保留原监控服务与会话索引，重新连接后可对账或停止，租约也会有限期到期。"
             } catch let error as CPAError {
                 guard self.configurationGeneration == generation else { return }
                 self.bridgeFormError = ErrorPresentation(error: error).summary
             } catch {
                 guard self.configurationGeneration == generation else { return }
-                self.bridgeFormError = "未能移除桥接凭据，连接和对账记录已保留。"
+                self.bridgeFormError = "未能移除监控访问令牌，连接和对账记录已保留。"
             }
         }
         configurationTask = task
@@ -824,7 +824,7 @@ public final class MonitoringWorkspaceCoordinator {
     public func removeAccountIDDraft(_ id: String) { selectedAccountIDsDraft.removeAll { $0 == id } }
 
     public func startOrReconcileMonitoringSession() async {
-        guard let context = connection, let store else { bridgeFormError = "请先连接监控桥接。"; return }
+        guard let context = connection, let store else { bridgeFormError = "请先连接监控服务。"; return }
         guard let operation = beginOperation(context) else { return }
         defer { finishOperation(operation) }
 
@@ -976,12 +976,12 @@ public final class MonitoringWorkspaceCoordinator {
         }
         guard let context = connection, let store else {
             bridgeURLDraft = record.bridgeBaseURLString
-            bridgeFormError = "请先重新连接此记录的原桥接。"
+            bridgeFormError = "请先重新连接此记录的原监控服务。"
             return
         }
         guard sameAddress(record, context) else {
             bridgeURLDraft = record.bridgeBaseURLString
-            bridgeFormError = "此记录属于另一桥接，请连接其原地址后再查询；没有向当前桥接发送该 UUID。"
+            bridgeFormError = "此记录属于另一监控服务，请连接其原地址后再查询；没有向当前服务发送该 UUID。"
             return
         }
         guard let operation = beginOperation(context) else { return }
@@ -1016,7 +1016,7 @@ public final class MonitoringWorkspaceCoordinator {
         if store.state == .available, sessionMatchesRecord(store.session, selected) {
             await acceptLoadedSession(context, operation: operation)
         } else {
-            bridgeStatusNotice = "已保留原桥接、凭据标识与 UUID；当前结果仍待对账，404 不代表停止。"
+            bridgeStatusNotice = "已保留原监控服务、凭据标识与 UUID；当前结果仍待对账，404 不代表停止。"
         }
     }
 
@@ -1029,7 +1029,7 @@ public final class MonitoringWorkspaceCoordinator {
         guard let id = store.sessionID ?? pendingCreateUUID else {
             if let record = persistedRecords.first(where: { matches($0, context) && !isConfirmedTerminal($0) }) {
                 await loadPersistedRecord(record)
-            } else { bridgeFormError = "请从历史记录中选择属于原桥接的会话。" }
+            } else { bridgeFormError = "请从历史记录中选择属于原监控服务的会话。" }
             return
         }
         guard let operation = beginOperation(context) else { return }
@@ -1100,7 +1100,7 @@ public final class MonitoringWorkspaceCoordinator {
     }
 
     public func loadCachedQuotaForDraftSource() async {
-        guard let context = connection else { bridgeFormError = "请先连接监控桥接。"; return }
+        guard let context = connection else { bridgeFormError = "请先连接监控服务。"; return }
         let source = sourceIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !source.isEmpty else { bridgeFormError = "请先填写来源 ID（由监控服务管理员提供）。"; return }
         guard cacheOperationID == nil else { return }
@@ -1236,15 +1236,15 @@ public final class MonitoringWorkspaceCoordinator {
             syncDetached(handle, context: context)
             let summary: String
             switch result.status {
-            case .active: summary = "原桥接分离会话仍在运行；如需结束，请明确停止。"
-            case .stopped: summary = "原桥接已确认分离会话停止。"
-            case .expired: summary = "原桥接已确认分离会话到期。"
+            case .active: summary = "原监控服务分离会话仍在运行；如需结束，请明确停止。"
+            case .stopped: summary = "原监控服务已确认分离会话停止。"
+            case .expired: summary = "原监控服务已确认分离会话到期。"
             }
             storedStatusFeedback = MonitoringOperationFeedback(summary: summary,
                 diagnostics: "原桥接分离会话已查询：\(result.status.rawValue)。")
         } catch {
             guard isCurrent(current) else { return }
-            bridgeFormError = "原桥接分离会话查询未确认。"
+            bridgeFormError = "原监控服务分离会话查询未确认。"
         }
     }
 
@@ -1264,10 +1264,10 @@ public final class MonitoringWorkspaceCoordinator {
                 }
                 guard isCurrent(current) else { return }
             }
-            bridgeStatusNotice = "原桥接已确认分离会话终态或取消意图。"
+            bridgeStatusNotice = "原监控服务已确认分离会话终态或取消意图。"
         } catch {
             guard isCurrent(current) else { return }
-            bridgeFormError = "分离会话停止未确认，已保留其原桥接索引。"
+            bridgeFormError = "分离会话停止未确认，已保留其原监控服务索引。"
         }
     }
 
@@ -1385,7 +1385,7 @@ public final class MonitoringWorkspaceCoordinator {
         guard isCurrent(context, operation) else { return }
         bridgeStatusNotice = session.status == .active && attachedActivityID == nil
             ? "远端会话仍在运行，但本机已无对应活动。可明确停止后新建；未自动替换活动身份。"
-            : "已与原桥接完成会话对账。"
+            : "已与原监控服务完成会话对账。"
     }
 
     private func updateBoundActivity(_ context: Connection, operation: UUID) async {

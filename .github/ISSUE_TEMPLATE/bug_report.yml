@@ -1,0 +1,64 @@
+name: 问题反馈（Bug Report）
+description: 反馈 CPA Quota iOS App、小组件/实时活动或独立 Go 监控服务的异常行为
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！提交前请务必脱敏：**切勿在文本、URL、日志或截图中包含 CPA 管理密钥、CPA 客户端 API Key、监控访问令牌、第三方搜索 API Key（含 SerpAPI 查询参数）、APNs 私钥、签名材料或真实邮箱/生产配置。**
+        安全漏洞请勿通过公开 Issue 提交，请参阅 [安全政策](https://github.com/rinmashiro0529/cpa-quota-ios/blob/main/SECURITY.md)。
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 受影响页面或模块
+      options:
+        - 额度总览
+        - CAP 用量
+        - AI 对话
+        - 账号诊断
+        - 连接管理
+        - 监控与活动（连接管理内）/ 实时活动
+        - 桌面与锁屏小组件
+        - 独立 Go 监控服务
+        - 构建与签名工具链
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: 运行环境与版本
+      description: 请填写提交 SHA 或构建版本、iOS / Xcode 版本、设备型号（或模拟器）、CPA 与 CAP 插件版本（如适用）。
+      placeholder: 例如：main@f0f1b4b / iPhone 16 Pro (iOS 26.x) / CLIProxyAPI vX.Y / cap-token-usage-tracker v2.0.11
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开「...」
+        2. 点击「...」
+        3. 观察到...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: 预期行为与实际结果
+      description: 请附带脱敏后的错误提示或最小复现日志。
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: redaction
+    attributes:
+      label: 隐私与脱敏确认
+      options:
+        - label: 我已确认本次提交不包含任何真实密钥、Token、APNs 私钥、签名材料或未脱敏的敏感日志/截图（含 SerpAPI URL 中的 api_key）。
+          required: true
+        - label: 我已确认这不属于未公开的安全漏洞。
+          required: true

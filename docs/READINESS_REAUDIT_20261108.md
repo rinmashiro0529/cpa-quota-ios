@@ -1,5 +1,7 @@
 # Public readiness hardening and re-audit - 2026-11-08
 
+> **中文摘要（历史复审台账）**：本文为 2026-11-08 针对主线 `122eb049` 的英文阶段性复审记录，覆盖 59 个可达提交的秘密扫描、时间边界与冷却回归、Duo 展开内屏冒烟检查以及 CI 供应链加固。文中「six named checks」为当时的工作流口径；现行必需检查清单以 [发布与合并门禁](RELEASE_GATES.md) 和 `.github/main-ruleset.example.json` 中的 5 项为准，仓库当前公开状态与未决项见 [公开准备检查表](OPEN_SOURCE_READINESS.md)。
+
 This is an evidence ledger, not a guarantee of perfection or absence of vulnerabilities.
 Public source collaboration, automated candidate acceptance, and signed production
 release acceptance are separate decisions.

@@ -24,7 +24,7 @@ Duo 日志记录八项 UI 测试零断言失败，但 xcodebuild 仍报告测试
 
 ## 仓库管理仍须单独落地
 
-[main 规则模板](../.github/main-ruleset.example.json) 只作用于 `refs/heads/main`，要求 PR、至少一名批准者、最新推送的非推送者批准、过时批准失效和对话解决，禁止强推与删除，要求四个 GitHub Actions 检查成功且基线最新，不配置绕过者。文件合入不代表服务端规则已生效。
+[main 规则模板](../.github/main-ruleset.example.json) 只作用于 `refs/heads/main`，要求 PR、至少一名批准者、最新推送的非推送者批准、过时批准失效和对话解决，禁止强推与删除，不配置绕过者；2026-11-08 起点时曾为 4 项检查，现行规则模板与 [发布与合并门禁](RELEASE_GATES.md) 已统一为 5 项 GitHub Actions 必需检查（含秘密扫描与 Duo 内屏冒烟）。文件合入不代表服务端规则已生效。
 
 管理员可在 Settings → Rules → Rulesets 导入模板。**导入前必须确认有符合条件的独立审阅者**；单人仓库直接启用该模板可能阻止之后的合并，不应为了通过而默默移除批准要求或添加管理员绕过。先审查现有规则和检查名称，避免叠加重复规则。保存后读取规则 ID、enforcement、conditions 与实际 main 规则，保留回执；在隔离分支或测试仓库验证拒绝行为，不破坏 main。
 

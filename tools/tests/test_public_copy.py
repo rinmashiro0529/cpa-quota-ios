@@ -58,6 +58,23 @@ class PublicCopyTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertEqual(result.stdout.splitlines(), ['readme.md:1: private-address'])
 
+    def test_artifact_json_assistant_narration_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(['git', 'init', '-q', str(root)], check=True)
+            (root / 'artifacts').mkdir()
+            (root / 'artifacts' / 'sample.json').write_text(
+                '{\n  "read_by_context_agent": true,\n  "note": "The context collector read a file."\n}\n',
+                encoding='utf-8',
+            )
+            subprocess.run(['git', '-C', str(root), 'add', 'artifacts/sample.json'], check=True)
+            result = subprocess.run([sys.executable, '-I', '-B', str(SCRIPT), '--root', str(root)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(
+                result.stdout.splitlines(),
+                ['artifacts/sample.json:2: assistant-narration', 'artifacts/sample.json:3: assistant-narration'],
+            )
+
     def test_restore_log_preserves_checksum_validation(self):
         exporter = SCRIPT.with_name('export_frontend_evidence.py')
         with tempfile.TemporaryDirectory() as tmp:

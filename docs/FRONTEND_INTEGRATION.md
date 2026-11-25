@@ -1,19 +1,19 @@
-# SwiftUI 前端接入合同
+# CPAQuotaKit 接入合同
 
-本文件说明 `CPAQuotaKit` 的 public Interface，不包含界面代码。前端通过原生 Swift 值类型与 MainActor 可观察状态消费数据；不得重复实现服务端 JSON、token 替换或窗口单位推算。
+本文件说明 `CPAQuotaKit` 模块的公开 Swift 接口（不包含 SwiftUI 界面代码；宿主 App 与界面实现位于 `Sources/CPAQuotaApp/`、`Sources/CPAQuotaUI/`，AI 对话引擎位于 `Sources/CPAQuotaChat/`，详见 [AI 对话指南](AI_CHAT.md)）。调用方通过原生 Swift 值类型与 MainActor 可观察状态消费数据，不得重复实现服务端 JSON、token 替换或窗口单位推算。
 
 ## 引入 Package
 
 ```swift
-// 未来 App 的 Package.swift 内：
+// 宿主工程或外部包的 Package.swift 内：
 dependencies: [
     .package(path: "../cpa-quota-ios")
 ]
-// App target 的 dependencies 内：
+// target 的 dependencies 内：
 .product(name: "CPAQuotaKit", package: "cpa-quota-ios")
 ```
 
-App 的最低系统需满足 iOS 17，Swift 工具链至少支持 Swift 6。本库没有第三方依赖，且没有需要 App 复制的证书、密钥或资源文件。
+最低运行系统为 iOS 17（macOS 14 可用于包开发），Swift 工具链至少支持 Swift 6。`CPAQuotaKit` 模块自身没有第三方依赖，也没有需要复制的证书、密钥或资源文件（仓库内 `CPAQuotaChat` / `CPAQuotaUI` 引入的 SwiftPM 依赖见 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)）。
 
 ## 连接与凭据
 
@@ -49,12 +49,15 @@ Keychain 保存应在管理连接成功后进行。单个上游账号出现 `ups
 | `isRefreshing` | 账号信息已发布，正在并发查询额度 |
 | `error: CPAError?` | 整体连接/管理错误；不代替每个记录自己的 error |
 | `capabilityWarning: CPAError?` | 可选额度能力发现的非阻塞异常；已有账号和内置读取器仍可用，不能据此删除管理密钥 |
+| `refreshOperation: QuotaOperation?` | 当前批量或单账号刷新的阶段与进度集合（`planned` / `processed` / `succeeded` / `failed` / `skipped`） |
 
 | 操作 | 合同 |
 | --- | --- |
 | `await store.load()` | 读取最新账号列表，先发布已有观察，再查询启用账号；有效实时缓存可复用 |
+| `await store.loadInventory()` | 仅刷新账号清单与被动观察，不触发逐账号实时额度查询 |
 | `await store.refresh()` | 同样刷新账号列表，并默认强制查询，仍尊重 Retry-After |
 | `await store.refresh(force: false)` | 允许复用 60 秒进程内实时缓存 |
+| `await store.refresh(accountID:force:)` | 仅刷新指定账号的额度快照 |
 | `await store.cancel()` | 取消当前请求，立即停止加载标记；旧请求迟到不能覆盖新状态 |
 
 同一个 store 正在执行时，额外 load/refresh 调用不会叠加请求；前端无需再套一层重试/定时器。正常 Task 取消也会传递到网络请求。不要在每次 body 求值时启动查询；前端负责在明确的生命周期/用户操作中调用以上 async 方法。
@@ -113,6 +116,15 @@ await client.cancelRefreshes()
 
 上述示例中的下标只是展示调用关系，实际前端应先判断是否有账号。`refreshAll` 的回调是 Sendable async，前端自行切回 MainActor；使用 `CPAQuotaStore` 时不需要手动实现这些调度。使用不同服务器时必须创建独立 client，不得复用包含旧管理密钥的连接对象。
 
+## AI 对话相关基础类型（`CPAQuotaKit`）
+
+除额度查询外，`CPAQuotaKit` 还为 `CPAQuotaChat` 提供以下基础公开类型与发现能力（完整推理、存储与隐私边界见 [AI 对话指南](AI_CHAT.md)）：
+
+- `CPAClientAPIKey`：脱敏客户端 API Key 封装（`description` / `debugDescription` 脱敏，`hint` 仅暴露前后摘要）。
+- `CPAAPIKeyDiscovery`（经 `client.makeAPIKeyDiscovery()` 或 `store.makeAPIKeyDiscovery()` 创建）：使用管理密钥通过 `GET /v0/management/api-keys` 读取客户端 API Key 列表，遇 `404` / `501` 自动回退至 `GET /v8/management/config/access/api-keys`。
+- `CPAModelCatalogClient` 与 `CPAModel`：通过 `GET /v1/models` 读取模型目录。
+- `ChatSecretStore` / `KeychainSecretStore`（默认 Keychain 服务名 `CPAQuotaKit.ChatCredentials`）与 `MemorySecretStore`：独立保存对话客户端 API Key 与第三方搜索 API Key。
+
 ## 验证边界
 
-SwiftUI 前端应按错误 kind 本地化文案并用原生 Text 展示服务器提供的标签，不执行 HTML。真实设备 Keychain、前台/后台切换、未来 App entitlement 与签名由完整 App 集成阶段验证；库的 iOS SDK 编译不等于已经在 iPhone 上运行。
+额度总览、CAP 用量与账号诊断界面按错误 kind 本地化文案并用原生 `Text` 展示服务器提供的标签，不执行 HTML。AI 对话中的助手 HTML 代码块静态预览由 `Sources/CPAQuotaUI/Chat/IsolatedChatHTMLWebView.swift` 独立承担（仅 iOS 18.4+，禁用 JS、非持久存储、全 URL 内容拦截规则与 CSP `default-src 'none'`，详见 [AI 对话指南](AI_CHAT.md)）。真实设备 Keychain、前台/后台切换、App entitlement 与签名须在真机验收；库的 iOS SDK 编译不等于已经在 iPhone 上运行。

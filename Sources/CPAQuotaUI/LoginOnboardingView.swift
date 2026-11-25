@@ -90,7 +90,7 @@ public struct LoginOnboardingView: View {
             } header: {
                 Text("管理凭据")
             } footer: {
-                Text("使用 CPA 管理密钥，普通推理 API Key 不适用于此处。记住连接后，凭据保存在本机钥匙串，可随时从连接管理中移除。")
+                Text("使用 CPA 管理密钥，CPA 客户端 API Key 不适用于此处。记住连接后，凭据保存在本机钥匙串，可随时从连接管理中移除。")
             }
             .listRowBackground(palette.contentSurface)
 
