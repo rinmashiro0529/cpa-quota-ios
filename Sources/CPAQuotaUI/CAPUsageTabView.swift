@@ -1,0 +1,635 @@
+#if canImport(SwiftUI)
+import SwiftUI
+import CPAQuotaKit
+
+public struct CAPUsageTabView: View {
+    @Bindable public var session: CPAQuotaSession
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+    @State private var selectedSection: DetailSection = .models
+    @State private var groupPageSize = 50
+    @State private var requestPageSize = 50
+    @State private var isPresentingRangePicker = false
+
+    public enum DetailSection: String, CaseIterable, Identifiable {
+        case models = "近30m模型概览"
+        case details = "趋势·分组·费用"
+        case requests = "请求明细页"
+        case management = "管理统计对比"
+        public var id: String { rawValue }
+        public var title: String {
+            switch self {
+            case .models: "模型概览"
+            case .details: "趋势·分组·费用"
+            case .requests: "请求记录"
+            case .management: "管理统计"
+            }
+        }
+    }
+
+    public init(session: CPAQuotaSession) { self.session = session }
+
+    private var coordinator: CAPUsageWorkspaceCoordinator { session.capUsageCoordinator }
+    private var palette: BrandPalette { BrandPalette(colorScheme: colorScheme, contrast: contrast) }
+    private var isBusy: Bool {
+        coordinator.store?.isRefreshing == true || coordinator.store?.isLoadingDetails == true ||
+        coordinator.isLoadingRequestPage || coordinator.isLoadingManagementStats
+    }
+    private var displayedWindow: CAPUsageWindow {
+        switch selectedSection {
+        case .models:
+            coordinator.selectedRange.isCalendarMonthRange
+                ? (coordinator.initialPresentation?.snapshot.window ?? coordinator.activeWindow)
+                : (coordinator.overviewPresentation?.snapshot.window ?? coordinator.activeWindow)
+        case .details: coordinator.activeWindow
+        case .requests: coordinator.requestPagePresentation?.window ?? coordinator.activeWindow
+        case .management: coordinator.managementPresentation?.window ?? coordinator.activeWindow
+        }
+    }
+
+    public var body: some View {
+        List {
+            controls
+            if coordinator.store == nil {
+                CAPSection {
+                    CAPEmptyState(title: "连接服务后查看用量", systemImage: "chart.bar.xaxis",
+                        detail: "请在连接页面配置 CPA 服务。这里不会自动加载数据或改变资源访问权限。")
+                }
+            } else {
+                switch selectedSection {
+                case .models: modelsSection
+                case .details: analyticsSection
+                case .requests: requestsSection
+                case .management: managementSection
+                }
+            }
+        }
+        .capPageStyle()
+        .environment(\.capMasksEmail, session.maskEmail)
+        .navigationTitle("CAP 用量")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                if isBusy {
+                    Button("取消读取", systemImage: "xmark") { coordinator.cancelAll() }
+                        .accessibilityIdentifier("cap.cancel")
+                } else {
+                    Button("刷新当前栏目", systemImage: "arrow.clockwise") {
+                        Task { await refreshCurrentSection() }
+                    }
+                    .disabled(coordinator.store == nil)
+                    .accessibilityIdentifier("cap.refresh")
+                }
+            }
+        }
+        .refreshable { await refreshCurrentSection() }
+    }
+
+    private var controls: some View {
+        CAPSection {
+            Picker("栏目", selection: $selectedSection) {
+                ForEach(DetailSection.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.menu)
+            .accessibilityIdentifier("cap.sectionPicker")
+            Button {
+                isPresentingRangePicker = true
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text("时间范围")
+                        .font(.subheadline)
+                        .foregroundStyle(palette.textSecondary)
+                    Spacer(minLength: 12)
+                    Text(CAPUsagePresentation.rangeTitle(coordinator.selectedRange))
+                        .font(QuotaTypography.dataDetail)
+                        .foregroundStyle(palette.textPrimary)
+                        .monospacedDigit()
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(palette.textSecondary)
+                        .accessibilityHidden(true)
+                }
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("cap.rangePicker")
+            .sheet(isPresented: $isPresentingRangePicker) {
+                CAPRangeSelectionSheet(selectedRange: coordinator.selectedRange) { range in
+                    isPresentingRangePicker = false
+                    coordinator.selectRange(range)
+                }
+                .environment(\.capMasksEmail, session.maskEmail)
+            }
+            CAPValueRow(title: "所选查询窗口", value: CAPUsagePresentation.windowBadgeText(coordinator.activeWindow))
+            if selectedSection == .details {
+                Text("各区域分别标明数据窗口与生成时间。")
+                    .font(.footnote).foregroundStyle(palette.textSecondary)
+            } else if displayedWindow != coordinator.activeWindow {
+                previousResultLabel
+                CAPValueRow(title: "已显示数据窗口", value: CAPUsagePresentation.windowBadgeText(displayedWindow))
+            }
+            Text("切换范围后点击刷新。已显示读数保留原窗口，失败区域的重试沿用失败时的窗口。")
+                .font(.footnote).foregroundStyle(palette.textSecondary)
+            if isBusy {
+                Label { Text("正在读取，已显示的数据仍属于原窗口。") } icon: { ProgressView() }
+                    .font(.subheadline)
+                    .accessibilityElement(children: .combine)
+            }
+            DisclosureGroup("访问方式与统计口径") {
+                Picker("资源访问", selection: Binding(
+                    get: { coordinator.resourceAccess.isSameMode(as: .managementKey) },
+                    set: { coordinator.resourceAccess = $0 ? .managementKey : .anonymous }
+                )) {
+                    Text("匿名").tag(false)
+                    Text("管理密钥").tag(true)
+                }
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("cap.resourceAccess")
+                Text("资源请求只使用你选定的权限；失败时不会自动附加管理密钥。管理统计始终使用管理权限。切换方式会清除原资源快照。")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Text("时间范围受服务端保留期限制。请求集合仍受固定分页与响应预算约束；较长范围可能仅返回部分数据，请查看完整性与保留范围说明。")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Text("生成速度根据有效输出和生成时长加权计算；样本覆盖范围见各项统计。")
+                    .font(.footnote).foregroundStyle(.secondary)
+                DisclosureGroup("统计说明") {
+                    Text("生成 TPS 按有效输出 Token 总和 ÷ 有效生成时长总和计算；生成时长为 latency − TTFT。它不是单次速度的平均，也不除以查询窗口长度。同名模型的不同平台与流式模式分别统计。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Text("窗口截至最后完整分钟。缺失字段保持未知；失败请求可保留部分用量，但不计入成功生成 TPS。分页到末页也不能证明跨页是数据库原子快照。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var modelsSection: some View {
+        // Month ranges show the server-side aggregate; sample-based speed
+        // metrics never mix into that source and vice versa.
+        if coordinator.selectedRange.isCalendarMonthRange {
+            monthlyModelsSection
+        } else {
+            sampleModelsSection
+        }
+    }
+
+    @ViewBuilder private var sampleModelsSection: some View {
+        if let error = coordinator.store?.error {
+            CAPSection { CAPErrorNotice(error: error, preservesData: coordinator.overviewPresentation != nil) }
+        }
+        if let presentation = coordinator.overviewPresentation {
+            let snapshot = presentation.snapshot
+            CAPSection("窗口概览") {
+                CAPSummaryRows(summary: presentation.summary)
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Image(systemName: snapshot.requests.completeness == .singlePage ? "checkmark.circle" : "exclamationmark.circle")
+                        .accessibilityHidden(true)
+                    Text(CAPUsagePresentation.completenessTitle(snapshot.requests.completeness))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("cap.overview.loaded")
+                }
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(snapshot.requests.completeness == .singlePage ? palette.statusOK : palette.statusWarn)
+                Text(CAPUsagePresentation.completenessSubtitle(snapshot.requests.completeness,
+                    itemCount: snapshot.requests.items.count))
+                    .font(.footnote).foregroundStyle(.secondary)
+                Text(CAPUsagePresentation.retentionDescription(
+                    retainedSince: coordinator.initialPresentation?.snapshot.window == snapshot.window
+                        ? coordinator.initialPresentation?.snapshot.value.retainedSince : nil,
+                    window: snapshot.window))
+                    .font(.footnote).foregroundStyle(.secondary)
+                DisclosureGroup("读取详情（高级）") {
+                    Text("完整性状态：\(String(describing: snapshot.requests.completeness))")
+                }
+                NavigationLink("全部窗口计数与样本") {
+                    CAPSummaryDetailView(title: "窗口统计", summary: presentation.summary, window: snapshot.window)
+                }
+            }
+            CAPSection("模型 · 平台 · 流式模式") {
+                if presentation.models.isEmpty {
+                    CAPEmptyState(title: "当前窗口没有请求", systemImage: "tray",
+                        detail: "此结果仅对应显示的查询窗口。")
+                }
+                ForEach(presentation.models) { item in
+                    NavigationLink {
+                        CAPModelDetailView(item: item.value, window: snapshot.window)
+                    } label: { CAPModelRow(item: item.value) }
+                }
+            }
+        } else {
+            CAPSection {
+                CAPEmptyState(title: "查看近 \(CAPUsagePresentation.rangeTitle(coordinator.selectedRange))用量", systemImage: "chart.bar",
+                    detail: "按需读取请求集合、模型用量与加权速度。切换栏目不会自动加载全部端点。")
+                Button("读取概览", systemImage: "arrow.clockwise") {
+                    Task { await coordinator.refreshOverview() }
+                }
+                .disabled(coordinator.store?.isRefreshing == true)
+                .accessibilityIdentifier("cap.loadOverview")
+            }
+        }
+    }
+
+    /// Server-aggregated month overview. It displays only what stats/initial
+    /// returned for its own window: request counters and per-model totals
+    /// merged by model name. No provider is guessed, no TPS is derived from
+    /// the aggregate, and no request pages are scanned to fill it.
+    @ViewBuilder private var monthlyModelsSection: some View {
+        if let store = coordinator.store {
+            if let presentation = coordinator.initialPresentation {
+                let snapshot = presentation.snapshot
+                let coverage = CAPUsagePresentation.retentionCoverage(
+                    retainedSince: snapshot.value.retainedSince, window: snapshot.window)
+                CAPSection("窗口概览 · 服务端汇总") {
+                    if store.initialState.isShowingPreviousResult || snapshot.window != coordinator.activeWindow {
+                        previousResultLabel
+                    }
+                    CAPValueRow(title: "统计窗口", value: CAPUsagePresentation.windowBadgeText(snapshot.window))
+                        .accessibilityIdentifier("cap.monthly.loaded")
+                    CAPValueRow(title: "生成时间", value: snapshot.value.generatedAt)
+                    if coverage != .noOverlap {
+                        CAPValueRow(title: "请求数", value: CAPDisplay.counter(snapshot.value.summary.requests))
+                        CAPValueRow(title: "失败率", value: CAPUsagePresentation.failureRateText(snapshot.value.summary))
+                        CAPValueRow(title: "总 Token", value: CAPDisplay.counter(snapshot.value.summary.totalTokens))
+                    }
+                    Text(CAPUsagePresentation.monthlyRetentionBanner(coverage: coverage, window: snapshot.window))
+                        .font(.footnote).foregroundStyle(palette.textSecondary)
+                    Text("来源：stats/initial 服务端汇总，按模型名合并；不区分供应商维度，也不由此推导生成速度。")
+                        .font(.footnote).foregroundStyle(palette.textSecondary)
+                    if coverage != .noOverlap {
+                        NavigationLink("汇总与保留范围") {
+                            CAPInitialStatsView(presentation: presentation)
+                        }
+                    }
+                }
+                CAPSection("模型 · 按模型名") {
+                    if coverage == .noOverlap {
+                        CAPEmptyState(title: "没有可用历史", systemImage: "clock.badge.exclamationmark",
+                            detail: "所选月份整体早于服务端保留起点；缺少历史不等于该时段没有用量。")
+                    } else if presentation.initialModels.isEmpty {
+                        CAPEmptyState(title: "服务端汇总未返回模型", systemImage: "tray",
+                            detail: "此结果为 stats/initial 的服务端汇总；未返回模型行不代表该时段没有用量。")
+                    } else {
+                        ForEach(presentation.initialModels) { item in
+                            CAPMonthlyModelRow(row: item.value)
+                        }
+                    }
+                }
+            } else {
+                CAPSection {
+                    CAPEmptyState(title: "查看按月模型汇总", systemImage: "chart.bar.xaxis",
+                        detail: "显式读取 stats/initial 服务端汇总；不扫描请求明细，也不把汇总均值推导为生成速度。")
+                    Button("读取服务端汇总", systemImage: "arrow.clockwise") {
+                        Task { await coordinator.refreshModelOverview() }
+                    }
+                    .disabled(store.initialState.isLoading)
+                    .accessibilityIdentifier("cap.loadMonthlyOverview")
+                }
+            }
+            if store.initialState.isLoading || store.initialState.error != nil {
+                CAPSection {
+                    CAPResourceStatus(state: store.initialState,
+                        generatedAt: store.initialState.snapshot?.value.generatedAt,
+                        showsPreviousLabel: false, selectedWindow: coordinator.activeWindow,
+                        retryDisabled: store.initialState.isLoading) {
+                        Task { await coordinator.retryDetailResource(.initial) }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var analyticsSection: some View {
+        CAPSection {
+            Picker("分组每页条数", selection: $groupPageSize) {
+                Text("25").tag(25)
+                Text("50").tag(50)
+                Text("100").tag(100)
+            }
+            .pickerStyle(.menu)
+            Button("读取全部分析", systemImage: "chart.xyaxis.line") {
+                Task { await coordinator.refreshDetails(groupOffset: 0, groupLimit: groupPageSize) }
+            }
+            .disabled(coordinator.store?.isLoadingDetails == true)
+            .accessibilityIdentifier("cap.loadAnalytics")
+            if let store = coordinator.store, !store.failedDetailResources.isEmpty {
+                Button("重试失败区域（\(store.failedDetailResources.count)）", systemImage: "arrow.clockwise") {
+                    Task { await coordinator.retryFailedDetails() }
+                }
+                .disabled(store.isLoadingDetails)
+                .accessibilityIdentifier("cap.retryFailedAnalytics")
+            }
+            Text("各区域独立读取；成功结果立即显示，失败区域可单独重试。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        if let store = coordinator.store {
+            CAPSection("用量汇总") {
+                if let presentation = coordinator.initialPresentation {
+                    if store.initialState.isShowingPreviousResult || presentation.snapshot.window != coordinator.activeWindow { previousResultLabel }
+                    let counters = presentation.snapshot.value.summary
+                    CAPValueRow(title: "请求数", value: CAPDisplay.counter(counters.requests))
+                    CAPValueRow(title: "失败率", value: CAPUsagePresentation.failureRateText(counters))
+                    CAPValueRow(title: "总 Token", value: CAPDisplay.counter(counters.totalTokens))
+                    Text(CAPUsagePresentation.retentionDescription(retainedSince: presentation.snapshot.value.retainedSince,
+                        window: presentation.snapshot.window))
+                        .font(.footnote).foregroundStyle(.secondary)
+                    NavigationLink {
+                        CAPInitialStatsView(presentation: presentation)
+                    } label: {
+                        CAPDestinationLabel(title: "汇总与保留范围", systemImage: "sum",
+                            detail: "模型统计、时间序列与来源")
+                    }
+                    .accessibilityIdentifier("cap.analytics.loaded")
+                } else {
+                    Text(CAPUsagePresentation.retentionDescription(retainedSince: nil, window: coordinator.activeWindow))
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                CAPResourceStatus(state: store.initialState, generatedAt: store.initialState.snapshot?.value.generatedAt,
+                    showsPreviousLabel: false, retryDisabled: store.isLoadingDetails) {
+                    Task { await coordinator.retryDetailResource(.initial) }
+                }
+            }
+            CAPSection("费用") {
+                if let presentation = coordinator.costsPresentation {
+                    if store.costsState.isShowingPreviousResult || presentation.snapshot.window != coordinator.activeWindow { previousResultLabel }
+                    let costs = presentation.snapshot.value
+                    CAPValueRow(title: "估算总费用", value: CAPUsagePresentation.formatUSD(costs.summary.totalUsd, currency: costs.currency))
+                    CAPMetadataLabel(CAPUsagePresentation.costReliabilityBanner(costs),
+                        systemImage: CAPUsagePresentation.costCoverageIsComplete(costs) ? "checkmark.circle" : "exclamationmark.triangle")
+                        .font(.footnote)
+                        .foregroundStyle(CAPUsagePresentation.costCoverageIsComplete(costs) ? palette.statusOK : palette.statusWarn)
+                    NavigationLink("费用与计价覆盖") { CAPCostsView(presentation: presentation) }
+                }
+                CAPResourceStatus(state: store.costsState, generatedAt: store.costsState.snapshot?.value.generatedAt,
+                    showsPreviousLabel: false, retryDisabled: store.isLoadingDetails) {
+                    Task { await coordinator.retryDetailResource(.costs) }
+                }
+            }
+            CAPSection("趋势") {
+                if let presentation = coordinator.trendsPresentation {
+                    if store.trendsState.isShowingPreviousResult || presentation.snapshot.window != coordinator.activeWindow { previousResultLabel }
+                    NavigationLink {
+                        CAPTrendsView(presentation: presentation)
+                    } label: {
+                        CAPDestinationLabel(title: "时间桶趋势", systemImage: "chart.dots.scatter",
+                            detail: "\(presentation.trendRows.count) 个返回桶 · \(presentation.snapshot.value.bucketSeconds) 秒分辨率")
+                    }
+                }
+                CAPResourceStatus(state: store.trendsState, generatedAt: store.trendsState.snapshot?.value.generatedAt,
+                    showsPreviousLabel: false, retryDisabled: store.isLoadingDetails) {
+                    Task { await coordinator.retryDetailResource(.trends) }
+                }
+            }
+            CAPSection("分组") {
+                if let presentation = coordinator.groupsPresentation {
+                    if store.groupsState.isShowingPreviousResult || presentation.snapshot.window != coordinator.activeWindow { previousResultLabel }
+                    NavigationLink {
+                        CAPGroupsView(coordinator: coordinator)
+                    } label: {
+                        CAPDestinationLabel(title: "分组明细", systemImage: "square.stack.3d.up",
+                            detail: "已加载 \(presentation.groups.count) 项 · 报告总计 \(presentation.snapshot.value.total) 项")
+                    }
+                }
+                CAPResourceStatus(state: store.groupsState, generatedAt: store.groupsState.snapshot?.value.generatedAt,
+                    showsPreviousLabel: false, retryDisabled: store.isLoadingDetails) {
+                    Task { await coordinator.retryDetailResource(.groups) }
+                }
+            }
+        }
+    }
+
+    private var previousResultLabel: some View {
+        Label("上次读数", systemImage: "clock")
+            .font(.subheadline.weight(.semibold)).foregroundStyle(palette.textSecondary)
+    }
+
+    @ViewBuilder private var requestsSection: some View {
+        CAPSection {
+            Picker("每页请求数", selection: $requestPageSize) {
+                Text("25").tag(25)
+                Text("50").tag(50)
+                Text("100").tag(100)
+            }
+            .pickerStyle(.menu)
+            Button("读取当前窗口首页", systemImage: "list.bullet.rectangle") {
+                Task { await coordinator.loadRequestPage(offset: 0, limit: requestPageSize) }
+            }
+            .disabled(coordinator.isLoadingRequestPage)
+            .accessibilityIdentifier("cap.loadRequests")
+        }
+        if let error = coordinator.requestPageError {
+            CAPSection { CAPErrorNotice(error: error, preservesData: coordinator.requestPagePresentation != nil) }
+        }
+        if let presentation = coordinator.requestPagePresentation {
+            let page = presentation.page
+            CAPSection("分页与来源") {
+                CAPValueRow(title: "已加载 / 报告总计", value: "\(page.items.count) / \(page.total)")
+                    .accessibilityIdentifier("cap.requests.loaded")
+                CAPValueRow(title: "页偏移 / 每页上限", value: "\(page.offset) / \(page.limit)")
+                CAPValueRow(title: "生成时间", value: page.generatedAt ?? "未知")
+                CAPValueRow(title: "价格簿版本", value: page.priceBookRevision.map { "#\($0)" } ?? "未知")
+                Text("翻页固定当前请求窗口；服务端迟到写入仍可能改变分页内容。")
+                    .font(.footnote).foregroundStyle(.secondary)
+                requestPagination(presentation)
+            }
+            CAPSection("请求") {
+                if presentation.rows.isEmpty {
+                    CAPEmptyState(title: "此页没有请求", systemImage: "tray",
+                        detail: "空页不代表其他页或其他窗口没有记录。")
+                }
+                ForEach(presentation.rows) { item in
+                    NavigationLink {
+                        CAPRequestDetailView(request: item.value, window: presentation.window,
+                            generatedAt: page.generatedAt, priceBookRevision: page.priceBookRevision)
+                    } label: { CAPRequestRow(request: item.value) }
+                }
+            }
+        } else {
+            CAPSection {
+                CAPEmptyState(title: "按需查看请求明细", systemImage: "list.bullet.rectangle",
+                    detail: "保留请求结果的成功、失败与未知三种状态，以及完整 Token、TTFT、延迟和来源字段。")
+            }
+        }
+    }
+
+    private func requestPagination(_ presentation: CAPRequestPagePresentation) -> some View {
+        let page = presentation.page
+        let next = CAPPageNavigation.nextOffset(offset: page.offset, limit: page.limit,
+            count: page.items.count, total: page.total)
+        return HStack {
+            Button("上一页", systemImage: "chevron.backward") {
+                Task { await coordinator.loadRequestPage(window: presentation.window,
+                    offset: max(0, page.offset - page.limit), limit: page.limit) }
+            }
+            .disabled(page.offset <= 0 || coordinator.isLoadingRequestPage)
+            Spacer()
+            Button("下一页", systemImage: "chevron.forward") {
+                guard let next else { return }
+                Task { await coordinator.loadRequestPage(window: presentation.window, offset: next, limit: page.limit) }
+            }
+            .disabled(next == nil || coordinator.isLoadingRequestPage)
+        }
+        .buttonStyle(.borderless)
+        .frame(minHeight: 44)
+    }
+
+    @ViewBuilder private var managementSection: some View {
+        CAPSection {
+            Button("读取管理统计", systemImage: "arrow.clockwise") {
+                Task { await coordinator.refreshManagementStats() }
+            }
+            .disabled(coordinator.isLoadingManagementStats)
+            .accessibilityIdentifier("cap.loadManagement")
+            Text("使用管理权限，保留管理请求的并发与限流保护。下面的来源分别显示各自窗口和生成时间。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        if let error = coordinator.managementStatsError {
+            CAPSection { CAPErrorNotice(error: error, preservesData: coordinator.managementPresentation != nil) }
+        }
+        if let presentation = coordinator.managementPresentation {
+            CAPSection("管理统计") {
+                CAPValueRow(title: "统计窗口", value: CAPUsagePresentation.windowBadgeText(presentation.window))
+                    .accessibilityIdentifier("cap.management.loaded")
+                CAPValueRow(title: "生成时间", value: presentation.stats.generatedAt ?? "未知")
+                CAPValueRow(title: "请求 / 失败", value: "\(CAPDisplay.counter(presentation.stats.summary.requests)) / \(CAPDisplay.counter(presentation.stats.summary.failedRequests))")
+                CAPValueRow(title: "总 Token", value: CAPDisplay.counter(presentation.stats.summary.totalTokens))
+                NavigationLink("全部管理统计与来源") {
+                    CAPManagementDetailView(presentation: presentation)
+                }
+            }
+        } else {
+            CAPSection {
+                CAPEmptyState(title: "尚未读取管理统计", systemImage: "server.rack",
+                    detail: "这组统计使用独立管理路由；资源端点成功不代表管理权限有效。")
+            }
+        }
+        if let resource = coordinator.initialPresentation {
+            CAPSection("资源汇总 · 独立来源") {
+                CAPValueRow(title: "统计窗口", value: CAPUsagePresentation.windowBadgeText(resource.snapshot.window))
+                CAPValueRow(title: "生成时间", value: resource.snapshot.value.generatedAt)
+                CAPValueRow(title: "请求 / 失败", value: "\(CAPDisplay.counter(resource.snapshot.value.summary.requests)) / \(CAPDisplay.counter(resource.snapshot.value.summary.failedRequests))")
+                CAPValueRow(title: "总 Token", value: CAPDisplay.counter(resource.snapshot.value.summary.totalTokens))
+                NavigationLink("全部资源汇总") { CAPInitialStatsView(presentation: resource) }
+                Text("不同来源不相加；窗口或生成时间不同也不能直接当作同一时刻的差额。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func refreshCurrentSection() async {
+        switch selectedSection {
+        case .models:
+            if coordinator.selectedRange.isCalendarMonthRange {
+                await coordinator.refreshModelOverview()
+            } else {
+                await coordinator.refreshOverview()
+            }
+        case .details: await coordinator.refreshDetails(groupOffset: 0, groupLimit: groupPageSize)
+        case .requests: await coordinator.loadRequestPage(offset: 0, limit: requestPageSize)
+        case .management: await coordinator.refreshManagementStats()
+        }
+    }
+}
+
+/// iOS 17 two-level range selection. Level one groups by unit plus the
+/// default quick option; level two lists the bounded counts with the current
+/// selection marked. Confirming a specific option closes the panel and only
+/// updates the pending window; cancel or backing out changes nothing and
+/// never issues a request.
+private struct CAPRangeSelectionSheet: View {
+    private struct UnitGroup: Identifiable {
+        let id: String
+        let title: String
+        let systemImage: String
+        let options: [CAPUsageRange]
+
+        func contains(_ range: CAPUsageRange) -> Bool { options.contains(range) }
+    }
+
+    let selectedRange: CAPUsageRange
+    let confirm: (CAPUsageRange) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    private var groups: [UnitGroup] {
+        [
+            UnitGroup(id: "hours", title: "按小时", systemImage: "clock", options: CAPUsageRange.hourOptions),
+            UnitGroup(id: "days", title: "按天", systemImage: "calendar.day.timeline.left", options: CAPUsageRange.dayOptions),
+            UnitGroup(id: "months", title: "按月", systemImage: "calendar", options: CAPUsageRange.monthOptions)
+        ]
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Button {
+                    confirm(.last30Minutes)
+                } label: {
+                    optionRow(.last30Minutes)
+                }
+                .accessibilityIdentifier("cap.range.quick30m")
+                ForEach(groups) { group in
+                    NavigationLink {
+                        optionList(group)
+                    } label: {
+                        HStack {
+                            Label(group.title, systemImage: group.systemImage)
+                            Spacer()
+                            if group.contains(selectedRange) {
+                                Text(CAPUsagePresentation.rangeTitle(selectedRange))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(minHeight: 44)
+                    }
+                    .accessibilityIdentifier("cap.range.group.\(group.id)")
+                }
+            }
+            .navigationTitle("选择时间范围")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+        }
+        // Duo can reserve the pushed navigation toolbar for the system Back
+        // button. Keep the sheet's dismiss action independent of that toolbar.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                Divider()
+                Button(action: { dismiss() }) {
+                    Text("取消")
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .accessibilityIdentifier("cap.range.cancel")
+            }
+            .background(.bar)
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func optionList(_ group: UnitGroup) -> some View {
+        List {
+            ForEach(group.options, id: \.self) { range in
+                Button {
+                    confirm(range)
+                } label: {
+                    optionRow(range)
+                }
+                .accessibilityIdentifier("cap.range.option")
+            }
+        }
+        .navigationTitle(group.title)
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+    }
+
+    private func optionRow(_ range: CAPUsageRange) -> some View {
+        HStack {
+            Text(CAPUsagePresentation.rangeTitle(range))
+            Spacer()
+            if range == selectedRange {
+                Image(systemName: "checkmark")
+                    .accessibilityHidden(true)
+            }
+        }
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
+    }
+}
+#endif

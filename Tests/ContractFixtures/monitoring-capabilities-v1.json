@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "generated_at": 1800000000,
+  "sources": [
+    {
+      "id": "personal",
+      "accounts": [
+        {
+          "id": "fixture-upstream-account",
+          "safe_id": "account-1",
+          "label": "Account 1",
+          "provider": "codex",
+          "window_id": "primary",
+          "window_label": "5 hours"
+        }
+      ]
+    }
+  ],
+  "capacity": {
+    "limit": 256,
+    "used": 0,
+    "remaining": 256,
+    "warning_at": 205,
+    "status": "ok",
+    "can_create_session": true,
+    "can_record_cancellation": true
+  }
+}

@@ -1,0 +1,318 @@
+{
+  "schema_version": 1,
+  "scope": "Local synthetic tests and cross-compilation; not deployment, GitHub Actions, signing or device validation",
+  "baseline_commit": "3abffebf8f47699f426332da557845c4bf25e54d",
+  "swift": {
+    "source_archive_sha256": "82783e9f365cda5f4b001d04ca2425674eecf88bd09c94d615edc4e42589b589",
+    "test_summary": {
+      "passed": 233,
+      "suites": 38
+    },
+    "receipts": [
+      {
+        "receipt": "20261028-155108-d3da4208-test",
+        "mode": "test",
+        "target": "CPAQuotaKit",
+        "exit_code": 0
+      },
+      {
+        "receipt": "20261028-155217-9b8e7cb9-device",
+        "mode": "device",
+        "target": "CPAQuotaApp",
+        "exit_code": 0
+      },
+      {
+        "receipt": "20261028-155315-0435a234-simulator",
+        "mode": "simulator",
+        "target": "CPAQuotaApp",
+        "exit_code": 0
+      }
+    ],
+    "files": {
+      "Package.swift": "184275a58c05d6f4d7a16a645d6d5565d805bc939991d214877363a07f825d10",
+      "Sources/CPAQuotaApp/CPAQuotaiOSApp.swift": "04a90e5a44819b3b092b4df59ca83d564fd225fd389fbdba2071e9dfab898286",
+      "Sources/CPAQuotaKit/AccountIdentity.swift": "7c396ee838f12f504ac74f4f3151e419b3a99c8c2ac58fd96560c9f2c7317b03",
+      "Sources/CPAQuotaKit/CAPUsageAggregation.swift": "b3890addddf25ce984aba8b3d361bef361aff30670e057f5636932a1ae15b54b",
+      "Sources/CPAQuotaKit/CAPUsageAnalytics.swift": "75d98a4a583f15bc7c0cdc031c422f9b0a4df6a0244ffc8b4c54de87c1256b01",
+      "Sources/CPAQuotaKit/CAPUsageClient.swift": "ebea052a97a3ac743c1fc20b151e83aeefb279d6c6cd339ba5370de03ddf8031",
+      "Sources/CPAQuotaKit/CAPUsageCosts.swift": "7a78736d77b4f551cc4b70eba758639bcf5f69dc232c8d65c71091d53a546b9f",
+      "Sources/CPAQuotaKit/CAPUsageRequestPage.swift": "3d80ce139c44eb7a369238abbabb114fd8a6e0514bcf6535601e9962ceed658b",
+      "Sources/CPAQuotaKit/CAPUsageStats.swift": "718fc7dcb016722c18d25aa8640bc34af3cf80d83d45f1690c2c2ee7beacb377",
+      "Sources/CPAQuotaKit/CAPUsageStore.swift": "b08949f3e388226def1b882e90f60cd4ac5acb7824110f379a38d6641c48fcd4",
+      "Sources/CPAQuotaKit/CAPUsageWindow.swift": "ff2b14aa624d06683fabf1ff509358f19be893a5d3377e4a9c0a84c29ead12d7",
+      "Sources/CPAQuotaKit/ConnectionHealth.swift": "e27cfcf8c7ce1507b3eba610b4d60a96161f6105e616c714d001c1486c6715b2",
+      "Sources/CPAQuotaKit/CPAClient.swift": "c635bd762675d17c731a98641b66431978424934e2894d80ed11907504c955b4",
+      "Sources/CPAQuotaKit/CPAError.swift": "a2702dfdd2c549911d93ca42bd904d4252222fc8b6dc3e593292a3bf841120e7",
+      "Sources/CPAQuotaKit/CPAQuotaStore.swift": "80398265100ffbc499faa799bac0c57d1133e2e4dd6cfa3dd9af6a05ca0f1193",
+      "Sources/CPAQuotaKit/CPAServer.swift": "91198866323328b04ffd25da67ae8e1b30aa28d68cad7d60b6819f9dd45ce75e",
+      "Sources/CPAQuotaKit/CredentialStore.swift": "2bb5cebcd41448a1ef4b810865629d4bb507c1090bd07a71be57e6d9844e5a66",
+      "Sources/CPAQuotaKit/HTTPTransport.swift": "208f6e890f08ca0626e674504603ea065691130551d4ca308047ef61c739ea04",
+      "Sources/CPAQuotaKit/Models.swift": "b1e57b1155f920cb821b879437bb7490a5031b008489681f6108e6e02f9903e2",
+      "Sources/CPAQuotaKit/MonitoringBridgeCredentials.swift": "f39e35678444eff2fd73c9d996a017ffab95dbd302e06c7b9205cf833dadc49d",
+      "Sources/CPAQuotaKit/MonitoringClient.swift": "60b85de7995be5c2b8ccba3014fc6c70e7d580b0916766fd0352226ea6c6b4c5",
+      "Sources/CPAQuotaKit/MonitoringSession.swift": "852eecc32e8cd0546191b38bed49f754d828915cfa012ae010d9ab328b0f6fe4",
+      "Sources/CPAQuotaKit/MonitoringSnapshot.swift": "c9cf6296b2e0c122a321ac1d96bd159c5750578979fb9e7730bf93dc74e79289",
+      "Sources/CPAQuotaKit/MonitoringStore.swift": "2cddbd19cdc1e6ffaf8789738619f15990a8e74bc42ada90502b7e46f0bd8ac6",
+      "Sources/CPAQuotaKit/QuotaParsing.swift": "245d6b1a92fa4153ac653d9c89b2e409a6c1b37b25808c0d2bc7b6b8a59b7754",
+      "Sources/CPAQuotaKit/QuotaRequestLimiter.swift": "cd2f83d5ecafbe1d7821aae0a0f04416b84067af1aa70b0513eb4dc3a19a82bc",
+      "Sources/CPAQuotaKit/WireDecoding.swift": "910cdcb534ebd0b4553b7cd5f5e21c04f033db2c92ad0178f785808050d4139d",
+      "Sources/CPAQuotaProbe/Probe.swift": "f0a784f91c29928e99c9637aa458b19c9aab76bac6ff99d4e0d1522ba6e59385",
+      "Sources/CPAQuotaUI/AccountDetailSheetView.swift": "dafb73237886d8374b1358d57e0344a4125eccefca6eca54a137e5b382da276a",
+      "Sources/CPAQuotaUI/AccountsDiagnosticsTabView.swift": "d3dad24cfe5bc9f190499dbbfb5e86558594ccfc14f76c6b4c210f7774c20917",
+      "Sources/CPAQuotaUI/AppearanceAndPreferences.swift": "4d2797443c959461770a06fa4e2e57e9ab048839df3ea2b5806d5c30d582771d",
+      "Sources/CPAQuotaUI/ConnectionManagementTabView.swift": "d043a90cffee401bc690dd32d5b190fe24bf5cf8c487cf80abdf9adb67004ccf",
+      "Sources/CPAQuotaUI/CPAQuotaRootView.swift": "b31dfde66cd493fe9ec54d31ce480e2276d37de286087c859a30f77efd541184",
+      "Sources/CPAQuotaUI/CPAQuotaSession.swift": "d748506f22fbfe7275af5751533913e9d5d96fab114e74d996e2b362ded44157",
+      "Sources/CPAQuotaUI/DynamicIslandCompanionBar.swift": "f2817ee5e3f6e1be47197d7ec82dbf241a3d96325d92edfab5184cb595d4b7e3",
+      "Sources/CPAQuotaUI/DynamicIslandState.swift": "8c0f78600e733a41a0defc14b856ee1bfd2ed54334e42ba7780adf390dba7e32",
+      "Sources/CPAQuotaUI/ErrorPresentation.swift": "0e6c8b61983238b93f4cc97ca4b9ad860bdfd85d8f181a2660b18282773f007e",
+      "Sources/CPAQuotaUI/FloatingGlassTabBar.swift": "e51e13e5a0cff8bc578c50101e952e1f99f3986220e5146d4ff0e74f48fcd280",
+      "Sources/CPAQuotaUI/LiquidGlassDesignSystem.swift": "a0b9ed710a83c90eab79fe6a848498d53cced2f5cc2b943f81d07b9e0bd8c534",
+      "Sources/CPAQuotaUI/LoginOnboardingView.swift": "abbc8bf43f245ef7ec28cb4e779fcd4823561de582116bb5861c6710adac0dc0",
+      "Sources/CPAQuotaUI/QuotaPresentation.swift": "6faa68959f5ef03ae1454b0121e133d933876aa50998b77e30a432e58251af9e",
+      "Sources/CPAQuotaUI/QuotasOverviewTabView.swift": "6c9270d9066f09943a82dc556104b8a02e831eafa7d2108464043c405dd3628b",
+      "Tests/CPAQuotaKitTests/BackendReliabilityClientTests.swift": "a2eb487d0193d1830e3b96589f024a9a5f4f596e92b0693b3b8773a877d1352e",
+      "Tests/CPAQuotaKitTests/BackendReliabilityHealthTests.swift": "c8b154f7d69565b3885c1467691685c73e8e2c7931bcbbc32fe41ea16acc9102",
+      "Tests/CPAQuotaKitTests/BackendReliabilityIdentityTests.swift": "163edbda4cd4a7a929aee2b4745979db81da8bc144e06adc3e97761e4ebf6965",
+      "Tests/CPAQuotaKitTests/BackendReliabilitySessionTests.swift": "188da5f6f282fc96b774e843bb513fd3b9ff4650a033efe59730a84977260d17",
+      "Tests/CPAQuotaKitTests/BackendReliabilityStoreTests.swift": "490863db03bd7d60c58bc9114841d52336a77fbad0e94f1d970f0e75659b46ad",
+      "Tests/CPAQuotaKitTests/CAPUsageAggregationTests.swift": "acd3ccc5377dab0029481ae295a32c3643e0bb6a1cbcc5a35cc946f146827d9f",
+      "Tests/CPAQuotaKitTests/CAPUsageAnalyticsTests.swift": "a6a1295a95c312e43426dbd154a8c24cb95692bce9c7b61f9dfaaeec31b3155b",
+      "Tests/CPAQuotaKitTests/CAPUsageClientTests.swift": "fc0022ad414cb97e8b23b37fdf4c77178d3adaabe27295a03104e8dbe883f1a9",
+      "Tests/CPAQuotaKitTests/CAPUsageCoordinatorTests.swift": "eca43c0f7e109657b7e2b9538d61ea510afc8a98ca3ce65f751a400ad2edd6de",
+      "Tests/CPAQuotaKitTests/CAPUsageCostTests.swift": "d604ac319a2ab19fc04139764b72b627993417b1a71104543b304c700dc3d0b3",
+      "Tests/CPAQuotaKitTests/CAPUsageRequestPageTests.swift": "230174d8c0b933792a3f6687cb5b686a7b49c430b3bc7378891f9fd7e9e01d60",
+      "Tests/CPAQuotaKitTests/CAPUsageResourceTests.swift": "372f627da071ddd812148eaeb8415a3766a8ea9fed0fa5db43eebb29c75a531b",
+      "Tests/CPAQuotaKitTests/CAPUsageStatsTests.swift": "39fc1fb00600aed44ceeda3dcfb84aa275ed96d09f8e4a0d8cc5fe8f22149782",
+      "Tests/CPAQuotaKitTests/CAPUsageStoreTests.swift": "cfa663c7f51a1450bb990f8f45432510bdba3744dff07b2010f80e330435345d",
+      "Tests/CPAQuotaKitTests/CAPUsageWindowTests.swift": "0c44b0ce8c003e815d5bda92941d2fa3c161489b38429fe63d92006111e6f438",
+      "Tests/CPAQuotaKitTests/CoreModelTests.swift": "f30a654de01dbdb84dc92fb9939fb536b65c4b9787393aa075fad6741dfb8661",
+      "Tests/CPAQuotaKitTests/CPAClientTests.swift": "48d973505bddfc99c7d995aac3b05a33446c8015c0cede754ed391ff84d1a0a6",
+      "Tests/CPAQuotaKitTests/CPAQuotaStoreTests.swift": "01571c24c8109b55eb1ca3d7b96acd6f28d5728ff103b65853abaa53548b81c6",
+      "Tests/CPAQuotaKitTests/CPAQuotaUITests.swift": "4a5b73e3b81aa75676d637291423325deaf70c93d9968d06dae2a8797d7ed3b8",
+      "Tests/CPAQuotaKitTests/CredentialStoreTests.swift": "018ad282036e6651d39249fec6a8c12d84e89c7bb26b123c05b440d5f810a4d9",
+      "Tests/CPAQuotaKitTests/HTTPTransportTests.swift": "b5e30b89b6cf5b8804b3fd2cb74f1b9dcbe78c2aed4a6b0c14a9d15c8825efcc",
+      "Tests/CPAQuotaKitTests/IntegrationPresentationRegressionTests.swift": "f2e4a7e9c88c41f62f0288c6832b895dfa9013c1e27088e8e479fc8e98b88169",
+      "Tests/CPAQuotaKitTests/IntegrationSessionRegressionTests.swift": "c1a23e32b3eefbf4394988a06b8a0e685325dbbf165a8b95b1959d09d9b272b0",
+      "Tests/CPAQuotaKitTests/MonitoringBridgeCredentialTests.swift": "612211a29aae3d988b7dbc3a1117486349361cac144f84e898373eefa78fb897",
+      "Tests/CPAQuotaKitTests/MonitoringClientTests.swift": "4ce1b4c70f63df8cd5ef3ab96f0a49cab2a6a4dd67211477927c5b462c9e1d4d",
+      "Tests/CPAQuotaKitTests/MonitoringContractTests.swift": "c9c99c959fdfb9dfaedb7390fc638020b9c6aaef523b440777e2dcd9af5e247a",
+      "Tests/CPAQuotaKitTests/MonitoringSnapshotTests.swift": "e44857fef5c45355711fd5dbf554e66f187f42295ecf6b87b700313073fc5faf",
+      "Tests/CPAQuotaKitTests/MonitoringStoreTests.swift": "622dc7aa7e2926c76bca0a70418c8767020947796b814114681f77f0d21e1d02",
+      "Tests/CPAQuotaKitTests/PublicInterfaceTests.swift": "05cf1e100959aa2319d40a50aaae71d7b125353cb17d8c51597704ca474fc092",
+      "Tests/CPAQuotaKitTests/QuotaParsingTests.swift": "8fd9bc012f43c3fb9286a619a95d9630e46ab28ec67fe79534311320a8ac5b3c",
+      "Tests/CPAQuotaKitTests/ReviewRegressionTests.swift": "5e414291eba81960310252714f0edda9d844e0c3cbaf64d47be70060e88be18e",
+      "Tests/CPAQuotaKitTests/ScenarioTransport.swift": "5a1ed883aeb04cfa6b979e1cd4628e4b63959527653a9e08ab8269b1ac3e961d",
+      "Tests/ContractFixtures/monitoring-v1-session.json": "28983c909e778132ab4fdd49937cc6e421ea1f11cbfb3fde2039d22fd5bb171b",
+      "Tests/ContractFixtures/quota-parity-v1.json": "83de3413eb2acce5fe3a633b68e1fbbc1ec16eac57aad30396516f512011a04b"
+    }
+  },
+  "go": {
+    "receipt": "20261028-160336-bedc5de3-go",
+    "version": "go version go1.26.2 windows/amd64",
+    "source_manifest_sha256": "660dd6cff10512f5a6439362756ce531005a64bd0f8d3a8bbab98af82dbe213b",
+    "test_counts_including_subtests": {
+      "passed": 93,
+      "failed": 0,
+      "skipped": 0,
+      "packages_passed": 5
+    },
+    "steps": [
+      {
+        "name": "version",
+        "exit_code": 0
+      },
+      {
+        "name": "format",
+        "exit_code": 0
+      },
+      {
+        "name": "test",
+        "exit_code": 0
+      },
+      {
+        "name": "vet",
+        "exit_code": 0
+      },
+      {
+        "name": "race",
+        "exit_code": 0
+      },
+      {
+        "name": "build-native",
+        "exit_code": 0
+      },
+      {
+        "name": "build-linux",
+        "exit_code": 0
+      },
+      {
+        "name": "cli-help",
+        "exit_code": 0
+      }
+    ],
+    "files": {
+      "Services/QuotaMonitor/apns/provider.go": "e60463f5341201e033fcdb732f2b61039e8bc844a0d8d69285500db07d4fc4f9",
+      "Services/QuotaMonitor/apns/provider_test.go": "d9810edd86ca8dc39c79673a6b407788a1d9405a8fe76c5be6ff6b1d27d6e1d5",
+      "Services/QuotaMonitor/cmd/quota-monitor/main.go": "5ab89d47e978280eb6005e6cb0a4823a0384e9d2b72ee6ab0ac2eb52272e5c4b",
+      "Services/QuotaMonitor/cmd/quota-monitor/main_test.go": "09bd0d43f17f8f275a02e38969b7dc7d03577279ca9d3a9ac3f842ba3815bddd",
+      "Services/QuotaMonitor/config.go": "ea0f4496c599a8248d1e8c3eb12b57510511c2c584ae602b25a3321a43dccdb3",
+      "Services/QuotaMonitor/config_test.go": "7a6c55fdde54a576205973461ab93cf1aac1a1820b928c1da19f5953685cc887",
+      "Services/QuotaMonitor/cpa/client.go": "008be6185a2402579753e0ed76d0f068f6ba670d1d6f99d4429506e1a3c2a565",
+      "Services/QuotaMonitor/cpa/client_test.go": "786f036bdfa2eec09da7894cbd10be3bd9aa1fcf7454b6218da7b9a0e0b2fa9c",
+      "Services/QuotaMonitor/cpa/config.go": "9a93ce84e9669f2198daa73686f178fc1a7f69357062406c3a516f35aa35f9f3",
+      "Services/QuotaMonitor/cpa/config_test.go": "d4121aee5ed55a560c48412cf472d27659d4c729659dff2b2e78e6c19698a36d",
+      "Services/QuotaMonitor/cpa/contract_test.go": "e428aeb910b76fdeead0a353f2e352120cc13a76e2b31166589e4953186d4765",
+      "Services/QuotaMonitor/cpa/passive.go": "60775db302f28322f108ff113965494cf44177ed0073089cc20a17b67430fb99",
+      "Services/QuotaMonitor/delivery.go": "ad614596a77aaa90fd29693cf13bdda25e8a8bf93f5d43a709ef83f60576cbca",
+      "Services/QuotaMonitor/payload.go": "a1f0e79be88d20ccaa26d245b5c1f2f9fb7f5adda9350af94aade2d6e5275797",
+      "Services/QuotaMonitor/quota/quota.go": "1957062e739431f944df0f1ee6f4cc53a9ffc0c22363f83a4009c9b2b583f84a",
+      "Services/QuotaMonitor/quota/quota_test.go": "f46a5876ad1921d1e13cda27af008cce79cb3b53a5571141b664e354c925b1db",
+      "Services/QuotaMonitor/runtime.go": "b460f1bb6a83f81c01758d710e199ac8d9c6ba6f685db3985077e044e6e47eda",
+      "Services/QuotaMonitor/runtime_test.go": "c591885a1c1998b9551769c06874b5ce0182d6fab9208815046c56ec83704721",
+      "Services/QuotaMonitor/scheduler.go": "4b4e86f71b545627e1f105145ece9ecc9408a6c280d4a32c8c14eda7f8821a8f",
+      "Services/QuotaMonitor/service.go": "91f9b19c69a25a62ce2c0d1a96b6514e2ddcb6e6008bf0432e52d1a204ae05d4",
+      "Services/QuotaMonitor/service_test.go": "b79005c5a8935e4c7d48002001b52b8d8371398b9b04b198cd5fae8d9126c616",
+      "Services/QuotaMonitor/storage.go": "f12a6757d5f8ed6e01619cd4986644444daa716dadf19c65f64b892993c161e2",
+      "Services/QuotaMonitor/storage_test.go": "c36abed8686632bea6deb2876b2cc9be373b283f098d6bfa899302d485db7b49",
+      "Services/QuotaMonitor/storage_unix.go": "0375ec263e0b0ecfdd66ac27adf6bcd737589b8194aa938c95e73833a165b052",
+      "Services/QuotaMonitor/storage_windows.go": "ce47941498e064da4cc563ddc6daab88d48b2df7509a7666e2522da3a10dd683",
+      "Services/QuotaMonitor/go.mod": "c82b37f8dbc295ad6c8fa555bce7403df9d6485110db596d6eadc1a7229b4ecb",
+      "Services/QuotaMonitor/config.example.json": "6d22af796244103bae2abf09186292385c84f749fdf68cca6057a71a2b23837a",
+      "Tests/ContractFixtures/monitoring-v1-session.json": "28983c909e778132ab4fdd49937cc6e421ea1f11cbfb3fde2039d22fd5bb171b",
+      "Tests/ContractFixtures/quota-parity-v1.json": "83de3413eb2acce5fe3a633b68e1fbbc1ec16eac57aad30396516f512011a04b",
+      "tools/test_monitor_backend.py": "cdceff233d21dfe0483d96914b8db58b43c9a1a3066aa0a7fe4d53a9aa7b5b14"
+    },
+    "local_build_outputs_not_committed": {
+      "quota-monitor.exe": {
+        "sha256": "d35091754979ed3281c7ebbd72777a7b96582cb5200f5ba3c5004af3376813bf",
+        "size": 10965504
+      },
+      "quota-monitor-linux-amd64": {
+        "sha256": "d04a97ac0066fbb16577c80d1ff8dfda73a41b655d6d6cc148506477d4fd007b",
+        "size": 10852847
+      }
+    }
+  },
+  "independent_identity_check": {
+    "checked_at_utc": "2026-10-28T16:17:21.791059+00:00",
+    "swift_same_archive": true,
+    "swift_all_exit_zero": true,
+    "swift_source_file_count": 76,
+    "go_all_steps_exit_zero": true,
+    "go_status": "passed",
+    "go_source_file_count": 30,
+    "source_inventory_matches": true,
+    "shared_fixture_hashes_match": true,
+    "changed_files": [],
+    "swift_receipts": [
+      "20261028-155108-d3da4208-test",
+      "20261028-155217-9b8e7cb9-device",
+      "20261028-155315-0435a234-simulator"
+    ],
+    "go_receipt": "20261028-160336-bedc5de3-go",
+    "status": "passed"
+  },
+  "real_cpa_or_apns_used": false,
+  "apple_account_or_signing_used": false,
+  "repository_line_endings": {
+    "rule": "Git may normalize CRLF to LF; only these line-ending differences are permitted between tested input and repository bytes",
+    "differences": [
+      {
+        "file": "Package.swift",
+        "verified_worktree_sha256": "184275a58c05d6f4d7a16a645d6d5565d805bc939991d214877363a07f825d10",
+        "repository_sha256": "58222854684ce095e5afc06d0115ca11fad1b282b468138c948c4f1d9f940c99"
+      },
+      {
+        "file": "Sources/CPAQuotaApp/CPAQuotaiOSApp.swift",
+        "verified_worktree_sha256": "04a90e5a44819b3b092b4df59ca83d564fd225fd389fbdba2071e9dfab898286",
+        "repository_sha256": "ef60fd0f1f8dd85660da96db4a9fdaff2fdf212ac9f71ca23a42dc731f90da83"
+      },
+      {
+        "file": "Sources/CPAQuotaUI/AccountDetailSheetView.swift",
+        "verified_worktree_sha256": "dafb73237886d8374b1358d57e0344a4125eccefca6eca54a137e5b382da276a",
+        "repository_sha256": "1afc22eb1281af79c4562a3dd8bf6abb4818374cf3e2708ae3e4018a5e147ff1"
+      },
+      {
+        "file": "Sources/CPAQuotaUI/AccountsDiagnosticsTabView.swift",
+        "verified_worktree_sha256": "d3dad24cfe5bc9f190499dbbfb5e86558594ccfc14f76c6b4c210f7774c20917",
+        "repository_sha256": "2e935cef7ff575f6e7a34bb4556f5df75224fb3a232cc4b2a64f37aa8ae3c122"
+      },
+      {
+        "file": "Sources/CPAQuotaUI/AppearanceAndPreferences.swift",
+        "verified_worktree_sha256": "4d2797443c959461770a06fa4e2e57e9ab048839df3ea2b5806d5c30d582771d",
+        "repository_sha256": "47da729cb907a5e37b3c6af56d5052965b3a59e03acfae81fbdd57def9884e6a"
+      },
+      {
+        "file": "Sources/CPAQuotaUI/ConnectionManagementTabView.swift",
+        "verified_worktree_sha256": "d043a90cffee401bc690dd32d5b190fe24bf5cf8c487cf80abdf9adb67004ccf",
+        "repository_sha256": "f0a85e6b9132260f12fb8bb5a12f291a13f29607bcda586c8a2b163ad935c332"
+      },
+      {
+        "file": "Sources/CPAQuotaUI/CPAQuotaRootView.swift",
+        "verified_worktree_sha256": "b31dfde66cd493fe9ec54d31ce480e2276d37de286087c859a30f77efd541184",
+        "repository_sha256": "d018e161d1e307fcb9290892b8bf1351423c224efcbf37b54643472f0b6dcf7c"
+      },
+      {
+        "file": "Sources/CPAQuotaUI/CPAQuotaSession.swift",
+        "verified_worktree_sha256": "d748506f22fbfe7275af5751533913e9d5d96fab114e74d996e2b362ded44157",
+        "repository_sha256": "619cc7e0b1a04eabbcee9051104c5d7fa8bd546d16da6bfade29e9d0b19f94d4"
+      },
+      {
+        "file": "Sources/CPAQuotaUI/DynamicIslandCompanionBar.swift",
+        "verified_worktree_sha256": "f2817ee5e3f6e1be47197d7ec82dbf241a3d96325d92edfab5184cb595d4b7e3",
+        "repository_sha256": "690d9aeeb7320971b5dff030c33ef85ba54bf35ea9ff5fc2e557b79e755b259f"
+      },
+      {
+        "file": "Sources/CPAQuotaUI/DynamicIslandState.swift",
+        "verified_worktree_sha256": "8c0f78600e733a41a0defc14b856ee1bfd2ed54334e42ba7780adf390dba7e32",
+        "repository_sha256": "d81b99767ffb4f85e2472cb7c10bba3b6bf255cb75c82286d8a258353ef00436"
+      },
+      {
+        "file": "Sources/CPAQuotaUI/ErrorPresentation.swift",
+        "verified_worktree_sha256": "0e6c8b61983238b93f4cc97ca4b9ad860bdfd85d8f181a2660b18282773f007e",
+        "repository_sha256": "3177589f8c80a45f5b377814edc21bbecd5534ddc393e0d81dc96bb683423be2"
+      },
+      {
+        "file": "Sources/CPAQuotaUI/FloatingGlassTabBar.swift",
+        "verified_worktree_sha256": "e51e13e5a0cff8bc578c50101e952e1f99f3986220e5146d4ff0e74f48fcd280",
+        "repository_sha256": "af42b05804d03aaf955439b2e6f878a4bc4f206e74107079227b0b748f74f31b"
+      },
+      {
+        "file": "Sources/CPAQuotaUI/LiquidGlassDesignSystem.swift",
+        "verified_worktree_sha256": "a0b9ed710a83c90eab79fe6a848498d53cced2f5cc2b943f81d07b9e0bd8c534",
+        "repository_sha256": "014d8ddcb10eebd6debb9cb828a9284b69b9e66eba104794f6ae1ce8f216c15a"
+      },
+      {
+        "file": "Sources/CPAQuotaUI/LoginOnboardingView.swift",
+        "verified_worktree_sha256": "abbc8bf43f245ef7ec28cb4e779fcd4823561de582116bb5861c6710adac0dc0",
+        "repository_sha256": "c80c1d581d41a672499b508490e46b000fb0603ebc2daa1379ed43e968f498b4"
+      },
+      {
+        "file": "Sources/CPAQuotaUI/QuotaPresentation.swift",
+        "verified_worktree_sha256": "6faa68959f5ef03ae1454b0121e133d933876aa50998b77e30a432e58251af9e",
+        "repository_sha256": "238fb74878e4bb08df1044984310334ffb0a8034b52c13830633b9d6e1955f2b"
+      },
+      {
+        "file": "Sources/CPAQuotaUI/QuotasOverviewTabView.swift",
+        "verified_worktree_sha256": "6c9270d9066f09943a82dc556104b8a02e831eafa7d2108464043c405dd3628b",
+        "repository_sha256": "6be0b44caf9c59f759504e5e2aae7fed95904e0a8c3e43a10ec403ed12a91b40"
+      },
+      {
+        "file": "Tests/CPAQuotaKitTests/CPAQuotaUITests.swift",
+        "verified_worktree_sha256": "4a5b73e3b81aa75676d637291423325deaf70c93d9968d06dae2a8797d7ed3b8",
+        "repository_sha256": "af4dafa4e31ba44841904c7999093cb4812c1a52624cc8674f4b6c8b5a58db4f"
+      },
+      {
+        "file": "Tests/CPAQuotaKitTests/IntegrationPresentationRegressionTests.swift",
+        "verified_worktree_sha256": "f2e4a7e9c88c41f62f0288c6832b895dfa9013c1e27088e8e479fc8e98b88169",
+        "repository_sha256": "691a6df872148087ed44782ddad2cc3e1e9e6edc558495f8e7a1adfa13286d44"
+      },
+      {
+        "file": "Tests/CPAQuotaKitTests/IntegrationSessionRegressionTests.swift",
+        "verified_worktree_sha256": "c1a23e32b3eefbf4394988a06b8a0e685325dbbf165a8b95b1959d09d9b272b0",
+        "repository_sha256": "66cd470053d79108ca7c2857c8e7313d271f41facd4b5d3dc367878c0818538d"
+      }
+    ]
+  }
+}
