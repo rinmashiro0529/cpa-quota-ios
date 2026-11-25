@@ -92,7 +92,7 @@ go -C Services/QuotaMonitor vet ./...
 
 ## 安全、贡献与许可
 
-请阅读 [安全政策](SECURITY.md)、[贡献指南](CONTRIBUTING.md)、[MIT 许可证](LICENSE)、[第三方许可声明](THIRD_PARTY_NOTICES.md) 和 [变更日志](CHANGELOG.md)。仓库已公开；公开后仍待核验或完成的私密报告渠道、分支保护、素材权属与真机验收等门禁见 [公开准备检查表](docs/OPEN_SOURCE_READINESS.md) 与 [发布与合并门禁](docs/RELEASE_GATES.md)。
+请阅读 [安全政策](SECURITY.md)、[贡献指南](CONTRIBUTING.md)、[MIT 许可证](LICENSE)、[第三方许可声明](THIRD_PARTY_NOTICES.md) 和 [变更日志](CHANGELOG.md)。仓库已公开并启用 GitHub 私密漏洞报告与秘密扫描；公开后仍待核验或完成的分支保护、素材权属与真机验收等门禁见 [公开准备检查表](docs/OPEN_SOURCE_READINESS.md) 与 [发布与合并门禁](docs/RELEASE_GATES.md)。
 
 ## 文档
 

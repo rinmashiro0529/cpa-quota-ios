@@ -7,7 +7,7 @@
 仓库已为公开仓库；后续在 2026-11-18 至 2026-11-24 已合入 Codex 额度窗口、CAP 时间范围与「AI 对话」工作区（PR #16–#34）。截至 2026-11-25 核对：
 
 - **外部运行时依赖已更新**：`Package.swift` 现已声明 4 个直接 SwiftPM 外部包（`Package.resolved` 解析锁定 13 个包），完整版权、许可证与上游 `NOTICE` 见 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)；下方 2026-11-02 记录中「源码声明未列外部运行时包」仅代表当时历史状态。
-- **GitHub 服务端安全与保护开关尚未启用**：经 GitHub API 核实，`private-vulnerability-reporting` 为 `enabled: false`，`main` 分支无保护规则（`rulesets` 为空），`secret_scanning` / `push_protection` / `dependabot_security_updates` 均为 `disabled`。现行必需检查定义以 [发布与合并门禁](RELEASE_GATES.md) 和 [规则模板](../.github/main-ruleset.example.json) 中的 5 项为准。
+- **GitHub 服务端安全与保护开关状态**：2026-11-25 已启用并经 API 复核 `private-vulnerability-reporting`（`enabled: true`，且未登录公开访问 `/security` 页面已确认可见 **Report a vulnerability** 入口）、`secret_scanning`、`secret_scanning_push_protection` 与 `dependabot_security_updates` 均为 `enabled`。`main` 分支尚未启用 Ruleset（单人仓库直接套用要求非推送者批准的模板会阻断合并，现行必需检查定义以 [发布与合并门禁](RELEASE_GATES.md) 和 [规则模板](../.github/main-ruleset.example.json) 中的 5 项为准）。
 - **历史阻断编号 `FS-03` 定义**：`FS-03（数据过期保护）` 指防止在读取失败、无数值响应或时钟/新鲜度异常时，将过时或未知额度静默展示为最新有效读数；虽然离线/合成回归已补强部分边界，真机与真实上游端到端验收尚未关闭该项。
 - **截图与 AI 对话验收**：`docs/images/*.png` 仍为 2026-11-02 旧版提交 `bbb4bca` 的合成截图，尚未覆盖「AI 对话」与迁移后的「监控与活动」界面；AI 对话、HTML 静态预览、后台续跑通知、签名安装、最低 iOS 17 真机及 APNs 送达仍需独立真机验收。
 

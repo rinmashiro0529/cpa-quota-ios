@@ -4,7 +4,7 @@
 
 ## 私密报告
 
-本仓库现为公开仓库。请查看 [Security 页面](https://github.com/rinmashiro0529/cpa-quota-ios/security)；只有该页面确实提供 **Report a vulnerability** 私密报告按钮时，才通过该入口发送报告。私密漏洞报告功能需要仓库管理员单独启用，公开仓库或存在本文件并不证明该功能已经启用。截至 2026-11-25 复核，GitHub 仓库的私密漏洞报告开关仍为未启用状态（`enabled: false`）。
+本仓库现为公开仓库。请通过 [Security 页面](https://github.com/rinmashiro0529/cpa-quota-ios/security) 的 **Report a vulnerability**（`/security/advisories/new`）私密报告入口发送报告。2026-11-25 已通过 GitHub API（`private-vulnerability-reporting: enabled=true`）及未登录公开访问 `/security` 页面复核该入口可见。若未来访问时按钮不可用，请先请求维护者核查设置，勿在公开 Issue 披露漏洞细节。
 
 若按钮不可用，请先请求维护者提供可验证的私密联系渠道；公开 issue 只能说明“缺少私密报告渠道”，不要附漏洞利用细节、真实凭据或未脱敏日志。不要使用未在仓库中确认的邮箱，也不要把公开 issue 作为私密报告的替代。
 
